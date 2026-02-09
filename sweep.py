@@ -3,23 +3,18 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""
-Script to train RL agent with skrl.
+"""Script for hyperparameter sweeping with Optuna.
 
-Visit the skrl documentation (https://skrl.readthedocs.io) to see the examples structured in
-a more user-friendly way.
-"""
+Performs hyperparameter optimization using Optuna and then trains the best configuration
+across multiple seeds.
 
-"""Launch Isaac Sim Simulator first."""
+Author: Elle Miller 
+"""
 
 
 import argparse
-import gc
 import sys
-import torch
-import traceback
 
-import optuna
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
@@ -29,9 +24,9 @@ parser.add_argument("--video_length", type=int, default=600, help="Length of the
 parser.add_argument("--video_interval", type=int, default=500, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the config.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--study", type=str, default="default", help="study name")
-
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -42,14 +37,15 @@ sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-from isaaclab_tasks.utils.hydra import hydra_task_config, register_task_to_hydra
+
+import numpy as np
+import torch
 
 import isaaclab_tasks  # noqa: F401
-from isaaclab_rl.algorithms.ppo import PPO, PPO_DEFAULT_CONFIG
-from isaaclab_rl.tools.writer import Writer
-
+import optuna
 from common_utils import (
     LOG_PATH,
+    make_aux,
     make_env,
     make_memory,
     make_models,
@@ -57,18 +53,31 @@ from common_utils import (
     set_seed,
     update_env_cfg,
 )
+from isaaclab.utils import update_dict
+from isaaclab_tasks.utils.hydra import register_task_to_hydra
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+
+from multimodal_rl.rl.ppo import PPO, PPO_DEFAULT_CONFIG
+from multimodal_rl.tools.writer import Writer
+
 
 class OptimisationRunner:
-    def __init__(self, study_name, n_startup_trials, n_warmup_steps, interval_steps):
+    """Optuna-based hyperparameter optimization runner."""
 
+    def __init__(self, study_name, n_startup_trials, n_warmup_steps, interval_steps):
+        """Initialize the optimization runner.
+
+        Args:
+            study_name: Name of the Optuna study.
+            n_startup_trials: Number of startup trials for the sampler.
+            n_warmup_steps: Number of warmup steps for the pruner.
+            interval_steps: Interval steps for the pruner.
+        """
         self.sampler = optuna.samplers.TPESampler(n_startup_trials=n_startup_trials)
 
-        # self.pruner = optuna.pruners.MedianPruner(
-        #     n_startup_trials=n_startup_trials,
-        #     n_warmup_steps=n_warmup_steps,
-        #     interval_steps=interval_steps
-        # )
-        self.pruner = optuna.pruners.NopPruner()
+        self.pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=n_startup_trials, n_warmup_steps=n_warmup_steps, interval_steps=interval_steps
+        )
 
         self.study = optuna.create_study(
             storage=storage,
@@ -80,17 +89,21 @@ class OptimisationRunner:
         )
 
     def run(self, n_trials=50):
+        """Run the optimization study.
 
+        Args:
+            n_trials: Number of trials to run.
+
+        Returns:
+            Best trial from the study.
+        """
         self.study.optimize(
-            lambda trial: self.objective(
-                trial, env=env, env_cfg=env_cfg, agent_cfg=agent_cfg
-            ),
+            lambda trial: self.objective(trial, env=env, env_cfg=env_cfg, agent_cfg=agent_cfg),
             n_trials=n_trials,
             show_progress_bar=True,
             gc_after_trial=True,
         )
 
-        # Antonin's code
         print(f"Number of finished trials: {len(self.study.trials)}")
         print("Best trial:")
         trial = self.study.best_trial
@@ -104,41 +117,90 @@ class OptimisationRunner:
         return self.study.best_trial
 
     def free_memory(self):
+        """Free GPU memory and run garbage collection."""
         torch.cuda.empty_cache()
+        import gc
+
         gc.collect()
 
     def objective(self, trial: optuna.Trial, env, env_cfg, agent_cfg) -> float:
+        """Objective function for Optuna optimization.
+
+        Args:
+            trial: Optuna trial object.
+            env: The gymnasium environment.
+            env_cfg: Environment configuration.
+            agent_cfg: Agent configuration dictionary.
+
+        Returns:
+            Best return value from training.
+
+        Raises:
+            optuna.TrialPruned: If the trial should be pruned.
+        """
         print(f"Starting trial: {trial.number}")
 
-        # https://optuna.readthedocs.io/en/stable/reference/generated/optuna.trial.Trial.html
-        # CHOOSE YOUR OWN HPARAMS TO OPTIMISE
-        mini_batches = trial.suggest_categorical("mini_batches", [4, 8, 16, 32, 64])
-        learning_rate = trial.suggest_float("learning_rate", low=1e-5, high=1e-3, log=True)
-        learning_epochs = trial.suggest_categorical("learning_epochs", [4, 8, 16, 32])
-        rollouts = trial.suggest_categorical("rollouts", [16, 32, 64])
-        entropy_loss_scale = trial.suggest_categorical("entropy_loss_scale", [0.0, 0.05, 0.1])
+        TRAIN_SEEDS = [0, 1, 2, 3, 4]
+        agent_cfg["seed"] = int(np.random.choice(TRAIN_SEEDS))
+        set_seed(agent_cfg["seed"])
 
-        # setup models
-        policy, value, encoder, value_preprocessor = make_models(env, env_cfg, agent_cfg, dtype)
+        # Suggest PPO hyperparameters
+        # Note: Memory issues can occur with large rollouts + aux tasks
+        if "ssl_task" in agent_cfg:
+            if agent_cfg["ssl_task"]["type"] == "forward_dynamics":
+                rollouts = trial.suggest_categorical("rollouts", [16, 32])
+            else:
+                rollouts = trial.suggest_categorical("rollouts", [16, 32, 64, 96])
+        else:
+            rollouts = trial.suggest_categorical("rollouts", [16, 32, 64, 96])
+        mini_batches = trial.suggest_categorical("mini_batches", [4, 8, 16, 32])
+        learning_epochs = trial.suggest_int("learning_epochs", low=5, high=20, step=1)
+        learning_rate = trial.suggest_float("learning_rate", low=1e-6, high=0.003, log=True)
+        entropy_loss_scale = trial.suggest_float("entropy_loss_scale", low=0, high=0.5)
+        value_loss_scale = trial.suggest_float("value_loss_scale", low=0, high=1.0)
+        value_clip = trial.suggest_float("value_clip", low=0, high=0.3)
+        ratio_clip = trial.suggest_float("ratio_clip", low=0, high=0.3)
+        gae_lambda = trial.suggest_float("gae_lambda", low=0.9, high=0.99)
 
-        # update default_agent_cfg with trial
         agent_cfg["agent"]["rollouts"] = rollouts
         agent_cfg["agent"]["mini_batches"] = mini_batches
         agent_cfg["agent"]["learning_epochs"] = learning_epochs
         agent_cfg["agent"]["learning_rate"] = learning_rate
         agent_cfg["agent"]["entropy_loss_scale"] = entropy_loss_scale
+        agent_cfg["agent"]["value_loss_scale"] = value_loss_scale
+        agent_cfg["agent"]["value_clip"] = value_clip
+        agent_cfg["agent"]["ratio_clip"] = ratio_clip
+        agent_cfg["agent"]["lambda"] = gae_lambda
 
-        # PPO
-        # create tensors in memory for RL stuff [only for the training envs]
+        # Suggest SSL task hyperparameters if applicable
+        if "ssl_task" in agent_cfg:
+            learning_rate_aux = trial.suggest_float("learning_rate_aux", low=1e-5, high=1e-3, log=True)
+            loss_weight_aux = trial.suggest_float("loss_weight_aux", low=1e-3, high=10, log=True)
+            learning_epochs_ratio = trial.suggest_categorical("learning_epochs_ratio", [0.25, 0.5, 0.75, 1.0])
+
+            agent_cfg["ssl_task"]["learning_rate"] = learning_rate_aux
+            agent_cfg["ssl_task"]["loss_weight"] = loss_weight_aux
+            agent_cfg["ssl_task"]["learning_epochs_ratio"] = learning_epochs_ratio
+
+            if agent_cfg["ssl_task"]["type"] == "forward_dynamics":
+                # Cap sequence length to avoid long training times
+                seq_length = trial.suggest_int("seq_length", low=2, high=8, step=1)
+                seq_length = min(seq_length, 7)
+                agent_cfg["ssl_task"]["seq_length"] = seq_length
+
+        # Setup models
+        policy, value, encoder, value_preprocessor = make_models(env, env_cfg, agent_cfg, dtype)
+
+        # Create tensors in memory for RL (only for the training envs, not eval envs)
         num_training_envs = env_cfg.scene.num_envs - agent_cfg["trainer"]["num_eval_envs"]
         rl_memory = make_memory(env, env_cfg, size=agent_cfg["agent"]["rollouts"], num_envs=num_training_envs)
-        auxiliary_task = None
+        ssl_task = make_aux(env, rl_memory, encoder, value, value_preprocessor, env_cfg, agent_cfg, writer)
 
-        # restart wandb
+        # Restart wandb for this trial
         writer.close_wandb()
         writer.setup_wandb(name=trial.number)
 
-        # configure and instantiate PPO agent
+        # Configure and instantiate PPO agent
         ppo_agent_cfg = PPO_DEFAULT_CONFIG.copy()
         ppo_agent_cfg.update(agent_cfg["agent"])
         agent = PPO(
@@ -152,36 +214,40 @@ class OptimisationRunner:
             action_space=env.action_space,
             device=env.device,
             writer=writer,
-            auxiliary_task=auxiliary_task,
+            ssl_task=ssl_task,
             dtype=dtype,
-            debug=agent_cfg["experiment"]["debug"]
+            debug=agent_cfg["experiment"]["debug"],
         )
 
-        # Let's go!
-        trainer = make_trainer(env, agent, agent_cfg, auxiliary_task, writer)
+        # Train the agent
+        trainer = make_trainer(env, agent, agent_cfg, ssl_task, writer)
 
         try:
             best_return, should_prune = trainer.train(trial=trial)
         except AssertionError as e:
-            # Sometimes, random hyperparams can generate NaN.
+            # Sometimes random hyperparameters can generate NaN
             print(e)
 
-        # prune trial
+        # Prune trial if needed
         if should_prune:
             raise optuna.TrialPruned()
         return best_return
 
 
 if __name__ == "__main__":
+    print("Running sweep with Optuna")
 
-    # parse configuration
-    cfg = hydra_task_config(args_cli.task, "skrl_cfg_entry_point")
-    env_cfg, agent_cfg = register_task_to_hydra(args_cli.task, "skrl_cfg_entry_point")
+    sweep = False
 
-    # Choose the precision you want. Lower precision means you can fit more environments.
+    # Parse configuration
+    env_cfg, agent_cfg = register_task_to_hydra(args_cli.task, "default_cfg")
+
+    specialised_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent_cfg)
+    agent_cfg = update_dict(agent_cfg, specialised_cfg)
+
     dtype = torch.float32
 
-    # SEED (environment AND agent, important for seed-deterministic runs)
+    # Set seed (important for seed-deterministic runs)
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     set_seed(agent_cfg["seed"])
     agent_cfg["log_path"] = LOG_PATH
@@ -190,51 +256,83 @@ if __name__ == "__main__":
     # Update the environment config
     env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
 
-    # LOGGING SETUP
-    writer = Writer(agent_cfg, delay_wandb_startup=True)
+    max_sweep_timesteps_M = agent_cfg["sweeper"]["max_sweep_timesteps_M"]
+    max_training_timesteps_M = agent_cfg["trainer"]["max_global_timesteps_M"]
 
-    # Make environment. Order must be gymnasium Env -> FrameStack -> IsaacLab
-    env = make_env(env_cfg, writer, args_cli, agent_cfg["models"]["obs_stack"])
+    if sweep:
+        # Setup logging for sweep
+        agent_cfg["experiment"]["experiment_name"] = args_cli.task + "_" + args_cli.agent_cfg + "_" + args_cli.study
+        agent_cfg["experiment"]["wandb_kwargs"]["group"] = (
+            args_cli.task + "_" + args_cli.agent_cfg + "_" + args_cli.study
+        )
+        storage = "./sweep_logs/" + agent_cfg["sweeper"]["storage"]
+        n_warmup_steps = agent_cfg["sweeper"]["warmup_timesteps_M"] * 1e6
+        agent_cfg["trainer"]["max_global_timesteps_M"] = max_sweep_timesteps_M
 
-    # https://optuna.readthedocs.io/en/stable/reference/generated/optuna.create_study.html
-    storage = "sqlite:///my_sweep.db"
-    study_name = args_cli.study
+        study_name = args_cli.study
+        total_trials = 50
+        n_startup_trials = 5
+        interval_steps = 1
 
-    # Usage
-    total_trials = 50
-    n_startup_trials = 5
-    n_warmup_steps = 0
-    interval_steps = 10
+        writer = Writer(agent_cfg, delay_wandb_startup=True)
 
-    runner = OptimisationRunner(study_name, n_startup_trials, n_warmup_steps, interval_steps)
+        # Make environment (order: gymnasium Env -> FrameStack -> IsaacLab)
+        env = make_env(env_cfg, writer, args_cli, agent_cfg["observations"]["obs_stack"])
 
-    try:
+        runner = OptimisationRunner(study_name, n_startup_trials, n_warmup_steps, interval_steps)
+
         best_trial = runner.run(total_trials)
 
-    except Exception as err:
-        carb.log_error(err)
-        carb.log_error(traceback.format_exc())
-        raise
-    except KeyboardInterrupt:
-        pass
-    finally:
-        # close sim app
-        simulation_app.close()
+        print("Best trial:", best_trial)
 
-    # rewards_shaper_scale = trial.suggest_categorical("rewards_shaper_scale", [1, 0.1, 0.01])
-    # value_loss_scale = trial.suggest_categorical("value_loss_scale", [1.0, 2.0])
-    # obs_stack = trial.suggest_categorical("obs_stack", [1,2,4,8,16])
+        writer.close_wandb()
 
-    # policy_hiddens = trial.suggest_categorical("policy_hiddens", [[32, 32], [64, 32], [128, 64, 32]])
-    # encoder_hiddens = trial.suggest_categorical("encoder_hiddens", [[2048, 1024, 512, 256], [1024, 512, 256]])
+        # Apply best trial hyperparameters
+        agent_cfg["agent"]["rollouts"] = best_trial.params["rollouts"]
+        agent_cfg["agent"]["mini_batches"] = best_trial.params["mini_batches"]
+        agent_cfg["agent"]["learning_epochs"] = best_trial.params["learning_epochs"]
+        agent_cfg["agent"]["learning_rate"] = best_trial.params["learning_rate"]
+        agent_cfg["agent"]["entropy_loss_scale"] = best_trial.params["entropy_loss_scale"]
+        agent_cfg["agent"]["value_loss_scale"] = best_trial.params["value_loss_scale"]
+        agent_cfg["agent"]["value_clip"] = best_trial.params["value_clip"]
+        agent_cfg["agent"]["ratio_clip"] = best_trial.params["ratio_clip"]
+        agent_cfg["agent"]["lambda"] = best_trial.params["gae_lambda"]
 
-    # # arches
-    # skrl_config_dict["encoder"]["hiddens"] = encoder_hiddens
-    # skrl_config_dict["encoder"]["activations"] = ["elu"] * len(encoder_hiddens)
+        if "ssl_task" in agent_cfg:
+            agent_cfg["ssl_task"]["learning_rate"] = best_trial.params["learning_rate_aux"]
+            agent_cfg["ssl_task"]["loss_weight"] = best_trial.params["loss_weight_aux"]
+            agent_cfg["ssl_task"]["learning_epochs_ratio"] = best_trial.params["learning_epochs_ratio"]
 
-    # skrl_config_dict["policy"]["hiddens"] = policy_hiddens
-    # skrl_config_dict["value"]["hiddens"] = policy_hiddens
-    # spec_activations= ["elu"] * len(policy_hiddens)
-    # skrl_config_dict["policy"]["activations"] = spec_activations + ["identity"]
-    # skrl_config_dict["value"]["activations"] = spec_activations + ["identity"]
-    # print("ACVITATIONS", spec_activations)
+            if agent_cfg["ssl_task"]["type"] == "forward_dynamics":
+                agent_cfg["ssl_task"]["seq_length"] = best_trial.params["seq_length"]
+
+    # Train best configuration on multiple seeds
+    agent_cfg["experiment"]["experiment_name"] = args_cli.task + "_" + args_cli.agent_cfg + "_" + "seeded"
+    agent_cfg["trainer"]["max_global_timesteps_M"] = max_training_timesteps_M
+    agent_cfg["experiment"]["wandb_kwargs"]["group"] = args_cli.task + "_" + args_cli.agent_cfg + "_" + "seeded"
+
+    test_seeds = [5, 6, 7, 8, 9, 10]
+
+    print("Running best trial on multiple seeds:", test_seeds)
+    from common_utils import train_one_seed
+
+    writer = Writer(agent_cfg, delay_wandb_startup=True)
+    env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
+    if not sweep:
+        env = make_env(env_cfg, writer, args_cli, agent_cfg["observations"]["obs_stack"])
+
+    for seed in test_seeds:
+        print("Running seed:", seed)
+
+        agent_cfg["experiment"]["wandb_kwargs"]["name"] = str(seed)
+
+        env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
+
+        writer.setup_wandb(name=str(seed))
+
+        train_one_seed(args_cli, env, agent_cfg=agent_cfg, env_cfg=env_cfg, writer=writer, seed=seed)
+        writer.close_wandb()
+        writer.get_new_log_path()
+
+    env.close()
+    simulation_app.close()

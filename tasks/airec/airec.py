@@ -23,8 +23,6 @@ from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg, ViewerCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sensors import (
-    ContactSensor,
-    ContactSensorCfg,
     FrameTransformer,
     FrameTransformerCfg,
     OffsetCfg,

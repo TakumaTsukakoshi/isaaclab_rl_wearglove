@@ -3,46 +3,34 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+"""Script to train RL agent with multimodal_rl.
+
+Author: Elle Miller 
 """
-Script to train RL agent with skrl.
-
-Visit the skrl documentation (https://skrl.readthedocs.io) to see the examples structured in
-a more user-friendly way.
-"""
-
-"""Launch Isaac Sim Simulator first."""
-
 
 import argparse
 import sys
-import traceback
 
 from isaaclab.app import AppLauncher
 
-
-# add argparse arguments
+# Parse command-line arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with skrl.")
-parser.add_argument("--video", action="store_true", default=True, help="Record videos during training.")
+parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=600, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_interval", type=int, default=500, help="Interval between video recordings (in steps).")
+parser.add_argument("--video_dir", type=str, default=None, help="Directory to save recorded videos.")
+
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
-parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
-# if you have RTX5090, use these args for better rendering
+parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the agent configuration.")
+parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
+# Rendering options (useful for RTX5090 and similar GPUs)
 parser.add_argument(
-    "--renderer",
-    type=str,
-    default="PathTracing",
-    choices=["RayTracedLighting", "PathTracing"],
-    help="Renderer to use."
+    "--renderer", type=str, default="PathTracing", choices=["RayTracedLighting", "PathTracing"], help="Renderer to use."
 )
-parser.add_argument(
-    "--samples_per_pixel_per_frame",
-    type=int,
-    default=1,
-    help="Number of samples per pixel per frame."
-)
+parser.add_argument("--samples_per_pixel_per_frame", type=int, default=1, help="Number of samples per pixel per frame.")
 
-# append AppLauncher cli args
+# Append AppLauncher CLI args and initialize Isaac Sim
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if args_cli.video:
@@ -52,90 +40,39 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import isaaclab_tasks  # noqa: F401
-from isaaclab_rl.algorithms.ppo import PPO, PPO_DEFAULT_CONFIG
-from isaaclab_rl.tools.writer import Writer
-from isaaclab_tasks.utils.hydra import hydra_task_config
-
-from common_utils import (
-    LOG_PATH,
-    make_env,
-    make_memory,
-    make_models,
-    make_trainer,
-    set_seed,
-    update_env_cfg,
-)
+from common_utils import LOG_PATH, make_env, train_one_seed, update_env_cfg
+from isaaclab.utils import update_dict
+from isaaclab_tasks.utils.hydra import register_task_to_hydra
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+from multimodal_rl.tools.writer import Writer
 
 
-@hydra_task_config(args_cli.task, "skrl_cfg_entry_point")
-def main(env_cfg, agent_cfg: dict):
-    """Train with skrl agent."""
+def main() -> None:
+    """Train a RoTO policy using the selected Isaac Lab task and agent config."""
+    env_cfg, agent_cfg = register_task_to_hydra(args_cli.task, "skrl_cfg_entry_point")
+    if args_cli.agent_cfg is not None:
+        specialised_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent_cfg)
+        agent_cfg = update_dict(agent_cfg, specialised_cfg)
 
-    # Choose the precision you want. Lower precision means you can fit more environments.
-    import torch
-    dtype = torch.float32
+    seed = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
 
-    # SEED (environment AND agent, important for seed-deterministic runs)
-    agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
-    set_seed(agent_cfg["seed"])
     agent_cfg["log_path"] = LOG_PATH
     args_cli.video = agent_cfg["experiment"]["upload_videos"]
-    
+    agent_cfg["experiment"]["video_dir"] = args_cli.video_dir
 
-    # Update the environment config
-    env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
-
-    # LOGGING SETUP
     writer = Writer(agent_cfg)
-
-    # Make environment. Order must be gymnasium Env -> FrameStack -> IsaacLab
-    env = make_env(env_cfg, writer, args_cli, agent_cfg["models"]["obs_stack"])
-
-    # setup models
-    policy, value, encoder, value_preprocessor = make_models(env, env_cfg, agent_cfg, dtype)
-
-    # create tensors in memory for RL stuff [only for the training envs]
-    num_training_envs = env_cfg.scene.num_envs - agent_cfg["trainer"]["num_eval_envs"]
-    rl_memory = make_memory(env, env_cfg, size=agent_cfg["agent"]["rollouts"], num_envs=num_training_envs)
-    auxiliary_task = None
-
-    # configure and instantiate PPO agent
-    ppo_agent_cfg = PPO_DEFAULT_CONFIG.copy()
-    ppo_agent_cfg.update(agent_cfg["agent"])
-    agent = PPO(
-        encoder,
-        policy,
-        value,
-        value_preprocessor,
-        memory=rl_memory,
-        cfg=ppo_agent_cfg,
-        observation_space=env.observation_space,
-        action_space=env.action_space,
-        device=env.device,
-        writer=writer,
-        auxiliary_task=auxiliary_task,
-        dtype=dtype,
-        debug=agent_cfg["experiment"]["debug"]
-    )
-
-    # Let's go!
-    trainer = make_trainer(env, agent, agent_cfg, auxiliary_task, writer)
-    trainer.train()
-
-    # close the simulator
-    env.close()
+    env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
+    env = make_env(agent_cfg, env_cfg, writer, args_cli)
+    train_one_seed(args_cli, env, agent_cfg=agent_cfg, env_cfg=env_cfg, writer=writer, seed=seed)
 
 
 if __name__ == "__main__":
+    main()
     try:
-        # run the main function
         main()
     except Exception as err:
-        print(err)
-        carb.log_error(err)
-        carb.log_error(traceback.format_exc())
+        print("ERROR DURING TRAINING", err)
         raise
     finally:
-        # close sim app
         print("CLOSING")
         simulation_app.close()

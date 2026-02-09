@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import torch
-import math
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObject, RigidObjectCfg, DeformableObjectCfg
@@ -28,8 +27,6 @@ from collections.abc import Sequence
 
 from tasks.airec.airec import AIRECEnv, AIRECEnvCfg, insert_success_reward, randomize_rotation, rotation_distance
 from isaaclab.sensors import (
-    ContactSensor,
-    ContactSensorCfg,
     FrameTransformer,
     FrameTransformerCfg,
     OffsetCfg,
@@ -55,7 +52,7 @@ class WearEnvCfg(AIRECEnvCfg):
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
 
-    object_usd = "/home/takuma/code/isaaclab_rl_wearglove/assets/Glove/GL_Gloves068/GL_Gloves068_obj_revise.usd"
+    object_usd = '/home/tamon/code/isaaclab_rl_wearglove/assets/Glove/GL_Gloves068/GL_Gloves068_obj_revise.usd'
 
     object_cfg: DeformableObjectCfg = DeformableObjectCfg(
         prim_path="/World/envs/env_.*/Object",

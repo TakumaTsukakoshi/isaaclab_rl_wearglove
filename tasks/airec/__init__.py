@@ -7,7 +7,7 @@ import os
 
 from . import agents, wear
 
-print("Registering nextage environments")
+print("Registering AIREC environments")
 
 agents_dir = os.path.dirname(agents.__file__)
 

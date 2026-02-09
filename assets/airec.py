@@ -70,8 +70,8 @@ AIREC_CFG = ArticulationCfg(
     ###########################################################################
 
     spawn=sim_utils.UsdFileCfg(
-        usd_path=os.path.join(PARENT_DIR, "assets/airec/dry-airec_collision_filtered.usd"),
-        activate_contact_sensors=True,
+        usd_path=os.path.join(PARENT_DIR, "assets/airec/dry-airec_collision_filtered-new.usd"),
+        activate_contact_sensors=False,
         #to fix self collision, look up collision filtering in isaac sim docs
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,

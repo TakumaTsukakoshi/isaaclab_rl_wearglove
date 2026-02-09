@@ -3,54 +3,37 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""
-Script to play a checkpoint of an RL agent from skrl.
+"""Script to play a trained RL agent with multimodal_rl.
 
-Visit the skrl documentation (https://skrl.readthedocs.io) to see the examples structured in
-a more user-friendly way.
+Author: Elle Miller 
 """
-
-"""Launch Isaac Sim Simulator first."""
 
 
 import argparse
 import os
 import sys
-import time
-import traceback
 
 from isaaclab.app import AppLauncher
 
-# add argparse arguments
+# Parse command-line arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from skrl.")
-parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
-parser.add_argument("--video_length", type=int, default=1000, help="Length of the recorded video (in steps).")
+parser.add_argument("--video", action="store_true", default=False, help="Record videos during playback.")
+parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
-parser.add_argument("--video_interval", type=int, default=500, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
-parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
-# if you have RTX5090, use these args for better rendering
-parser.add_argument(
-    "--renderer",
-    type=str,
-    default="PathTracing",
-    choices=["RayTracedLighting", "PathTracing"],
-    help="Renderer to use."
-)
-parser.add_argument(
-    "--samples_per_pixel_per_frame",
-    type=int,
-    default=1,
-    help="Number of samples per pixel per frame."
-)
+parser.add_argument("--video_dir", type=str, default=None, help="Directory to save recorded videos.")
+parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the agent configuration.")
 
-# Add video_dir and video_interval arguments 2025/09/29
-parser.add_argument("--video_dir", type=str, default=None,
-                    help="Directory to save recorded videos.")
+parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
+# Rendering options (useful for RTX5090 and similar GPUs)
+parser.add_argument(
+    "--renderer", type=str, default="PathTracing", choices=["RayTracedLighting", "PathTracing"], help="Renderer to use."
+)
+parser.add_argument("--samples_per_pixel_per_frame", type=int, default=1, help="Number of samples per pixel per frame.")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -60,11 +43,9 @@ if args_cli.video:
 sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
+import torch
 
-from isaaclab_rl.algorithms.ppo import PPO, PPO_DEFAULT_CONFIG
-from isaaclab_rl.tools.writer import Writer
-from isaaclab_tasks.utils.hydra import hydra_task_config
-
+import isaaclab_tasks  # noqa: F401
 from common_utils import (
     LOG_PATH,
     make_env,
@@ -72,50 +53,45 @@ from common_utils import (
     set_seed,
     update_env_cfg,
 )
+from isaaclab.utils import update_dict
+from isaaclab_tasks.utils.hydra import register_task_to_hydra
+from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
+
+from multimodal_rl.rl.ppo import PPO, PPO_DEFAULT_CONFIG
+from multimodal_rl.tools.writer import Writer
 
 
-@hydra_task_config(args_cli.task, "skrl_cfg_entry_point")
-def main(env_cfg, agent_cfg: dict):
-    """Play a skrl agent."""
+def main():
+    """Play a trained RL agent from a checkpoint.
 
-    # Choose the precision you want. Lower precision means you can fit more environments.
-    import torch
+    Loads a checkpoint and runs the agent in the environment, optionally recording videos.
+    """
+    # Parse configuration
+    env_cfg, agent_cfg = register_task_to_hydra(args_cli.task, "default_cfg")
+
+    specialised_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent_cfg)
+    agent_cfg = update_dict(agent_cfg, specialised_cfg)
     dtype = torch.float32
 
-    # SEED (environment AND agent, important for seed-deterministic runs)
+    # Set seed (important for seed-deterministic runs)
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     set_seed(agent_cfg["seed"])
     agent_cfg["log_path"] = LOG_PATH
+    agent_cfg["experiment"]["video_dir"] = args_cli.video_dir
 
     # Update the environment config
     env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
 
-    # LOGGING SETUP
+    # Setup logging
     writer = Writer(agent_cfg, play=True)
 
-    if args_cli.video:
-        if args_cli.video_dir is not None:
-            video_dir = args_cli.video_dir
-        else:
-            base_log_dir = getattr(writer, "log_dir", None) or agent_cfg.get("log_path", LOG_PATH)
-            video_dir = os.path.join(base_log_dir, "videos")
+    # Make environment (order: gymnasium Env -> FrameStack -> IsaacLab)
+    env = make_env(agent_cfg, env_cfg, writer, args_cli)
 
-        os.makedirs(video_dir, exist_ok=True)
-
-        # 3) writer に video_dir を持たせる（Writer 実装にプロパティがあるなら代入、なければ setattr）
-        try:
-            writer.video_dir = video_dir
-        except Exception:
-            setattr(writer, "video_dir", video_dir)
-
-        print(f"[INFO] Video folder: {writer.video_dir}")
-
-    # Make environment. Order must be gymnasium Env -> FrameStack -> IsaacLab
-    env = make_env(env_cfg, writer, args_cli, agent_cfg["models"]["obs_stack"])
-
-    # setup models
+    # Setup models
     policy, value, encoder, value_preprocessor = make_models(env, env_cfg, agent_cfg, dtype)
-    # configure and instantiate PPO agent
+
+    # Configure and instantiate PPO agent
     ppo_agent_cfg = PPO_DEFAULT_CONFIG.copy()
     ppo_agent_cfg.update(agent_cfg["agent"])
     agent = PPO(
@@ -129,71 +105,73 @@ def main(env_cfg, agent_cfg: dict):
         action_space=env.action_space,
         device=env.device,
         writer=writer,
-        auxiliary_task=None,
+        ssl_task=None,
+        dtype=dtype,
+        debug=agent_cfg["experiment"]["debug"],
     )
 
-    # initialize agent
+    # Load checkpoint
     resume_path = os.path.abspath(args_cli.checkpoint)
     agent.load(resume_path)
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
     modules = torch.load(resume_path, map_location=env.device)
-    if type(modules) is dict:
-        for name, data in modules.items():
-            print(name)
+    if isinstance(modules, dict):
+        for name in modules.keys():
+            print(f"  - {name}")
 
-    # get environment (step) dt for real-time evaluation
-    try:
-        dt = env.step_dt
-    except AttributeError:
-        dt = env.unwrapped.step_dt
-
-    # reset environment
-    states, _ = env.reset()
+    # Reset environment
     timestep = 0
-    real_time = True
-    # simulate environment
-    while simulation_app.is_running():
-        start_time = time.time()
+    ep_length = env.env.unwrapped.max_episode_length - 1
 
-        # run everything in inference mode
+    returns = torch.zeros(size=(env.num_envs, 1), device=env.device)
+    mask = torch.Tensor([[1] for _ in range(env.num_envs)]).to(env.device)
+
+    states, infos = env.reset(hard=True)
+
+    # Simulate environment
+    while simulation_app.is_running():
         with torch.inference_mode():
-            # agent stepping
+            # Agent stepping
             z = encoder(states)
             actions, _, _ = agent.policy.act(z, deterministic=True)
 
-            # env stepping
-            states, _, _, _, _ = env.step(actions)
+            # Environment stepping
+            states, rewards, terminated, truncated, infos = env.step(actions)
+
+            # Compute evaluation rewards
+            mask_update = 1 - torch.logical_or(terminated, truncated).float()
+
+            # Update evaluation metrics
+            returns += rewards * mask
+            mask *= mask_update
+
+            # Manually reset eval episodes every ep_length
+            if timestep % ep_length == 0:
+                mean_eval_return = returns.mean().item()
+                print("Reset - Max eval return", returns.max().item())
+                print("Reset - Mean eval return", mean_eval_return)
+                states, infos = env.reset(hard=True)
+
+                returns = torch.zeros(size=(env.num_envs, 1), device=env.device)
+                mask = torch.Tensor([[1] for _ in range(env.num_envs)]).to(env.device)
 
         if args_cli.video:
-            timestep += 1
-            # exit the play loop after recording one video
+            # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
 
-        if args_cli.video and args_cli.video_dir is None:
-            base_log_dir = getattr(writer, "log_dir", None) or agent_cfg.get("log_path", LOG_PATH)
-            args_cli.video_dir = os.path.join(base_log_dir, "videos")
-            os.makedirs(args_cli.video_dir, exist_ok=True)
+        timestep += 1
 
-
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if real_time and sleep_time > 0:
-            time.sleep(sleep_time)
-
-    # close the simulator
+    # Close the simulator
     env.close()
 
 
 if __name__ == "__main__":
     try:
-        # run the main function
         main()
     except Exception as err:
-        carb.log_error(err)
-        carb.log_error(traceback.format_exc())
+        print(err)
         raise
     finally:
-        # close sim app
         print("CLOSING")
         simulation_app.close()
