@@ -45,9 +45,9 @@ class WearEnvCfg(AIRECEnvCfg):
     reset_object_position_noise = 0.05
     reset_goal_position_noise = 0.01  # scale factor for -1 to 1 m
     default_goal_pos = [0.5, 0.5, 0.4]
-    default_right_goal_pos = [0.70, -0.050, 0.607]
-    default_left_goal_pos = [0.70, 0.050, 0.607]
-    default_object_pos = [-0.085, 0.00, 0.647] # 0.13 # 1.07
+    default_right_goal_pos = [0.70, -0.050, 1.07]
+    default_left_goal_pos = [0.70, 0.050, 1.07]
+    default_object_pos = [0.27, 0.00, 1.07] # 0.13 # 1.07
 
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
@@ -61,7 +61,7 @@ class WearEnvCfg(AIRECEnvCfg):
             usd_path=object_usd,
             copy_from_source=True,
             visible=True,
-            scale=(1.0, 1.3, 1.2), # internship:scale=(1.0, 1.4, 1.3)
+            scale=(1.0, 1.4, 1.3),
             # scale=(1.0, 1.5, 1.5),
 
             deformable_props=DeformableBodyPropertiesCfg(
@@ -101,7 +101,7 @@ class WearEnvCfg(AIRECEnvCfg):
 
 
     right_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/world",
+        prim_path="/World/envs/env_.*/Robot/base_link",
         debug_vis=True,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -119,7 +119,7 @@ class WearEnvCfg(AIRECEnvCfg):
     )
 
     left_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/world",
+        prim_path="/World/envs/env_.*/Robot/base_link",
         debug_vis=True,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -136,7 +136,7 @@ class WearEnvCfg(AIRECEnvCfg):
     )
 
     wrist_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/world",
+        prim_path="/World/envs/env_.*/Robot/base_link",
         debug_vis=True,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -376,7 +376,6 @@ class WearEnv(AIRECEnv):
         (
             rewards,
             r_stretch,
-            r_wrist_goal,
             r_right_object_goal,
             r_left_object_goal,
             r_right_ee_goal,
@@ -389,7 +388,6 @@ class WearEnv(AIRECEnv):
             r_angular_left_object_goal,
             r_right_insert,
             r_left_insert,
-            r_success_reward
         ) = compute_rewards(
             self.reaching_object_goal_scale,
             self.reaching_ee_object_scale,
@@ -426,7 +424,6 @@ class WearEnv(AIRECEnv):
         # Keep logs aligned with what's returned/computed
         self.extras["log"] = {
             "r_stretch": r_stretch,
-            "r_wrist_goal": r_wrist_goal,
             "reach_reward_right": r_right_ee_goal,
             "reach_reward_left": r_left_ee_goal,
             "object_goal_tracking": r_object_goal,
@@ -439,7 +436,6 @@ class WearEnv(AIRECEnv):
             "r_angular_left_object_goal": r_angular_left_object_goal,
             "r_right_insert": r_right_insert,
             "r_left_insert": r_left_insert,
-            "r_success_reward": r_success_reward
         }
 
         if "tactile" in self.cfg.obs_list:
@@ -539,7 +535,7 @@ class WearEnv(AIRECEnv):
         # print(f"d_left:{left_insert_out['d'][0:4]} r_left:{left_insert_out['r'][0:4]} c_left:{left_insert_out['c'][0:4]}")
 
         # upper/under distance
-        self.wrist_ee_distance[env_ids] = self.right_gripper_pos[env_ids] - self.goal_wrist_pos[env_ids]
+        self.wrist_ee_distance[env_ids] = self.ee_pos[env_ids] - self.goal_wrist_pos[env_ids]
         self.wrist_ee_euclidean_distance[env_ids] = torch.norm(self.wrist_ee_distance[env_ids], dim=1)
 
         self.top_wrist_distance[env_ids] = self.north_edge_pos[env_ids] - self.goal_wrist_pos[env_ids]
@@ -547,15 +543,15 @@ class WearEnv(AIRECEnv):
         self.top_wrist_euclidean_distance[env_ids] = torch.norm(self.top_wrist_distance[env_ids], dim=1)
         self.under_wrist_euclidean_distance[env_ids] = torch.norm(self.under_wrist_distance[env_ids], dim=1)
         # print(f"east: {self.west_edge_pos[0]} right_goal_pos:{self.right_goal_pos[0]}")
-        self.right_ee_goal_distance[env_ids] = self.right_gripper_pos[env_ids] - self.right_goal_pos[env_ids]
+        self.right_ee_goal_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.right_goal_pos[env_ids]
         self.right_ee_goal_euclidean_distance[env_ids] = torch.norm(self.right_ee_goal_distance[env_ids], dim=1)
-        self.right_ee_goal_rotation[env_ids] = quat_mul(self.right_gripper_rot[env_ids], quat_conjugate(self.right_goal_rot[env_ids]))
-        self.right_ee_goal_angular_distance[env_ids] = rotation_distance(self.right_gripper_rot[env_ids], self.right_goal_rot[env_ids])
+        self.right_ee_goal_rotation[env_ids] = quat_mul(self.right_first_finger_rot[env_ids], quat_conjugate(self.right_goal_rot[env_ids]))
+        self.right_ee_goal_angular_distance[env_ids] = rotation_distance(self.right_first_finger_rot[env_ids], self.right_goal_rot[env_ids])
         # self.left_ee_goal_distance[env_ids] = self.left_l_ee_pos[env_ids] - self.left_goal_pos[env_ids]
-        self.left_ee_goal_distance[env_ids] = self.left_gripper_pos[env_ids] - self.left_goal_pos[env_ids]
+        self.left_ee_goal_distance[env_ids] = self.left_first_finger_pos[env_ids] - self.left_goal_pos[env_ids]
         self.left_ee_goal_euclidean_distance[env_ids] = torch.norm(self.left_ee_goal_distance[env_ids], dim=1)
-        self.left_ee_goal_rotation[env_ids] = quat_mul(self.left_gripper_rot[env_ids], quat_conjugate(self.left_goal_rot[env_ids]))
-        self.left_ee_goal_angular_distance[env_ids] = rotation_distance(self.left_gripper_rot[env_ids], self.left_goal_rot[env_ids])
+        self.left_ee_goal_rotation[env_ids] = quat_mul(self.left_first_finger_rot[env_ids], quat_conjugate(self.left_goal_rot[env_ids]))
+        self.left_ee_goal_angular_distance[env_ids] = rotation_distance(self.left_first_finger_rot[env_ids], self.left_goal_rot[env_ids])
         # print(self.left_ee_goal_euclidean_distance[0], self.right_ee_goal_euclidean_distance[0])
 
 from tasks.airec.airec import distance_reward,distance_cond_reward, joint_vel_penalty, object_goal_reward, angular_distance_reward, insert_success_reward, success_reward, wrist_distance_reward
@@ -588,7 +584,6 @@ def compute_rewards(
     rotation_object_goal_scale: float,
     right_insert_success: torch.Tensor,
     left_insert_success: torch.Tensor,
-    wrist_ee_distance: torch.Tensor,
     wrist_pos: torch.Tensor,
     top_pos: torch.Tensor,
     under_pos: torch.Tensor,
@@ -603,7 +598,7 @@ def compute_rewards(
     stretch_object_scale = 1.0
 
     # reaching reward
-    r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5
+    # r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5
     # print(f"right_ee_goal_euclidean_distance {right_ee_goal_euclidean_distance[0]}, left_ee_goal_euclidean_distance {left_ee_goal_euclidean_distance[0]}")
     # r_right_object_goal = distance_cond_reward(right_ee_goal_euclidean_distance, right_ee_goal_euclidean_distance, minimal_width,std=0.03) * reaching_object_goal_scale  
     # r_left_object_goal = distance_cond_reward(left_ee_goal_euclidean_distance, left_ee_goal_euclidean_distance, minimal_width, std=0.02) * reaching_object_goal_scale 
@@ -626,7 +621,7 @@ def compute_rewards(
 
     # minillion bonus reward
     r_object_goal = object_goal_reward(right_ee_goal_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale
-    r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
-    rewards = r_stretch + r_wrist_goal + r_right_ee_goal + r_left_ee_goal + r_right_ee_object + r_left_ee_object + r_object_goal + r_joint_vel + r_angular_right_ee_goal + r_angular_left_ee_goal + r_angular_right_ee_object + r_angular_left_ee_object + r_right_insert + r_left_insert + r_successed
+    # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
+    rewards = r_stretch  + r_right_ee_goal + r_left_ee_goal + r_right_ee_object + r_left_ee_object + r_object_goal + r_joint_vel + r_angular_right_ee_goal + r_angular_left_ee_goal + r_angular_right_ee_object + r_angular_left_ee_object + r_right_insert + r_left_insert
 
-    return (rewards, r_stretch, r_wrist_goal, r_right_ee_goal, r_left_ee_goal, r_right_ee_object, r_left_ee_object, r_object_goal, r_joint_vel, r_angular_right_ee_goal, r_angular_left_ee_goal, r_angular_right_ee_object, r_angular_left_ee_object, r_right_insert, r_left_insert, r_successed)
+    return (rewards, r_stretch, r_right_ee_goal, r_left_ee_goal, r_right_ee_object, r_left_ee_object, r_object_goal, r_joint_vel, r_angular_right_ee_goal, r_angular_left_ee_goal, r_angular_right_ee_object, r_angular_left_ee_object, r_right_insert, r_left_insert)
