@@ -66,6 +66,7 @@ experiment:
   experiment_name: "wear"
   save_checkpoints: 2
   upload_videos: 0
+  video_dir: "videos"
   tb_log: True
   debug: 0
   wandb: 1

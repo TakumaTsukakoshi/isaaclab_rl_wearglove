@@ -105,7 +105,7 @@ AIREC_CFG = ArticulationCfg(
         "torso_joint_2": radians(30),
         "torso_joint_3": radians(0),
         "head_joint_1": radians(0),
-        "head_joint_2": radians(40),
+        "head_joint_2": radians(0),
         "head_joint_3": radians(0),
         "left_arm_joint_1": radians(33),
         "left_arm_joint_2": radians(-14),

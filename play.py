@@ -67,16 +67,19 @@ def main():
     Loads a checkpoint and runs the agent in the environment, optionally recording videos.
     """
     # Parse configuration
-    env_cfg, agent_cfg = register_task_to_hydra(args_cli.task, "default_cfg")
+    env_cfg, agent_cfg = register_task_to_hydra(args_cli.task, "skrl_cfg_entry_point")
 
-    specialised_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent_cfg)
-    agent_cfg = update_dict(agent_cfg, specialised_cfg)
+    if args_cli.agent_cfg is not None:
+        specialised_cfg = load_cfg_from_registry(args_cli.task, args_cli.agent_cfg)
+        agent_cfg = update_dict(agent_cfg, specialised_cfg)
     dtype = torch.float32
 
     # Set seed (important for seed-deterministic runs)
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     set_seed(agent_cfg["seed"])
     agent_cfg["log_path"] = LOG_PATH
+    if args_cli.video_dir is None:
+        args_cli.video_dir = agent_cfg["experiment"].get("video_dir") or os.path.join(LOG_PATH, "videos")
     agent_cfg["experiment"]["video_dir"] = args_cli.video_dir
 
     # Update the environment config

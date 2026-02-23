@@ -48,8 +48,8 @@ SHADOW_HAND_CFG = ArticulationCfg(
         fixed_tendons_props=sim_utils.FixedTendonPropertiesCfg(limit_stiffness=30.0, damping=0.1),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.95, 0.0, 0.60),
-        # pos=(1.5, 0.0, 1.02),
+        # pos=(0.95, 0.0, 0.60),
+        pos=(0.95, 0.0, 0.90),
         # rot=(0.0, 0.7071, 0.7071, 0.0),
         rot=(0.5, 0.5, -0.5, -0.5),
         joint_pos={

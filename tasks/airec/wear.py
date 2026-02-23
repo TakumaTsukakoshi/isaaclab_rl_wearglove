@@ -47,7 +47,7 @@ class WearEnvCfg(AIRECEnvCfg):
     default_goal_pos = [0.5, 0.5, 0.4]
     default_right_goal_pos = [0.70, -0.050, 0.607]
     default_left_goal_pos = [0.70, 0.050, 0.607]
-    default_object_pos = [-0.085, 0.00, 0.647] # 0.13 # 1.07
+    default_object_pos = [0.09, 0.00, 1.30] # 0.13 # 1.07
 
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
@@ -56,7 +56,7 @@ class WearEnvCfg(AIRECEnvCfg):
 
     object_cfg: DeformableObjectCfg = DeformableObjectCfg(
         prim_path="/World/envs/env_.*/Object",
-        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[1.0, 0.0, 0.0, 0.0]),#rot=[0.7071, 0.0, 0.7071, 0.0]
+        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.7071, 0.0, 0.7071, 0.0]),#rot=[0.7071, 0.0, 0.7071, 0.0] rot=[1.0, 0.0, 0.0, 0.0]
         spawn=UsdFileCfg(
             usd_path=object_usd,
             copy_from_source=True,
@@ -595,7 +595,7 @@ def compute_rewards(
 ):
     joint_vel_penalty_scale = 0
     rotation_ee_object_scale = 0.0 # 1.0
-    rotation_object_goal_scale = 1.5 # 10.0
+    rotation_object_goal_scale = 0.0 # 10.0
     reaching_ee_object_scale = 0.0
     reaching_object_goal_scale = 2.0
     object_goal_tracking_scale = 0.0
@@ -603,7 +603,7 @@ def compute_rewards(
     stretch_object_scale = 1.0
 
     # reaching reward
-    r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5
+    r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 0.0
     # print(f"right_ee_goal_euclidean_distance {right_ee_goal_euclidean_distance[0]}, left_ee_goal_euclidean_distance {left_ee_goal_euclidean_distance[0]}")
     # r_right_object_goal = distance_cond_reward(right_ee_goal_euclidean_distance, right_ee_goal_euclidean_distance, minimal_width,std=0.03) * reaching_object_goal_scale  
     # r_left_object_goal = distance_cond_reward(left_ee_goal_euclidean_distance, left_ee_goal_euclidean_distance, minimal_width, std=0.02) * reaching_object_goal_scale 
@@ -625,7 +625,7 @@ def compute_rewards(
     r_left_insert = insert_success_reward(left_insert_success) * insert_scale
 
     # minillion bonus reward
-    r_object_goal = object_goal_reward(right_ee_goal_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale
+    r_object_goal = object_goal_reward(right_ee_goal_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale*0.0
     r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
     rewards = r_stretch + r_wrist_goal + r_right_ee_goal + r_left_ee_goal + r_right_ee_object + r_left_ee_object + r_object_goal + r_joint_vel + r_angular_right_ee_goal + r_angular_left_ee_goal + r_angular_right_ee_object + r_angular_left_ee_object + r_right_insert + r_left_insert + r_successed
 

@@ -126,7 +126,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         physics_material=DeformableBodyMaterialCfg(
             youngs_modulus=8.0e7,     #  2e5
             poissons_ratio=0.48,      #  0.35
-            density=300.0,            #  300 kg/m^3
+            density=100.0,            #  300 kg/m^3
             damping_scale=1.0,
             elasticity_damping=0.012, #  0.02
             dynamic_friction=0.6,     #  0.6
@@ -225,16 +225,24 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         "right_arm_joint_7",
     ]
     
+    # actuated_lhand_joints=[
+    #     "left_gripper_mimic_joint",
+    #     "left_gripper_finger_joint",
+    # ]
+
+    # actuated_rhand_joints=[
+    #     "right_gripper_mimic_joint",
+    #     "right_gripper_finger_joint",
+    # ]
     actuated_lhand_joints=[
-        "left_gripper_mimic_joint",
-        "left_gripper_finger_joint",
+        "left_gripper_right_finger_joint",
+        "left_gripper_left_finger_joint",
     ]
 
     actuated_rhand_joints=[
-        "right_gripper_mimic_joint",
-        "right_gripper_finger_joint",
+        "right_gripper_right_finger_joint",
+        "right_gripper_left_finger_joint",
     ]
-
     base_wheels=[
         "base_front_left_wheel_joint",
         "base_front_right_wheel_joint",
@@ -249,8 +257,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # actuated_joint_names = base_wheels + actuated_base_joints + actuated_head_joints + actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
 
-    # currently 37
-    actuated_joint_names = actuated_head_joints + actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints 
+    # currently 21 (torso + larm + rarm + lhand_gripper + rhand_gripper, excluding head)
+    actuated_joint_names =  actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints 
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -815,93 +823,69 @@ class AIRECEnv(DirectRLEnv):
         self.last_action = self.joint_pos_cmd[:, self.actuated_dof_indices]
         self.actions = actions.clone()
 
-    # def _apply_action(self) -> None:
-    #     """
-    #     Apply actions to the robot. Called multiple times per RL step for decimation.
-    #     """
-       
-    #     self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-    #         self.actions,
-    #         self.robot_dof_lower_limits[self.actuated_dof_indices],
-    #         self.robot_dof_upper_limits[self.actuated_dof_indices],
-    #     )
-    #     self.joint_pos_cmd[:, self.actuated_dof_indices] = (
-    #         self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
-    #         + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
-    #     )
-    #     self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-    #         self.joint_pos_cmd[:, self.actuated_dof_indices],
-    #         self.robot_dof_lower_limits[self.actuated_dof_indices],
-    #         self.robot_dof_upper_limits[self.actuated_dof_indices],
-    #     )
-    #     self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
-
-    #     head_names = ["head_joint_1", "head_joint_2", "head_joint_3"]
-    #     head_idx = [self.robot.joint_names.index(n) for n in head_names]
-    #     self.joint_pos_cmd[:, head_idx] = self.robot.data.default_joint_pos[:, head_idx]
-    #     mimic_joint_names = ["left_gripper_mimic_joint", "right_gripper_mimic_joint"]
-    #     mimic_idx = [self.robot.joint_names.index(n) for n in mimic_joint_names]
-    #     self.joint_pos_cmd[:, mimic_idx] = self.robot.data.default_joint_pos[:, mimic_idx]
-
-
-    #     ids = sorted(set(self.actuated_dof_indices) | set(head_idx) | set(mimic_idx))
-    #     self.robot.set_joint_position_target(self.joint_pos_cmd[:, ids], joint_ids=ids)
+    
     def _apply_action(self) -> None:
         """
         Apply actions to the robot. Called multiple times per RL step for decimation.
         """
 
-        # --- (1) 通常のアクチュエータDOFに対して action -> joint_pos_cmd を作る ---
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-            self.actions,
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = (
-            self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
-            + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-            self.joint_pos_cmd[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
+        # self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
+        #     self.actions,
+        #     self.robot_dof_lower_limits[self.actuated_dof_indices],
+        #     self.robot_dof_upper_limits[self.actuated_dof_indices],
+        # )
+        # self.joint_pos_cmd[:, self.actuated_dof_indices] = (
+        #     self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
+        #     + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
+        # )
+        # self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
+        #     self.joint_pos_cmd[:, self.actuated_dof_indices],
+        #     self.robot_dof_lower_limits[self.actuated_dof_indices],
+        #     self.robot_dof_upper_limits[self.actuated_dof_indices],
+        # )
+        # self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
 
-        head_names = ["head_joint_1", "head_joint_2", "head_joint_3"]
-        head_idx = [self.robot.joint_names.index(n) for n in head_names]
-        self.joint_pos_cmd[:, head_idx] = self.robot.data.default_joint_pos[:, head_idx]
+        # # head_names = ["head_joint_1", "head_joint_2", "head_joint_3"]
+        # # head_idx = [self.robot.joint_names.index(n) for n in head_names]
+        # # self.joint_pos_cmd[:, head_idx] = self.robot.data.default_joint_pos[:, head_idx]
 
-        lf_name = "left_gripper_finger_joint"
-        rf_name = "right_gripper_finger_joint"
-        lm_name = "left_gripper_mimic_joint"
-        rm_name = "right_gripper_mimic_joint"
+        # lf_name = "left_gripper_left_finger_joint"
+        # rf_name = "right_gripper_left_finger_joint"
+        # lm_name = "left_gripper_right_finger_joint"
+        # rm_name = "right_gripper_right_finger_joint"
 
-        lf = self.robot.joint_names.index(lf_name)
-        rf = self.robot.joint_names.index(rf_name)
-        lm = self.robot.joint_names.index(lm_name)
-        rm = self.robot.joint_names.index(rm_name)
+        # lf = self.robot.joint_names.index(lf_name)
+        # rf = self.robot.joint_names.index(rf_name)
+        # lm = self.robot.joint_names.index(lm_name)
+        # rm = self.robot.joint_names.index(rm_name)
 
-        multiplier = 0.5
-        offset = 0.0
+        # multiplier = 0.5
+        # offset = 0.0
 
-        # mimic target = 0.5 * finger target (+ offset)
-        self.joint_pos_cmd[:, lm] = multiplier * self.joint_pos_cmd[:, lf] + offset
-        self.joint_pos_cmd[:, rm] = multiplier * self.joint_pos_cmd[:, rf] + offset
+        # # mimic target = 0.5 * finger target (+ offset)
+        # self.joint_pos_cmd[:, lm] = multiplier * self.joint_pos_cmd[:, lf] + offset
+        # self.joint_pos_cmd[:, rm] = multiplier * self.joint_pos_cmd[:, rf] + offset
 
-        self.joint_pos_cmd[:, lm] = saturate(
-            self.joint_pos_cmd[:, lm],
-            self.robot_dof_lower_limits[lm],
-            self.robot_dof_upper_limits[lm],
-        )
-        self.joint_pos_cmd[:, rm] = saturate(
-            self.joint_pos_cmd[:, rm],
-            self.robot_dof_lower_limits[rm],
-            self.robot_dof_upper_limits[rm],
-        )
+        # self.joint_pos_cmd[:, lm] = saturate(
+        #     self.joint_pos_cmd[:, lm],
+        #     self.robot_dof_lower_limits[lm],
+        #     self.robot_dof_upper_limits[lm],
+        # )
+        # self.joint_pos_cmd[:, rm] = saturate(
+        #     self.joint_pos_cmd[:, rm],
+        #     self.robot_dof_lower_limits[rm],
+        #     self.robot_dof_upper_limits[rm],
+        # )
 
-        ids = sorted(set(self.actuated_dof_indices) | set(head_idx) | set([lm, rm]))
-        self.robot.set_joint_position_target(self.joint_pos_cmd[:, ids], joint_ids=ids)
+        # ids = sorted(set(self.actuated_dof_indices) | set([lm, rm]))
+        # self.robot.set_joint_position_target(self.joint_pos_cmd[:, ids], joint_ids=ids)
+        default_joint_pos = self.robot.data.default_joint_pos
+        joint_vel = torch.zeros_like(default_joint_pos)
+        self.joint_pos_cmd[:, :] = default_joint_pos
+        self.prev_joint_pos_cmd[:, :] = default_joint_pos
+        self.robot.set_joint_position_target(default_joint_pos)
+        self.robot.write_joint_state_to_sim(default_joint_pos, joint_vel)
+        return
 
 
 
