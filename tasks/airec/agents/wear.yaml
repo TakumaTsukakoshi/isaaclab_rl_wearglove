@@ -57,7 +57,7 @@ agent:
   augment: False
 
 trainer:
-  num_eval_envs: 10
+  num_eval_envs: 2
   max_global_timesteps_M: 200
 
 # logging and checkpoints

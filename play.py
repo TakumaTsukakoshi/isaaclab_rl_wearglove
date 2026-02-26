@@ -18,7 +18,7 @@ from isaaclab.app import AppLauncher
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from skrl.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during playback.")
-parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -151,8 +151,6 @@ def main():
             # Manually reset eval episodes every ep_length
             if timestep % ep_length == 0:
                 mean_eval_return = returns.mean().item()
-                print("Reset - Max eval return", returns.max().item())
-                print("Reset - Mean eval return", mean_eval_return)
                 states, infos = env.reset(hard=True)
 
                 returns = torch.zeros(size=(env.num_envs, 1), device=env.device)

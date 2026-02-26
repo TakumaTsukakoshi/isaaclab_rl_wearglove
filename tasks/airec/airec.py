@@ -79,7 +79,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0  # 5 * 120 / 2 = 300 timesteps
 
     num_observations = 0
-    num_actions = 40
+    num_actions = 17
     num_states = 0
 
     # isaac 4.5 stuff
@@ -126,7 +126,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         physics_material=DeformableBodyMaterialCfg(
             youngs_modulus=8.0e7,     #  2e5
             poissons_ratio=0.48,      #  0.35
-            density=100.0,            #  300 kg/m^3
+            density=200.0,            #  300 kg/m^3
             damping_scale=1.0,
             elasticity_damping=0.012, #  0.02
             dynamic_friction=0.6,     #  0.6
@@ -243,6 +243,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         "right_gripper_right_finger_joint",
         "right_gripper_left_finger_joint",
     ]
+
     base_wheels=[
         "base_front_left_wheel_joint",
         "base_front_right_wheel_joint",
@@ -258,7 +259,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # actuated_joint_names = base_wheels + actuated_base_joints + actuated_head_joints + actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
 
     # currently 21 (torso + larm + rarm + lhand_gripper + rhand_gripper, excluding head)
-    actuated_joint_names =  actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints 
+    actuated_joint_names =  actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints 
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -268,14 +269,15 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     marker_cfg.prim_path = "/Visuals/EndEffectorFrameTransformer"
 
     # frame transformers for fingertips
-    left_gripper_config: FrameTransformerCfg = FrameTransformerCfg(
+    # left_gripper_config
+    left_gripper_r_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=True,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
                 prim_path="/World/envs/env_.*/Robot/left_gripper_right_finger_base_link",
-                name="left_gripper",
+                name="left_gripper_r",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[0.0, 0.0, 1.0, 0.0]
@@ -284,14 +286,31 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         ],
     )
 
-    right_gripper_config: FrameTransformerCfg = FrameTransformerCfg(
+    left_gripper_l_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=True,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
-                prim_path="/World/envs/env_.*/Robot/right_gripper_left_finger_base_link",
-                name="right_gripper",
+                prim_path="/World/envs/env_.*/Robot/left_gripper_left_finger_base_link",
+                name="left_gripper_l",
+                offset=OffsetCfg(
+                    pos=[0.0, 0.0, 0.0],
+                    rot=[0.0, 0.0, 1.0, 0.0]
+                ),
+            )
+        ],
+    )
+
+    # right_gripper_config
+    right_gripper_r_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
+        debug_vis=True,
+        visualizer_cfg=marker_cfg,
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path="/World/envs/env_.*/Robot/right_gripper_right_finger_base_link",
+                name="right_gripper_r",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[1.0, 0.0, 0.0, 0.0]
@@ -300,6 +319,23 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         ],
     )
 
+    right_gripper_l_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
+        debug_vis=True,
+        visualizer_cfg=marker_cfg,
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path="/World/envs/env_.*/Robot/right_gripper_left_finger_base_link",
+                name="right_gripper_l",
+                offset=OffsetCfg(
+                    pos=[0.0, 0.0, 0.0],
+                    rot=[1.0, 0.0, 0.0, 0.0]
+                ),
+            )
+        ],
+    )
+
+    # frame transformers for anchors
     anchor_east_marker_cfg = FRAME_MARKER_CFG.copy()
     anchor_east_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_east_marker_cfg.prim_path = "/World/Visuals/AnchorEastMarker"
@@ -473,7 +509,9 @@ class AIRECEnv(DirectRLEnv):
 
         # self._arm_cols = [self._actuated_name_to_col[n] for n in self.cfg.arm_names]
         # self._chest_head_cols = [self._actuated_name_to_col[n] for n in self.cfg.chest_head_names]
-        self._grip_cols = [self._actuated_name_to_col[n] for n in self.cfg.actuated_lhand_joints + self.cfg.actuated_rhand_joints]
+        # Create mapping for grip cols from all robot joints (not just actuated ones)
+        all_joint_name_to_col = {name: i for i, name in enumerate(self.robot.joint_names)}
+        self._grip_cols = [all_joint_name_to_col[n] for n in self.cfg.actuated_lhand_joints + self.cfg.actuated_rhand_joints]
         self.actuated_idx = torch.tensor(self.actuated_dof_indices, device=self.device, dtype=torch.long)
         self._grip_step_count = 0
 
@@ -499,11 +537,16 @@ class AIRECEnv(DirectRLEnv):
         self.object_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.object_rot = torch.zeros((self.num_envs, 4), device=self.device)
         # right_gripper
-        self.right_gripper_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_gripper_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.right_gripper_r_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_gripper_r_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.right_gripper_l_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_gripper_l_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        
         # left_gripper
-        self.left_gripper_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_gripper_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.left_gripper_r_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_gripper_r_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.left_gripper_l_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_gripper_l_rot = torch.zeros((self.num_envs, 4), device=self.device)
         # ee
         # self.ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
         # self.ee_rot = torch.zeros((self.num_envs, 4), device=self.device)
@@ -601,7 +644,7 @@ class AIRECEnv(DirectRLEnv):
             "object_found_med": None,
             "object_found_hard": None,
         }
-        self._vis_enabled = True
+        self._vis_enabled = False
 
     def _configure_gym_env_spaces(self):
         pass
@@ -631,10 +674,14 @@ class AIRECEnv(DirectRLEnv):
         self._add_object_to_scene()
 
         # FrameTransformer provides interface for reporting the transform of
-        self.left_gripper_frame = FrameTransformer(self.cfg.left_gripper_config)
-        self.left_gripper_frame.set_debug_vis(False)
-        self.right_gripper_frame = FrameTransformer(self.cfg.right_gripper_config)
-        self.right_gripper_frame.set_debug_vis(False)
+        self.left_gripper_r_frame = FrameTransformer(self.cfg.left_gripper_r_config)
+        self.left_gripper_r_frame.set_debug_vis(False)
+        self.left_gripper_l_frame = FrameTransformer(self.cfg.left_gripper_l_config)
+        self.left_gripper_l_frame.set_debug_vis(False)
+        self.right_gripper_r_frame = FrameTransformer(self.cfg.right_gripper_r_config)
+        self.right_gripper_r_frame.set_debug_vis(False)
+        self.right_gripper_l_frame = FrameTransformer(self.cfg.right_gripper_l_config)
+        self.right_gripper_l_frame.set_debug_vis(False)
         #################################################################################
 
         rb_east_path_env0 = "/World/envs/env_0/Visuals/AnchorEast/Geom"
@@ -722,6 +769,12 @@ class AIRECEnv(DirectRLEnv):
         self.anchor_north_tf = FrameTransformer(self.cfg.anchor_north_tf_cfg)
         self.anchor_south_tf = FrameTransformer(self.cfg.anchor_south_tf_cfg)
         self.anchor_center_tf = FrameTransformer(self.cfg.anchor_center_tf_cfg)
+        # Show only west anchor marker
+        self.anchor_east_tf.set_debug_vis(False)
+        self.anchor_west_tf.set_debug_vis(False)
+        self.anchor_north_tf.set_debug_vis(False)
+        self.anchor_south_tf.set_debug_vis(False)
+        self.anchor_center_tf.set_debug_vis(False)
         self.scene.rigid_objects["anchor_east"] = self.anchor_east_rb
         self.scene.rigid_objects["anchor_west"] = self.anchor_west_rb
         self.scene.rigid_objects["anchor_north"] = self.anchor_north_rb
@@ -731,8 +784,10 @@ class AIRECEnv(DirectRLEnv):
         # register to scene
         self.scene.articulations["robot"] = self.robot
         self.scene.articulations["hand"] = self.hand
-        self.scene.sensors["left_gripper_frame"] = self.left_gripper_frame
-        self.scene.sensors["right_gripper_frame"] = self.right_gripper_frame
+        self.scene.sensors["left_gripper_r_frame"] = self.left_gripper_r_frame
+        self.scene.sensors["left_gripper_l_frame"] = self.left_gripper_l_frame
+        self.scene.sensors["right_gripper_r_frame"] = self.right_gripper_r_frame
+        self.scene.sensors["right_gripper_l_frame"] = self.right_gripper_l_frame
         self.scene.sensors["anchor_east_tf"] = self.anchor_east_tf
         self.scene.sensors["anchor_west_tf"] = self.anchor_west_tf
         self.scene.sensors["anchor_south_tf"] = self.anchor_south_tf
@@ -828,66 +883,39 @@ class AIRECEnv(DirectRLEnv):
         """
         Apply actions to the robot. Called multiple times per RL step for decimation.
         """
-
-        # self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-        #     self.actions,
-        #     self.robot_dof_lower_limits[self.actuated_dof_indices],
-        #     self.robot_dof_upper_limits[self.actuated_dof_indices],
-        # )
-        # self.joint_pos_cmd[:, self.actuated_dof_indices] = (
-        #     self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
-        #     + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
-        # )
-        # self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-        #     self.joint_pos_cmd[:, self.actuated_dof_indices],
-        #     self.robot_dof_lower_limits[self.actuated_dof_indices],
-        #     self.robot_dof_upper_limits[self.actuated_dof_indices],
-        # )
-        # self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
-
-        # # head_names = ["head_joint_1", "head_joint_2", "head_joint_3"]
-        # # head_idx = [self.robot.joint_names.index(n) for n in head_names]
-        # # self.joint_pos_cmd[:, head_idx] = self.robot.data.default_joint_pos[:, head_idx]
-
-        # lf_name = "left_gripper_left_finger_joint"
-        # rf_name = "right_gripper_left_finger_joint"
-        # lm_name = "left_gripper_right_finger_joint"
-        # rm_name = "right_gripper_right_finger_joint"
-
-        # lf = self.robot.joint_names.index(lf_name)
-        # rf = self.robot.joint_names.index(rf_name)
-        # lm = self.robot.joint_names.index(lm_name)
-        # rm = self.robot.joint_names.index(rm_name)
-
-        # multiplier = 0.5
-        # offset = 0.0
-
-        # # mimic target = 0.5 * finger target (+ offset)
-        # self.joint_pos_cmd[:, lm] = multiplier * self.joint_pos_cmd[:, lf] + offset
-        # self.joint_pos_cmd[:, rm] = multiplier * self.joint_pos_cmd[:, rf] + offset
-
-        # self.joint_pos_cmd[:, lm] = saturate(
-        #     self.joint_pos_cmd[:, lm],
-        #     self.robot_dof_lower_limits[lm],
-        #     self.robot_dof_upper_limits[lm],
-        # )
-        # self.joint_pos_cmd[:, rm] = saturate(
-        #     self.joint_pos_cmd[:, rm],
-        #     self.robot_dof_lower_limits[rm],
-        #     self.robot_dof_upper_limits[rm],
-        # )
-
-        # ids = sorted(set(self.actuated_dof_indices) | set([lm, rm]))
-        # self.robot.set_joint_position_target(self.joint_pos_cmd[:, ids], joint_ids=ids)
-        default_joint_pos = self.robot.data.default_joint_pos
-        joint_vel = torch.zeros_like(default_joint_pos)
-        self.joint_pos_cmd[:, :] = default_joint_pos
-        self.prev_joint_pos_cmd[:, :] = default_joint_pos
-        self.robot.set_joint_position_target(default_joint_pos)
-        self.robot.write_joint_state_to_sim(default_joint_pos, joint_vel)
-        return
-
-
+        # Check if policy is enabled (for environments with pregrasp phase)
+        if hasattr(self, '_policy_enabled') and not self._policy_enabled:
+            # Pregrasp phase is being handled by child class, don't apply policy actions
+            return
+        
+        # Scale actions from [-1, 1] to joint limits
+        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
+            self.actions,
+            self.robot_dof_lower_limits[self.actuated_dof_indices],
+            self.robot_dof_upper_limits[self.actuated_dof_indices],
+        )
+        
+        # Apply moving average for smooth control
+        self.joint_pos_cmd[:, self.actuated_dof_indices] = (
+            self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
+            + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
+        )
+        
+        # Clamp to joint limits
+        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
+            self.joint_pos_cmd[:, self.actuated_dof_indices],
+            self.robot_dof_lower_limits[self.actuated_dof_indices],
+            self.robot_dof_upper_limits[self.actuated_dof_indices],
+        )
+        
+        # Update previous command
+        self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
+        
+        # Set joint position targets
+        self.robot.set_joint_position_target(
+            self.joint_pos_cmd[:, self.actuated_dof_indices], 
+            joint_ids=self.actuated_dof_indices
+        )
 
     def scale_smooth_action(self, action):
         self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
@@ -950,17 +978,10 @@ class AIRECEnv(DirectRLEnv):
             (
                 self.normalised_joint_pos,
                 self.normalised_joint_vel,
-               
-                self.right_gripper_pos,
-                self.right_gripper_rot,
-                self.left_gripper_pos,
-                self.left_gripper_rot,
-                # self.left_first_upper_finger_pos,
-                # self.left_first_upper_finger_rot,
-                # self.right_thumb_pos,
-                # self.right_thumb_rot,
-                # self.left_thumb_pos,
-                # self.left_thumb_rot,
+                self.right_gripper_r_pos,
+                self.right_gripper_l_pos,
+                self.left_gripper_r_pos,
+                self.left_gripper_l_pos,
                 self.actions,
             ),
             dim=-1,
@@ -995,9 +1016,7 @@ class AIRECEnv(DirectRLEnv):
                 # euclidean distance (1,)
                 self.goal_euclidean_distance.unsqueeze(1),
                 # euclidean distance (1,)
-                self.ee_goal_euclidean_distance.unsqueeze(1),
-
-                
+                self.ee_goal_euclidean_distance.unsqueeze(1), 
 
             ),
             dim=-1,
@@ -1081,7 +1100,7 @@ class AIRECEnv(DirectRLEnv):
             
         super()._reset_idx(env_ids)    
       
-        self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[1.0, 0.0, 0.0])
+        self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[0.0, 0.0, -1.0])
         # print("Anchor idx:", self.anchor_idx)
         self.prev_anchor_idx = self.anchor_idx
            
@@ -1105,10 +1124,13 @@ class AIRECEnv(DirectRLEnv):
         self._compute_intermediate_values(env_ids=env_ids)
         _ = self._get_rewards()
 
-        self._policy_enabled = False
-        self._phase = "pregrasp"
-        self._pregrasp_steps = 0
-        self._grip_latched_q = None
+        # Only set these for environments without custom pregrasp implementation
+        # (WearEnv overrides _reset_idx and manages these per-environment)
+        if not hasattr(self, '_policy_enabled') or not isinstance(self._policy_enabled, torch.Tensor):
+            self._policy_enabled = False
+            self._phase = "pregrasp"
+            self._pregrasp_steps = 0
+            self._grip_latched_q = None
         # print("[INFO]: PHASE RESET → pregrasp")
 
     def _reset_deformable_pose(self, env_ids):
@@ -1539,15 +1561,10 @@ class AIRECEnv(DirectRLEnv):
         
         #################### validate aperture ############ #################
         # self.right_ee_distance[env_ids] = ((self.right_first_finger_pos[env_ids] + self.right_first_upper_finger_pos[env_ids])/2) - self.right_thumb_pos[env_ids]
-        self.right_ee_distance[env_ids] = self.right_gripper_pos[env_ids] - self.right_gripper_pos[env_ids]
+        self.right_ee_distance[env_ids] = self.right_gripper_r_pos[env_ids] - self.right_gripper_r_pos[env_ids]
         self.right_ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_distance[env_ids], dim=1)
-        self.left_ee_distance[env_ids] = self.left_gripper_pos[env_ids] - self.left_gripper_pos[env_ids]
+        self.left_ee_distance[env_ids] = self.left_gripper_r_pos[env_ids] - self.left_gripper_r_pos[env_ids]
         self.left_ee_euclidean_distance[env_ids] = torch.norm(self.left_ee_distance[env_ids], dim=1)
-        # left_closed  = self.left_ee_euclidean_distance[env_ids] < self._grasp_min_distance
-        # right_closed = self.right_ee_euclidean_distance[env_ids]< self._grasp_min_distance
-        # print(f"left_ee_euclidean_distance: {self.left_ee_euclidean_distance[0]}, right_ee_euclidean_distance: {self.right_ee_euclidean_distance[0]}")
-        # print(f"left_closed: {left_closed}, right_closed: {right_closed}")
-        # self._grasp = left_closed & right_closed
         ######################################################################
 
         # joint vel roughly between -2.5, 2.5, so dividing by 3.
@@ -1565,10 +1582,8 @@ class AIRECEnv(DirectRLEnv):
         # self.ee_pos[env_ids] = (self.right_first_finger_pos[env_ids] + self.left_first_finger_pos[env_ids])/2
         
         ################################## conform of left/right ee pos ##########################
-        self.right_ee_left_ee_distance[env_ids] = self.left_gripper_pos[env_ids] - self.right_gripper_pos[env_ids]
+        self.right_ee_left_ee_distance[env_ids] = self.left_gripper_r_pos[env_ids] - self.right_gripper_r_pos[env_ids]
         self.ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_left_ee_distance[env_ids], dim=1)
-        self.right_ee_left_ee_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.left_ee_rot[env_ids]))
-        self.ee_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.left_ee_rot[env_ids])
         self.ee_goal_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.goal_euclidean_distance[env_ids])
         # print(f"ee_goal_euclidean_distance: {self.ee_euclidean_distance[0]}, goal_distance:{self.goal_euclidean_distance[0]}")
         env_all = torch.arange(self.num_envs, device=self.device, dtype=torch.int32)
@@ -1588,29 +1603,28 @@ class AIRECEnv(DirectRLEnv):
         self.south_edge_rot[env_ids] = self.anchor_south_tf.data.target_quat_source[..., 0, :][env_ids]
 
         # gripper and ee distances #############################################################checkn direction!!!!!!!!!
-        # self.right_ee_object_distance[env_ids] = ((self.right_first_finger_pos[env_ids] + self.right_first_upper_finger_pos[env_ids])/2) - self.west_edge_pos[env_ids]
-        self.right_ee_object_distance[env_ids] = self.right_gripper_pos[env_ids] - self.west_edge_pos[env_ids]
+        self.right_gripper_r_pos[env_ids] = self.right_gripper_r_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.right_gripper_l_pos[env_ids] = self.right_gripper_l_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.left_gripper_r_pos[env_ids] = self.left_gripper_r_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.left_gripper_l_pos[env_ids] = self.left_gripper_l_frame.data.target_pos_source[..., 0, :][env_ids]
+
+        self.right_ee_object_distance[env_ids] = self.right_gripper_r_pos[env_ids] - self.west_edge_pos[env_ids]
         self.right_ee_object_euclidean_distance[env_ids] = torch.norm(self.right_ee_object_distance[env_ids], dim=1)
         # print(f"self.right_ee_object_euclidean_distance:{self.right_ee_object_euclidean_distance}")
         # self.right_ee_object_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.west_edge_rot[env_ids]))
         # self.right_ee_object_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.west_edge_rot[env_ids])
 
         # self.left_ee_object_distance[env_ids] = ((self.left_first_finger_pos[env_ids] + self.left_first_upper_finger_pos[env_ids])/2) - self.east_edge_pos[env_ids]
-        self.left_ee_object_distance[env_ids] = self.left_gripper_pos[env_ids] - self.east_edge_pos[env_ids]
+        self.left_ee_object_distance[env_ids] = self.left_gripper_r_pos[env_ids] - self.east_edge_pos[env_ids]
         self.left_ee_object_euclidean_distance[env_ids] = torch.norm(self.left_ee_object_distance[env_ids], dim=1)
         # print(f"self.left_ee_object_euclidean_distance:{self.left_ee_object_euclidean_distance}")
         # self.left_ee_object_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.east_edge_rot[env_ids]))
         # self.left_ee_object_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.east_edge_rot[env_ids])
         
-        if not self._vis_enabled:
-            if (self.anchor_east_tf.data is not None and self.anchor_west_tf.data is not None):
-                self.anchor_east_tf.set_debug_vis(True) 
-                self.anchor_west_tf.set_debug_vis(True) 
-                # self.anchor_north_tf.set_debug_vis(True) 
-                # self.anchor_south_tf.set_debug_vis(True) 
-                # self.right_first_finger_frame.set_debug_vis(True) # right-west
-                # self.left_first_finger_frame.set_debug_vis(True)   # left-east
-                self._vis_enabled = True
+        self.anchor_east_tf.set_debug_vis(False)
+        self.anchor_west_tf.set_debug_vis(True)
+        self.anchor_north_tf.set_debug_vis(False)
+        self.anchor_south_tf.set_debug_vis(False)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
