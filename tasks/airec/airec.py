@@ -72,7 +72,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     physics_dt = 1 / 240  # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
-    decimation = 4  # 10 # # 50 Hz
+    decimation = 4  # 10 # # 50 Hz # default 4 
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -123,13 +123,21 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         #     static_friction=1.0,
         #     dynamic_friction=1.0,
         # ),
+        # physics_material=DeformableBodyMaterialCfg(
+        #     youngs_modulus=8.0e7,     #  2e5
+        #     poissons_ratio=0.48,      #  0.35
+        #     density=200.0,            #  300 kg/m^3
+        #     damping_scale=1.0,
+        #     elasticity_damping=0.012, #  0.02
+        #     dynamic_friction=0.6,     #  0.6
+        # ),
         physics_material=DeformableBodyMaterialCfg(
-            youngs_modulus=8.0e7,     #  2e5
-            poissons_ratio=0.48,      #  0.35
-            density=200.0,            #  300 kg/m^3
+            youngs_modulus=1.0e6,     
+            poissons_ratio=0.49,      
+            density=200.0,            
             damping_scale=1.0,
-            elasticity_damping=0.012, #  0.02
-            dynamic_friction=0.6,     #  0.6
+            elasticity_damping=0.012, 
+            dynamic_friction=1.0   
         ),
             
         # physx=PhysxCfg(
@@ -153,6 +161,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             # gpu_temp_buffer_capacity=2**18, # default 2**20
             # gpu_max_soft_body_contacts= 2**18, # default 2**20 
             # gpu_collision_stack_size=2**26, # default 2**26
+            min_position_iteration_count=64
         ),
         render=RenderCfg(
             antialiasing_mode="DLAA",

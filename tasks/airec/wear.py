@@ -45,28 +45,35 @@ class WearEnvCfg(AIRECEnvCfg):
     default_goal_pos = [0.5, 0.5, 0.4]
     default_right_goal_pos = [0.70, -0.050, 0.607]
     default_left_goal_pos = [0.70, 0.050, 0.607]
-    default_object_pos = [0.09, 0.00, 1.25] # 0.13 # 1.07
-
+    # default_object_pos = [0.085, 0.00, 1.18] # 0.13 # 1.07 # 0.09 #[16.4.0.09]
+    default_object_pos = [0.09, 0.00, 1.25] # position iteration 64
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
 
     object_usd = '/home/tamon/code/isaaclab_rl_wearglove/assets/Glove/GL_Gloves068/GL_Gloves068_obj_revise.usd'
+    # object_usd = '/home/tamon/code/isaaclab_rl_wearglove/assets/torus/torus.usdz'
 
     object_cfg: DeformableObjectCfg = DeformableObjectCfg(
         prim_path="/World/envs/env_.*/Object",
         init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.7071, 0.0, 0.7071, 0.0]),#rot=[0.7071, 0.0, 0.7071, 0.0] rot=[1.0, 0.0, 0.0, 0.0]
+        # init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.7071, 0.0, 0.0,0.7071]),
         spawn=UsdFileCfg(
             usd_path=object_usd,
             copy_from_source=True,
             visible=True,
             scale=(1.0, 1.4, 1.3), # internship:scale=(1.0, 1.4, 1.3), (1.0, 1.3, 1.2)
-            # scale=(1.0, 1.5, 1.5),
+            # scale=(0.6, 0.6, 0.6),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=False,
+                contact_offset=0.01, # default 0.005
+                rest_offset=0.006, # default 0.003
+            ),
 
             deformable_props=DeformableBodyPropertiesCfg(
                 deformable_enabled=True,
                 kinematic_enabled=False,
                 self_collision=True,
-                simulation_hexahedral_resolution=45,  # default 10 
+                simulation_hexahedral_resolution=36,  # default 10 
                 collision_simplification=True,
                 collision_simplification_remeshing=True,
                 collision_simplification_remeshing_resolution=30, # 40
@@ -76,8 +83,10 @@ class WearEnvCfg(AIRECEnvCfg):
                 # rest_offset=0.003, # default
                 # contact_offset=0.015,
                 # rest_offset=0.01,
-                contact_offset=0.025,
-                rest_offset=0.015,
+                # contact_offset=0.01,
+                # rest_offset=0.006, # 0.002
+                # contact_offset=0.006,
+                # rest_offset=0.003,
                 # contact_offset=0.01,
                 # rest_offset=-0.01,
             ),
@@ -232,6 +241,7 @@ class WearEnv(AIRECEnv):
         self._grip_close_vec = torch.zeros((self.num_envs, num_grip_joints), device=self.device)
 
         close_ratio = 0.10  # 0.0=lower (完全に閉じる) / 0.1=少し開けたまま # 0.3 close without penetrating
+
         for i, col in enumerate(self._grip_cols):
             lo = self.robot_dof_lower_limits[col]  # だいたい0.00
             hi = self.robot_dof_upper_limits[col]  # だいたい0.04
@@ -303,6 +313,9 @@ class WearEnv(AIRECEnv):
         self.left_insert_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.left_insert_dwell = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
 
+        self.glove_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.glove_euclidean_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+
     def _check_grasp_achieved(self) -> torch.Tensor:
         """
         Check if the gripper has successfully grasped the object.
@@ -367,9 +380,11 @@ class WearEnv(AIRECEnv):
             # Set joint targets and write to sim (only for pregrasp envs)
             self.joint_pos_cmd[pregrasp_env_ids] = joint_pos_cmd_pregrasp
             self.prev_joint_pos_cmd[pregrasp_env_ids] = joint_pos_cmd_pregrasp
+
+        
             self.robot.set_joint_position_target(joint_pos_cmd_pregrasp, env_ids=pregrasp_env_ids)
             self.robot.write_joint_state_to_sim(joint_pos_cmd_pregrasp, joint_vel, env_ids=pregrasp_env_ids)
-            
+             
             # Increment step counter for pregrasp environments
             self._pregrasp_steps[pregrasp_env_ids] += 1
             
@@ -380,7 +395,8 @@ class WearEnv(AIRECEnv):
             max_steps_reached = self._pregrasp_steps >= self._pregrasp_total_steps
             enable_policy_mask = grasp_achieved | max_steps_reached
             enable_env_ids = enable_policy_mask.nonzero(as_tuple=False).squeeze(-1)
-            self._policy_enabled[enable_env_ids] = True
+            # self._policy_enabled[enable_env_ids] = True
+            # TODO after achieving grasp correctly, I'll fix the pregrasp phase to end immediately when grasp is achieved, so that the policy can take over right after successful grasp
             
         # Policy phase: apply actions from policy for environments with policy enabled
         policy_env_ids = self._policy_enabled.nonzero(as_tuple=False).squeeze(-1)
@@ -656,7 +672,10 @@ class WearEnv(AIRECEnv):
         # self.goal_east_markers.visualize(self.goal_east_pos, self.goal_east_rot)
         # self.goal_west_markers.visualize(self.goal_west_pos, self.goal_west_rot)
         # self.goal_cent_markers.visualize(self.goal_cent_pos, self.goal_cent_rot)
-        
+        self.glove_distance[env_ids] = self.goal_east_pos[env_ids] - self.goal_west_pos[env_ids]
+        self.glove_euclidean_distance[env_ids] = torch.norm(self.glove_distance[env_ids], dim=1)
+        print(f"glove distance: {self.glove_euclidean_distance[0]}")
+
         B = len(env_ids)
         dt_b = torch.full((B,), float(self.cfg.physics_dt), device=self.device)
 
