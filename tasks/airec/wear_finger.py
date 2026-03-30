@@ -80,8 +80,9 @@ class WearEnvCfg(AIRECEnvCfg):
                 collision_simplification_remeshing_resolution=30, # 40
                 collision_simplification_target_triangle_count=0,
                 collision_simplification_force_conforming=True,
-                contact_offset=0.015, # default
-                rest_offset=0.010, # default
+                solver_position_iteration_count=64, # default 8
+                contact_offset=0.010, # default
+                rest_offset=0.006, # default
                 # contact_offset=0.010,
                 # rest_offset=0.006,
                 # contact_offset=0.025,
@@ -551,7 +552,7 @@ class WearEnv(AIRECEnv):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
-    def _reset_goal_aperture(self, env_ids, thumb_offset=0.03, pinky_offset=0.03):
+    def _reset_goal_aperture(self, env_ids, thumb_offset=0.02, pinky_offset=0.02):
         # raw thumb / pinky positions
         thumb = self.pinky_goal_pos[env_ids]      # shape: (N, 3)
         pinky = self.thumb_goal_pos[env_ids]     # shape: (N, 3)
@@ -593,6 +594,7 @@ class WearEnv(AIRECEnv):
 
         # Euclidean distance between offset targets
         target_delta = self.thumb_target[env_ids] - self.pinky_target[env_ids]
+        # print("target_delta", target_delta)
         self.human_stretch_euclidean_distance[env_ids] = torch.norm(target_delta, dim=-1)
 
         # optionally store these too
