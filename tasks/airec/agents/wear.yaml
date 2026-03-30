@@ -62,7 +62,7 @@ trainer:
 
 # logging and checkpoints
 experiment:
-  directory: "airec"
+  directory: "airec2_finger"
   experiment_name: "wear"
   save_checkpoints: 2
   upload_videos: 0

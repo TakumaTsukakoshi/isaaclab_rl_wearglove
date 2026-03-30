@@ -64,26 +64,27 @@ class WearEnvCfg(AIRECEnvCfg):
             scale=(1.0, 1.4, 1.3), # internship:scale=(1.0, 1.4, 1.3), (1.0, 1.3, 1.2)
             # scale=(0.6, 0.6, 0.6),
             collision_props=sim_utils.CollisionPropertiesCfg(
-                collision_enabled=False,
-                contact_offset=0.01, # default 0.005
-                rest_offset=0.006, # default 0.003
+                collision_enabled=True,
+                # contact_offset=0.01, # default 0.005
+                # rest_offset=0.006, # default 0.003
             ),
 
             deformable_props=DeformableBodyPropertiesCfg(
                 deformable_enabled=True,
                 kinematic_enabled=False,
                 self_collision=True,
-                simulation_hexahedral_resolution=36,  # default 10 
+                simulation_hexahedral_resolution=30,  # default 10 
                 collision_simplification=True,
                 collision_simplification_remeshing=True,
                 collision_simplification_remeshing_resolution=30, # 40
                 collision_simplification_target_triangle_count=0,
                 collision_simplification_force_conforming=True,
-                # contact_offset=0.005, # default
-                # rest_offset=0.003, # default
+                solver_position_iteration_count=64, # default 8
+                contact_offset=0.03, # default
+                rest_offset=0.006, # default
                 # contact_offset=0.015,
                 # rest_offset=0.01,
-                # contact_offset=0.01,
+                # contact_offset=0.010,
                 # rest_offset=0.006, # 0.002
                 # contact_offset=0.006,
                 # rest_offset=0.003,
