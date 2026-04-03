@@ -39,7 +39,14 @@ from insert_rew import InsertReward
 
 @configclass
 class WearEnvCfg(AIRECEnvCfg):
+    """Glove + AIREC + Shadow Hand.
 
+    - **AIREC** end-effectors (first fingers, thumbs, etc.) interact with the **deformable glove**.
+    - **Shadow Hand** is a second articulation (:attr:`~tasks.airec.airec2_finger.AIRECEnvCfg.hand_cfg`).
+      Goal frames (:attr:`thumb_goal_config`, :attr:`pinky_goal_config`, :attr:`wrist_goal_config`, …)
+      point at Shadow Hand links so rewards and insertion logic test alignment of the garment / AIREC
+      hands **toward** that hand — the standard setup for “can AIREC wear the glove toward Shadow Hand?”.
+    """
     # reset config
     reset_object_position_noise = 0.05
     reset_goal_position_noise = 0.01  # scale factor for -1 to 1 m

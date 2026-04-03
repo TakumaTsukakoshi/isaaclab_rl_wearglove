@@ -26,7 +26,7 @@ from isaaclab.utils.math import (
 import isaaclab.utils.math as math_utils
 from collections.abc import Sequence
 
-from tasks.airec.airec import AIRECEnv, AIRECEnvCfg, insert_success_reward, randomize_rotation, rotation_distance
+from isaaclab_rl_wearglove.tasks.airec.airec_gripper import AIRECEnv, AIRECEnvCfg, insert_success_reward, randomize_rotation, rotation_distance
 from isaaclab.sensors import (
     ContactSensor,
     ContactSensorCfg,
@@ -495,7 +495,7 @@ class ReachEnv(AIRECEnv):
         self.left_ee_goal_angular_distance[env_ids] = rotation_distance(self.left_first_finger_rot[env_ids], self.left_goal_rot[env_ids])
         # print(self.right_ee_goal_euclidean_distance[0], self.left_ee_goal_euclidean_distance[0])
 
-from tasks.airec.airec import distance_reward, joint_vel_penalty, object_goal_reward, angular_distance_reward, insert_success_reward, success_reward
+from isaaclab_rl_wearglove.tasks.airec.airec_gripper import distance_reward, joint_vel_penalty, object_goal_reward, angular_distance_reward, insert_success_reward, success_reward
 
 @torch.jit.script
 def compute_rewards(

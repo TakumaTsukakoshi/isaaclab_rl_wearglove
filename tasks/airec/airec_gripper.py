@@ -50,7 +50,7 @@ from isaaclab.utils.math import (
 )
 import isaaclab.utils.math as math_utils
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
-from assets.airec_finger import AIREC_CFG  
+from assets.airec_gripper import AIREC_CFG  
 from assets.shadow_hand import SHADOW_HAND_CFG
 from pxr import Sdf, Usd, UsdPhysics, Sdf
 from isaaclab.sim import SimulationContext
@@ -69,17 +69,18 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 500  # 0.002 #1 / 500 # 120 # 500 Hz
+    # physics_dt = 1 / 240  # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 500
 
     # number of physics step per control step
-    decimation = 10  # 10 # # 50 Hz
+    decimation = 4  # 10 # # 50 Hz # default 4 
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
     episode_length_s = 5.0  # 5 * 120 / 2 = 300 timesteps
 
     num_observations = 0
-    num_actions = 28
+    num_actions = 17
     num_states = 0
 
     # isaac 4.5 stuff
@@ -123,15 +124,34 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         #     static_friction=1.0,
         #     dynamic_friction=1.0,
         # ),
+        # physics_material=DeformableBodyMaterialCfg(
+        #     youngs_modulus=8.0e7,     #  2e5
+        #     poissons_ratio=0.48,      #  0.35
+        #     density=200.0,            #  300 kg/m^3
+        #     damping_scale=1.0,
+        #     elasticity_damping=0.012, #  0.02
+        #     dynamic_friction=0.6,     #  0.6
+        # ),
         physics_material=DeformableBodyMaterialCfg(
-            youngs_modulus=1.0e7,     #  8e7
-            poissons_ratio=0.45,      #  0.48
-            density=300.0,            #  300 kg/m^3
+            youngs_modulus=1.0e6,     
+            poissons_ratio=0.49,      
+            density=200.0,            
             damping_scale=1.0,
-            elasticity_damping=0.03, #  0.012
-            dynamic_friction=0.5,     #  0.6
+            elasticity_damping=0.012, 
+            dynamic_friction=1.0   
         ),
             
+        # physx=PhysxCfg(
+        #     bounce_threshold_velocity=0.2,
+        #     gpu_max_rigid_contact_count=2**20, # default 2**23
+        #     gpu_max_rigid_patch_count=2**18, #23, default 5 * 2 ** 15. # change 2**20 to default 1119
+        #     # gpu_temp_buffer_capacity=2**20, # default 2**20
+        #     # gpu_max_soft_body_contacts= 2**23, # default 2**20 
+        #     # gpu_collision_stack_size=2**28, # default 2**26
+        #     gpu_temp_buffer_capacity=2**18, # default 2**20
+        #     gpu_max_soft_body_contacts= 2**17, # default 2**20 
+        #     gpu_collision_stack_size=2**19, # default 2**26
+        # ),
         physx=PhysxCfg(
             bounce_threshold_velocity=0.2,
             gpu_max_rigid_contact_count=2**20, # default 2**23
@@ -142,6 +162,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             # gpu_temp_buffer_capacity=2**18, # default 2**20
             # gpu_max_soft_body_contacts= 2**18, # default 2**20 
             # gpu_collision_stack_size=2**26, # default 2**26
+            min_position_iteration_count=64
         ),
         render=RenderCfg(
             antialiasing_mode="DLAA",
@@ -175,9 +196,6 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = AIREC_CFG.replace(
         prim_path="/World/envs/env_.*/Robot"
     )
-
-    #: Teleop mixin / some tasks: when True, base DOFs are commanded as velocities (see ``TeleopJointSpaceMixin``).
-    enable_base_control = False
 
     # actuated_base_joints=[
     #     "base_joint_trans_x",
@@ -218,61 +236,22 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
     
     # actuated_lhand_joints=[
-    #     "left_hand_first_finger_joint_1",
-    #     "left_hand_second_finger_joint_1",
-    #     "left_hand_third_finger_joint_1",
-    #     "left_hand_thumb_joint_1",
-    #     "left_hand_thumb_joint_2",
-    #     "left_hand_thumb_joint_3",
-    #     "left_hand_first_finger_joint_2",
-    #     "left_hand_second_finger_joint_2",
-    #     "left_hand_third_finger_joint_2",
-    #     "left_hand_thumb_joint_4",
+    #     "left_gripper_mimic_joint",
+    #     "left_gripper_finger_joint",
     # ]
 
     # actuated_rhand_joints=[
-    #     "right_hand_first_finger_joint_1",
-    #     "right_hand_second_finger_joint_1",
-    #     "right_hand_third_finger_joint_1",
-    #     "right_hand_thumb_joint_1",
-    #     "right_hand_thumb_joint_2",
-    #     "right_hand_thumb_joint_3",
-    #     "right_hand_first_finger_joint_2",
-    #     "right_hand_second_finger_joint_2",
-    #     "right_hand_third_finger_joint_2",
-    #     "right_hand_thumb_joint_4",
+    #     "right_gripper_mimic_joint",
+    #     "right_gripper_finger_joint",
     # ]
     actuated_lhand_joints=[
-        "left_hand_first_finger_joint_1",
-        "left_hand_thumb_joint_1",
-        "left_hand_thumb_joint_2",
-        "left_hand_thumb_joint_3",
-        "left_hand_first_finger_joint_2",
-        "left_hand_thumb_joint_4",
+        "left_gripper_right_finger_joint",
+        "left_gripper_left_finger_joint",
     ]
 
     actuated_rhand_joints=[
-        "right_hand_first_finger_joint_1",
-        "right_hand_thumb_joint_1",
-        "right_hand_thumb_joint_2",
-        "right_hand_thumb_joint_3",
-        "right_hand_first_finger_joint_2",
-        "right_hand_thumb_joint_4",
-    ]
-
-
-    fixed_rhand_joints = [
-        "right_hand_second_finger_joint_1",
-        "right_hand_third_finger_joint_1",
-        "right_hand_second_finger_joint_2",
-        "right_hand_third_finger_joint_2",
-    ]
-
-    fixed_lhand_joints = [
-        "left_hand_second_finger_joint_1",
-        "left_hand_third_finger_joint_1",
-        "left_hand_second_finger_joint_2",
-        "left_hand_third_finger_joint_2",
+        "right_gripper_right_finger_joint",
+        "right_gripper_left_finger_joint",
     ]
 
     base_wheels=[
@@ -289,8 +268,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # actuated_joint_names = base_wheels + actuated_base_joints + actuated_head_joints + actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
 
-    # currently 28
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
+    # currently 21 (torso + larm + rarm + lhand_gripper + rhand_gripper, excluding head)
+    actuated_joint_names =  actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints 
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -300,14 +279,15 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     marker_cfg.prim_path = "/Visuals/EndEffectorFrameTransformer"
 
     # frame transformers for fingertips
-    left_first_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+    # left_gripper_config
+    left_gripper_r_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=True,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
-                prim_path="/World/envs/env_.*/Robot/left_hand_first_finger_link_1",
-                name="left_first_finger",
+                prim_path="/World/envs/env_.*/Robot/left_gripper_right_finger_base_link",
+                name="left_gripper_r",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[0.0, 0.0, 1.0, 0.0]
@@ -316,78 +296,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         ],
     )
 
-    left_first_upper_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
-        debug_vis=False,
-        visualizer_cfg=marker_cfg,
-        target_frames=[
-            FrameTransformerCfg.FrameCfg(
-                prim_path="/World/envs/env_.*/Robot/left_hand_first_finger_link_2",
-                name="left_first_upper_finger",
-                offset=OffsetCfg(
-                    pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
-                ),
-            )
-        ],
-    )
-
-    right_first_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+    left_gripper_l_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=True,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
-                prim_path="/World/envs/env_.*/Robot/right_hand_first_finger_link_1",
-                name="right_first_finger",
-                offset=OffsetCfg(
-                    pos=[0.0, 0.0, 0.0],
-                    rot=[1.0, 0.0, 0.0, 0.0]
-                ),
-            )
-        ],
-    )
-
-    right_first_upper_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
-        debug_vis=False,
-        visualizer_cfg=marker_cfg,
-        target_frames=[
-            FrameTransformerCfg.FrameCfg(
-                prim_path="/World/envs/env_.*/Robot/right_hand_first_finger_link_2",
-                name="right_first_upper_finger",
-                offset=OffsetCfg(
-                    pos=[0.0, 0.0, 0.0],
-                    rot=[1.0, 0.0, 0.0, 0.0]
-                ),
-            )
-        ],
-    )
-
-    right_thumb_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
-        debug_vis=False,
-        visualizer_cfg=marker_cfg,
-        target_frames=[
-            FrameTransformerCfg.FrameCfg(
-                prim_path="/World/envs/env_.*/Robot/right_hand_thumb_link_4",
-                name="right_thumb",
-                offset=OffsetCfg(
-                    pos=[0.0, 0.0, 0.0],
-                    rot=[1.0, 0.0, 0.0, 0.0]
-                ),
-            )
-        ],
-    )
-
-    left_thumb_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
-        debug_vis=False,
-        visualizer_cfg=marker_cfg,
-        target_frames=[
-            FrameTransformerCfg.FrameCfg(
-                prim_path="/World/envs/env_.*/Robot/left_hand_thumb_link_4",
-                name="left_thumb",
+                prim_path="/World/envs/env_.*/Robot/left_gripper_left_finger_base_link",
+                name="left_gripper_l",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[0.0, 0.0, 1.0, 0.0]
@@ -396,11 +312,45 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         ],
     )
 
+    # right_gripper_config
+    right_gripper_r_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
+        debug_vis=True,
+        visualizer_cfg=marker_cfg,
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path="/World/envs/env_.*/Robot/right_gripper_right_finger_base_link",
+                name="right_gripper_r",
+                offset=OffsetCfg(
+                    pos=[0.0, 0.0, 0.0],
+                    rot=[1.0, 0.0, 0.0, 0.0]
+                ),
+            )
+        ],
+    )
+
+    right_gripper_l_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
+        debug_vis=True,
+        visualizer_cfg=marker_cfg,
+        target_frames=[
+            FrameTransformerCfg.FrameCfg(
+                prim_path="/World/envs/env_.*/Robot/right_gripper_left_finger_base_link",
+                name="right_gripper_l",
+                offset=OffsetCfg(
+                    pos=[0.0, 0.0, 0.0],
+                    rot=[1.0, 0.0, 0.0, 0.0]
+                ),
+            )
+        ],
+    )
+
+    # frame transformers for anchors
     anchor_east_marker_cfg = FRAME_MARKER_CFG.copy()
     anchor_east_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_east_marker_cfg.prim_path = "/World/Visuals/AnchorEastMarker"
     anchor_east_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_east_marker_cfg,                  
         target_frames=[
@@ -419,7 +369,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_west_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_west_marker_cfg.prim_path = "/World/Visuals/AnchorWestMarker"
     anchor_west_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_west_marker_cfg,              
         target_frames=[
@@ -437,7 +387,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_north_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_north_marker_cfg.prim_path = "/World/Visuals/AnchorNorthMarker"
     anchor_north_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_north_marker_cfg,              
         target_frames=[
@@ -455,7 +405,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_south_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_south_marker_cfg.prim_path = "/World/Visuals/AnchorSouthMarker"
     anchor_south_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_south_marker_cfg,              
         target_frames=[
@@ -473,7 +423,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_center_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_center_marker_cfg.prim_path = "/World/Visuals/AnchorCenterMarker"
     anchor_center_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_center_marker_cfg,              
         target_frames=[
@@ -510,7 +460,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     normalise_prop = True
     normalise_pixels = True
     num_cameras = 1
-    object_type = "deformable"  # "none" (no scene object) | "rigid" | "deformable"
+    object_type = "deformable"  # "rigid" or "deformable"
     binary_tactile = False
     OPEN_IS_UPPER = True  # True: 上限=開, 下限=閉 / False: 上限=閉, 下限=開
 
@@ -564,34 +514,26 @@ class AIRECEnv(DirectRLEnv):
             raise RuntimeError(f"manual_joint_names not found in USD: {missing}")
         #####################################################################################################
 
-        self._actuated_name_to_col = {self.robot.joint_names[i]: i for i in self.actuated_dof_indices}
+        self._all_actuated_dof_indices = self.actuated_dof_indices
+        self._actuated_name_to_col = {self.robot.joint_names[i]: i for i in self._all_actuated_dof_indices}
 
         # self._arm_cols = [self._actuated_name_to_col[n] for n in self.cfg.arm_names]
         # self._chest_head_cols = [self._actuated_name_to_col[n] for n in self.cfg.chest_head_names]
-        # Only policy-actuated hand columns (e.g. ImitationEnvCfg may omit hands from actuated_joint_names).
+        # Create mapping for grip cols from all robot joints (not just actuated ones)
+        all_joint_name_to_col = {name: i for i, name in enumerate(self.robot.joint_names)}
+        self._grip_cols = [all_joint_name_to_col[n] for n in self.cfg.actuated_lhand_joints + self.cfg.actuated_rhand_joints]
         self.actuated_idx = torch.tensor(self.actuated_dof_indices, device=self.device, dtype=torch.long)
-
-        # Initialize fixed finger joint indices (2nd and 3rd fingers)
-        fixed_joints = self.cfg.fixed_rhand_joints + self.cfg.fixed_lhand_joints
-        self._fixed_joint_indices = []
-        for joint_name in fixed_joints:
-            try:
-                idx = self.robot.joint_names.index(joint_name)
-                self._fixed_joint_indices.append(idx)
-            except ValueError:
-                pass  # Joint not found, skip
+        self._grip_step_count = 0
 
         # create empty tensors
         n_actuated_policy = len(self.actuated_dof_indices)
         self.actions = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
-        self.prev_actions = torch.zeros_like(self.actions)
         default_joint_pos = self.robot.data.default_joint_pos
         self.joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
         self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
         
         self.joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
-        self.joint_pos_error = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         
@@ -604,27 +546,20 @@ class AIRECEnv(DirectRLEnv):
         # glove specific
         self.object_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.object_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # right_first_finger
-        self.right_first_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_first_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # right_first_upper_finger
-        self.right_first_upper_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_first_upper_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # left_first_finger
-        self.left_first_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_first_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # left_first_upper_finger
-        self.left_first_upper_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_first_upper_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)           
-        # right_thumb
-        self.right_thumb_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_thumb_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # left_thumb
-        self.left_thumb_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_thumb_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        # right_gripper
+        self.right_gripper_r_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_gripper_r_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.right_gripper_l_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_gripper_l_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        
+        # left_gripper
+        self.left_gripper_r_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_gripper_r_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.left_gripper_l_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_gripper_l_rot = torch.zeros((self.num_envs, 4), device=self.device)
         # ee
-        self.ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.ee_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        # self.ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        # self.ee_rot = torch.zeros((self.num_envs, 4), device=self.device)
 
         self.right_ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.right_ee_rot = torch.zeros((self.num_envs, 4), device=self.device)
@@ -662,7 +597,6 @@ class AIRECEnv(DirectRLEnv):
         self.left_ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
 
         self.ee_angular_distance = torch.zeros((self.num_envs,), device=self.device)
-        self.ee_distance = torch.zeros((self.num_envs, 3), device=self.device)
         self.ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
         self.goal_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
         self.default_goal_euclidean_distance = torch.full((self.num_envs,), cfg.default_goal_euclidean_distance,device=self.device)
@@ -720,8 +654,7 @@ class AIRECEnv(DirectRLEnv):
             "object_found_med": None,
             "object_found_hard": None,
         }
-        self._vis_enabled = True
-
+        self._vis_enabled = False
 
     def _configure_gym_env_spaces(self):
         pass
@@ -733,8 +666,6 @@ class AIRECEnv(DirectRLEnv):
         self.action_space = action
 
     def _add_object_to_scene(self):
-        if self.cfg.object_type == "none":
-            return
         if self.cfg.object_type == "rigid":
             print("SETTING UP RIGID OBJECT", self.cfg.object_cfg)
             self.object = RigidObject(self.cfg.object_cfg)
@@ -747,30 +678,20 @@ class AIRECEnv(DirectRLEnv):
 
     def _setup_scene(self):
 
-        # create deformable/rigid object for this environment
-        self._add_object_to_scene()
-
         self.robot = Articulation(self.cfg.robot_cfg)
         self.hand = Articulation(self.cfg.hand_cfg)
-        # collision_cfg = sim_utils.CollisionPropertiesCfg(
-        #     collision_enabled=False 
-        # )
-        # success = modify_collision_properties("/World/envs/env_0/Robot/base_link", collision_cfg)
-        # print("[INFO]Collision disabled?", success)
+
+        self._add_object_to_scene()
 
         # FrameTransformer provides interface for reporting the transform of
-        self.left_first_finger_frame = FrameTransformer(self.cfg.left_first_finger_config)
-        self.left_first_finger_frame.set_debug_vis(False)
-        self.right_first_finger_frame = FrameTransformer(self.cfg.right_first_finger_config)
-        self.right_first_finger_frame.set_debug_vis(False)
-        self.left_first_upper_finger_frame = FrameTransformer(self.cfg.left_first_upper_finger_config)
-        self.left_first_upper_finger_frame.set_debug_vis(False)
-        self.right_first_upper_finger_frame = FrameTransformer(self.cfg.right_first_upper_finger_config)
-        self.right_first_upper_finger_frame.set_debug_vis(False)
-        self.left_thumb_frame = FrameTransformer(self.cfg.left_thumb_config)
-        self.left_thumb_frame.set_debug_vis(False)
-        self.right_thumb_frame = FrameTransformer(self.cfg.right_thumb_config)
-        self.right_thumb_frame.set_debug_vis(False)
+        self.left_gripper_r_frame = FrameTransformer(self.cfg.left_gripper_r_config)
+        self.left_gripper_r_frame.set_debug_vis(False)
+        self.left_gripper_l_frame = FrameTransformer(self.cfg.left_gripper_l_config)
+        self.left_gripper_l_frame.set_debug_vis(False)
+        self.right_gripper_r_frame = FrameTransformer(self.cfg.right_gripper_r_config)
+        self.right_gripper_r_frame.set_debug_vis(False)
+        self.right_gripper_l_frame = FrameTransformer(self.cfg.right_gripper_l_config)
+        self.right_gripper_l_frame.set_debug_vis(False)
         #################################################################################
 
         rb_east_path_env0 = "/World/envs/env_0/Visuals/AnchorEast/Geom"
@@ -780,6 +701,17 @@ class AIRECEnv(DirectRLEnv):
         rb_center_path_env0 = "/World/envs/env_0/Visuals/AnchorCenter/Geom"
 
         stage = SimulationContext.instance().stage
+        # from pxr import UsdPhysics
+        # stage = SimulationContext.instance().stage
+        # root = "/World/envs/env_14/Robot"
+
+        # for prim in stage.Traverse():
+        #     p = prim.GetPath().pathString
+        #     if p.startswith(root):
+        #         if UsdPhysics.RigidBodyAPI(prim):
+        #             print("RIGID:", p)
+
+
         ensure_xform_prim("/World/Visuals") 
         if not stage.GetPrimAtPath(rb_east_path_env0):
             anchor_rb_cfg = sim_utils.CuboidCfg(
@@ -847,6 +779,12 @@ class AIRECEnv(DirectRLEnv):
         self.anchor_north_tf = FrameTransformer(self.cfg.anchor_north_tf_cfg)
         self.anchor_south_tf = FrameTransformer(self.cfg.anchor_south_tf_cfg)
         self.anchor_center_tf = FrameTransformer(self.cfg.anchor_center_tf_cfg)
+        # Show only west anchor marker
+        self.anchor_east_tf.set_debug_vis(False)
+        self.anchor_west_tf.set_debug_vis(False)
+        self.anchor_north_tf.set_debug_vis(False)
+        self.anchor_south_tf.set_debug_vis(False)
+        self.anchor_center_tf.set_debug_vis(False)
         self.scene.rigid_objects["anchor_east"] = self.anchor_east_rb
         self.scene.rigid_objects["anchor_west"] = self.anchor_west_rb
         self.scene.rigid_objects["anchor_north"] = self.anchor_north_rb
@@ -856,12 +794,10 @@ class AIRECEnv(DirectRLEnv):
         # register to scene
         self.scene.articulations["robot"] = self.robot
         self.scene.articulations["hand"] = self.hand
-        self.scene.sensors["left_first_finger_frame"] = self.left_first_finger_frame
-        self.scene.sensors["right_first_finger_frame"] = self.right_first_finger_frame
-        self.scene.sensors["left_first_upper_finger_frame"] = self.left_first_upper_finger_frame
-        self.scene.sensors["right_first_upper_finger_frame"] = self.right_first_upper_finger_frame
-        self.scene.sensors["left_thumb_frame"] = self.left_thumb_frame
-        self.scene.sensors["right_thumb_frame"] = self.right_thumb_frame
+        self.scene.sensors["left_gripper_r_frame"] = self.left_gripper_r_frame
+        self.scene.sensors["left_gripper_l_frame"] = self.left_gripper_l_frame
+        self.scene.sensors["right_gripper_r_frame"] = self.right_gripper_r_frame
+        self.scene.sensors["right_gripper_l_frame"] = self.right_gripper_l_frame
         self.scene.sensors["anchor_east_tf"] = self.anchor_east_tf
         self.scene.sensors["anchor_west_tf"] = self.anchor_west_tf
         self.scene.sensors["anchor_south_tf"] = self.anchor_south_tf
@@ -891,6 +827,60 @@ class AIRECEnv(DirectRLEnv):
         #     self.wholebody_contact_sensor = ContactSensor(self.cfg.wholebody_contact_cfg)
         #     self.scene.sensors["wholebody_contact_sensor"] = self.wholebody_contact_sensor
 
+    def _scripted_pregrasp(self, q_cmd):
+        p = min(1.0, float(self._pregrasp_steps) / max(1, self._pregrasp_total_steps))
+        grip_q = self._grip_q_from_ratio(p)  # (N,G)
+
+        q_cmd = self.robot.data.joint_pos[:, :].clone()
+        joint_name_list = []
+        joint_name = self.robot.joint_names
+        for i, col in enumerate(self._grip_cols):
+            q_cmd[:, col] = grip_q[:, i]
+            joint_name_list.append(joint_name[col])
+        # print(f"joint_name_list: {joint_name_list}")
+        # import ipdb; ipdb.set_trace()
+        # クランプ＆部分ターゲット
+        lower_all = self.robot_dof_lower_limits[:]
+        upper_all = self.robot_dof_upper_limits[:]
+        q_cmd = torch.clamp(q_cmd, lower_all, upper_all)
+        q_cmd_gripper = q_cmd[:, self._grip_cols]
+        # self.robot.set_joint_position_target(q_cmd_gripper, joint_ids=self._grip_cols)
+
+        self._pregrasp_steps += 1
+
+    def _grip_limits(self):
+        all_idx = torch.tensor(self._all_actuated_dof_indices, device=self.device, dtype=torch.long)
+        lower_all = self.robot_dof_lower_limits[all_idx]
+        upper_all = self.robot_dof_upper_limits[all_idx]
+        lower_g = self.robot_dof_lower_limits[self._grip_cols].unsqueeze(0).expand(self.num_envs, -1)
+        upper_g = self.robot_dof_upper_limits[self._grip_cols].unsqueeze(0).expand(self.num_envs, -1)
+        
+        return lower_g, upper_g, lower_all, upper_all
+
+    def _grip_open_q(self):
+        return self._grip_open_vec
+
+    def _grip_close_q(self):
+        print("[INFO] Close hand...")
+        return self._grip_close_vec
+
+    def _grip_q_from_ratio(self, s: torch.Tensor):
+        """
+        s: (num_envs,) or スカラー in [0,1]  — 0=開, 1=閉
+        返り値: (num_envs, num_grip)
+        """
+        if not torch.is_tensor(s):
+            s = torch.tensor(float(s), device=self.device)
+        if s.dim() == 0:
+            s = s.expand(self.num_envs)
+        s = torch.clamp(s, 0.0, 1.0).view(-1, 1)
+        return (1.0 - s) * self._grip_open_vec + s * self._grip_close_vec
+
+    def _set_grip_q(self, q_cmd, grip_q):
+        for i, col in enumerate(self._grip_cols):
+            q_cmd[:, col] = grip_q[:, i]
+        return q_cmd
+    
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         Store actions from policy in a class variable
@@ -898,39 +888,43 @@ class AIRECEnv(DirectRLEnv):
         self.last_action = self.joint_pos_cmd[:, self.actuated_dof_indices]
         self.actions = actions.clone()
 
+    
     def _apply_action(self) -> None:
         """
         Apply actions to the robot. Called multiple times per RL step for decimation.
         """
+        # Check if policy is enabled (for environments with pregrasp phase)
+        if hasattr(self, '_policy_enabled') and not self._policy_enabled:
+            # Pregrasp phase is being handled by child class, don't apply policy actions
+            return
+        
+        # Scale actions from [-1, 1] to joint limits
         self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
             self.actions,
             self.robot_dof_lower_limits[self.actuated_dof_indices],
             self.robot_dof_upper_limits[self.actuated_dof_indices],
         )
+        
+        # Apply moving average for smooth control
         self.joint_pos_cmd[:, self.actuated_dof_indices] = (
             self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
             + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
         )
+        
+        # Clamp to joint limits
         self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
             self.joint_pos_cmd[:, self.actuated_dof_indices],
             self.robot_dof_lower_limits[self.actuated_dof_indices],
             self.robot_dof_upper_limits[self.actuated_dof_indices],
         )
-
+        
+        # Update previous command
         self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
-
-        # Keep fixed 2nd and 3rd finger joints at their default positions with zero velocity
-        if self._fixed_joint_indices:
-            default_pos = self.robot.data.default_joint_pos
-            for idx in self._fixed_joint_indices:
-                self.joint_pos_cmd[:, idx] = default_pos[:, idx]
-            
-            # Set zero velocity targets for fixed joints
-            zero_vel_fixed = torch.zeros((self.num_envs, len(self._fixed_joint_indices)), device=self.device)
-            self.robot.set_joint_velocity_target(zero_vel_fixed, joint_ids=self._fixed_joint_indices)
-
+        
+        # Set joint position targets
         self.robot.set_joint_position_target(
-            self.joint_pos_cmd[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
+            self.joint_pos_cmd[:, self.actuated_dof_indices], 
+            joint_ids=self.actuated_dof_indices
         )
 
     def scale_smooth_action(self, action):
@@ -990,27 +984,14 @@ class AIRECEnv(DirectRLEnv):
         return obs_dict
 
     def _get_proprioception(self):
-        # These buffers are already (num_envs, n_policy_actuated); columns match actuated_dof_indices order.
-        # Do not index with global DOF indices — that only worked when n_policy_actuated == num_joints.
         prop = torch.cat(
             (
                 self.normalised_joint_pos,
                 self.normalised_joint_vel,
-                self.joint_pos_error,
-                self.right_first_finger_pos,
-                self.right_first_finger_rot,
-                # self.right_first_upper_finger_pos,
-                # self.right_first_upper_finger_rot,
-                self.left_first_finger_pos,
-                self.left_first_finger_rot,
-                # self.left_first_upper_finger_pos,
-                # self.left_first_upper_finger_rot,
-                # self.right_thumb_pos,
-                # self.right_thumb_rot,
-                # self.left_thumb_pos,
-                # self.left_thumb_rot,
-                self.ee_pos,
-                # self.ee_rot,
+                self.right_gripper_r_pos,
+                self.right_gripper_l_pos,
+                self.left_gripper_r_pos,
+                self.left_gripper_l_pos,
                 self.actions,
             ),
             dim=-1,
@@ -1021,10 +1002,32 @@ class AIRECEnv(DirectRLEnv):
     def _get_gt(self):
         gt = torch.cat(
             (   
-                # xyz diffs (3,)
-                self.ee_distance,
+                # # xyz diffs (3,)
+                # self.right_ee_distance,
+                # # xyz diffs (3,)
+                # self.left_ee_distance,
+                # # euclidean distance (1,)
+                # self.right_ee_euclidean_distance.unsqueeze(1),
+                # # euclidean distance (1,)
+                # self.left_ee_euclidean_distance.unsqueeze(1),
+
+                # xyz diffs (3, )
+                # self.right_ee_object_distance,
+                # # euclidean distance (1,)
+                # self.right_ee_object_euclidean_distance(1),
+                # # xyz diffs (3, )
+                # self.left_ee_object_distance,
+                # # euclidean distance (1,)
+                # self.left_ee_object_euclidean_distance(1),
+                # # xyz diffs (3,)
+                self.right_ee_left_ee_distance,
                 # euclidean distance (1,)
                 self.ee_euclidean_distance.unsqueeze(1),
+                # euclidean distance (1,)
+                self.goal_euclidean_distance.unsqueeze(1),
+                # euclidean distance (1,)
+                self.ee_goal_euclidean_distance.unsqueeze(1), 
+
             ),
             dim=-1,
         )
@@ -1105,19 +1108,9 @@ class AIRECEnv(DirectRLEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
             
-        super()._reset_idx(env_ids)
-
-        if self.cfg.object_type == "none":
-            self._reset_robot(env_ids)
-            self._compute_intermediate_values(env_ids=env_ids)
-            _ = self._get_rewards()
-            self._policy_enabled = False
-            self._phase = "pregrasp"
-            self._pregrasp_steps = 0
-            self._grip_latched_q = None
-            return
+        super()._reset_idx(env_ids)    
       
-        self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[1.0, 0.0, 0.0])
+        self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[0.0, 0.0, -1.0])
         # print("Anchor idx:", self.anchor_idx)
         self.prev_anchor_idx = self.anchor_idx
            
@@ -1141,10 +1134,13 @@ class AIRECEnv(DirectRLEnv):
         self._compute_intermediate_values(env_ids=env_ids)
         _ = self._get_rewards()
 
-        self._policy_enabled = False
-        self._phase = "pregrasp"
-        self._pregrasp_steps = 0
-        self._grip_latched_q = None
+        # Only set these for environments without custom pregrasp implementation
+        # (WearEnv overrides _reset_idx and manages these per-environment)
+        if not hasattr(self, '_policy_enabled') or not isinstance(self._policy_enabled, torch.Tensor):
+            self._policy_enabled = False
+            self._phase = "pregrasp"
+            self._pregrasp_steps = 0
+            self._grip_latched_q = None
         # print("[INFO]: PHASE RESET → pregrasp")
 
     def _reset_deformable_pose(self, env_ids):
@@ -1205,19 +1201,23 @@ class AIRECEnv(DirectRLEnv):
         #     (len(env_ids), self.robot.num_joints),
         #     self.device,
         # )
+        # joint_pos = self.robot.data.default_joint_pos[env_ids]
+        # # joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
+        # joint_vel = torch.zeros_like(joint_pos)
+        # self.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
+        # self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)    
+        # print("Reset robot joint pos:", np.rad2deg(joint_pos[0].cpu().numpy()))
+    
         joint_pos = self.robot.data.default_joint_pos[env_ids]
-        # joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
+
         self.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-        
-        # Explicitly zero velocity for fixed finger joints
-        if self._fixed_joint_indices:
-            zero_vel_fixed = torch.zeros((len(env_ids), len(self._fixed_joint_indices)), device=self.device)
-            self.robot.set_joint_velocity_target(zero_vel_fixed, joint_ids=self._fixed_joint_indices, env_ids=env_ids)    
-    
+
     def _reset_goal_aperture(self, env_ids):
-        pass    
+        default_goal_euclidean_distance = self.default_goal_euclidean_distance
+        rand_offset = torch.empty(len(env_ids), device=self.device).uniform_(-0.03, 0.03)
+        self.goal_euclidean_distance[env_ids] = default_goal_euclidean_distance[env_ids] + rand_offset
 
     def _reset_target_pose(self, env_ids):
         pass
@@ -1564,53 +1564,21 @@ class AIRECEnv(DirectRLEnv):
         vel_full = self.robot.data.joint_vel[env_ids]
         self.joint_pos[env_ids] = pos_full[:, self.actuated_idx]
         self.joint_vel[env_ids] = vel_full[:, self.actuated_idx]
-        # Avoid mixed advanced indexing (env_ids, self.actuated_idx) which can broadcast env_ids and column
-        # indices incorrectly; index rows then columns explicitly.
-        self.joint_pos_error[env_ids] = (
-            self.joint_pos_cmd[env_ids][:, self.actuated_idx] - self.joint_pos[env_ids]
-        )
+
         lower = self.robot_dof_lower_limits[self.actuated_idx]
         upper = self.robot_dof_upper_limits[self.actuated_idx]
         self.normalised_joint_pos[env_ids] = unscale(self.joint_pos[env_ids], lower, upper)
         
         #################### validate aperture ############ #################
-        self.right_first_finger_pos[env_ids] = self.right_first_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.right_first_finger_rot[env_ids] = self.right_first_finger_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.left_first_finger_pos[env_ids] = self.left_first_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.left_first_finger_rot[env_ids] = self.left_first_finger_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.right_first_upper_finger_pos[env_ids] = self.right_first_upper_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.right_first_upper_finger_rot[env_ids] = self.right_first_upper_finger_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.left_first_upper_finger_pos[env_ids] = self.left_first_upper_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.left_first_upper_finger_rot[env_ids] = self.left_first_upper_finger_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.right_thumb_pos[env_ids] = self.right_thumb_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.right_thumb_rot[env_ids] = self.right_thumb_frame.data.target_quat_source[..., 0, :][env_ids]  
-        self.left_thumb_pos[env_ids] = self.left_thumb_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.left_thumb_rot[env_ids] = self.left_thumb_frame.data.target_quat_source[..., 0, :][env_ids]  
         # self.right_ee_distance[env_ids] = ((self.right_first_finger_pos[env_ids] + self.right_first_upper_finger_pos[env_ids])/2) - self.right_thumb_pos[env_ids]
-        self.right_ee_distance[env_ids] = self.right_first_upper_finger_pos[env_ids] - self.right_thumb_pos[env_ids]
+        self.right_ee_distance[env_ids] = self.right_gripper_r_pos[env_ids] - self.right_gripper_r_pos[env_ids]
         self.right_ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_distance[env_ids], dim=1)
-        self.left_ee_distance[env_ids] = self.left_first_upper_finger_pos[env_ids] - self.left_thumb_pos[env_ids]
+        self.left_ee_distance[env_ids] = self.left_gripper_r_pos[env_ids] - self.left_gripper_r_pos[env_ids]
         self.left_ee_euclidean_distance[env_ids] = torch.norm(self.left_ee_distance[env_ids], dim=1)
-        # left_closed  = self.left_ee_euclidean_distance[env_ids] < self._grasp_min_distance
-        # right_closed = self.right_ee_euclidean_distance[env_ids]< self._grasp_min_distance
-        # print(f"left_ee_euclidean_distance: {self.left_ee_euclidean_distance[0]}, right_ee_euclidean_distance: {self.right_ee_euclidean_distance[0]}")
-        # print(f"left_closed: {left_closed}, right_closed: {right_closed}")
-        # self._grasp = left_closed & right_closed
         ######################################################################
 
         # joint vel roughly between -2.5, 2.5, so dividing by 3.
         self.normalised_joint_vel[env_ids] = self.joint_vel[env_ids] / self.cfg.vel_max_magnitude
-        if self.cfg.object_type == "none":
-            self.ee_pos[env_ids] = (self.right_first_finger_pos[env_ids] + self.left_first_finger_pos[env_ids]) / 2
-            self.ee_distance[env_ids] = torch.abs(
-                self.right_first_finger_pos[env_ids] - self.left_first_finger_pos[env_ids]
-            )
-            self.ee_euclidean_distance[env_ids] = torch.norm(self.ee_distance[env_ids], dim=1)
-            self.ee_goal_euclidean_distance[env_ids] = torch.abs(
-                self.ee_euclidean_distance[env_ids] - self.goal_euclidean_distance[env_ids]
-            )
-            return
-
         self.nodal_state[env_ids] = self.object.data.nodal_state_w[env_ids]
         self.object_pos[env_ids] = self.nodal_state[:, self.anchor_idx["east"], :3] - self.scene.env_origins[env_ids]
 
@@ -1621,13 +1589,11 @@ class AIRECEnv(DirectRLEnv):
             self.object_rot[env_ids] = self.estimate_node_quat(node_idx=self.anchor_idx["east"],env_ids=env_ids)
         
         # ee_distance
-        self.ee_pos[env_ids] = (self.right_first_finger_pos[env_ids] + self.left_first_finger_pos[env_ids])/2
+        # self.ee_pos[env_ids] = (self.right_first_finger_pos[env_ids] + self.left_first_finger_pos[env_ids])/2
         
         ################################## conform of left/right ee pos ##########################
-        self.ee_distance[env_ids] = torch.abs(self.right_first_finger_pos[env_ids] - self.left_first_finger_pos[env_ids])
-        self.ee_euclidean_distance[env_ids] = torch.norm(self.ee_distance[env_ids], dim=1)
-        self.right_ee_left_ee_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.left_ee_rot[env_ids]))
-        self.ee_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.left_ee_rot[env_ids])
+        self.right_ee_left_ee_distance[env_ids] = self.left_gripper_r_pos[env_ids] - self.right_gripper_r_pos[env_ids]
+        self.ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_left_ee_distance[env_ids], dim=1)
         self.ee_goal_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.goal_euclidean_distance[env_ids])
         # print(f"ee_goal_euclidean_distance: {self.ee_euclidean_distance[0]}, goal_distance:{self.goal_euclidean_distance[0]}")
         env_all = torch.arange(self.num_envs, device=self.device, dtype=torch.int32)
@@ -1647,39 +1613,38 @@ class AIRECEnv(DirectRLEnv):
         self.south_edge_rot[env_ids] = self.anchor_south_tf.data.target_quat_source[..., 0, :][env_ids]
 
         # gripper and ee distances #############################################################checkn direction!!!!!!!!!
-        # self.right_ee_object_distance[env_ids] = ((self.right_first_finger_pos[env_ids] + self.right_first_upper_finger_pos[env_ids])/2) - self.west_edge_pos[env_ids]
-        self.right_ee_object_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.west_edge_pos[env_ids]
+        self.right_gripper_r_pos[env_ids] = self.right_gripper_r_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.right_gripper_l_pos[env_ids] = self.right_gripper_l_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.left_gripper_r_pos[env_ids] = self.left_gripper_r_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.left_gripper_l_pos[env_ids] = self.left_gripper_l_frame.data.target_pos_source[..., 0, :][env_ids]
+
+        self.right_ee_object_distance[env_ids] = self.right_gripper_r_pos[env_ids] - self.west_edge_pos[env_ids]
         self.right_ee_object_euclidean_distance[env_ids] = torch.norm(self.right_ee_object_distance[env_ids], dim=1)
         # print(f"self.right_ee_object_euclidean_distance:{self.right_ee_object_euclidean_distance}")
         # self.right_ee_object_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.west_edge_rot[env_ids]))
         # self.right_ee_object_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.west_edge_rot[env_ids])
 
         # self.left_ee_object_distance[env_ids] = ((self.left_first_finger_pos[env_ids] + self.left_first_upper_finger_pos[env_ids])/2) - self.east_edge_pos[env_ids]
-        self.left_ee_object_distance[env_ids] = self.left_first_finger_pos[env_ids] - self.east_edge_pos[env_ids]
+        self.left_ee_object_distance[env_ids] = self.left_gripper_r_pos[env_ids] - self.east_edge_pos[env_ids]
         self.left_ee_object_euclidean_distance[env_ids] = torch.norm(self.left_ee_object_distance[env_ids], dim=1)
         # print(f"self.left_ee_object_euclidean_distance:{self.left_ee_object_euclidean_distance}")
         # self.left_ee_object_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.east_edge_rot[env_ids]))
         # self.left_ee_object_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.east_edge_rot[env_ids])
         
-        if not self._vis_enabled:
-            if (self.anchor_east_tf.data is not None and self.anchor_west_tf.data is not None):
-                self.anchor_east_tf.set_debug_vis(True) 
-                self.anchor_west_tf.set_debug_vis(True) 
-                # self.anchor_north_tf.set_debug_vis(True) 
-                # self.anchor_south_tf.set_debug_vis(True) 
-                # self.right_first_finger_frame.set_debug_vis(True) # right-west
-                # self.left_first_finger_frame.set_debug_vis(True)   # left-east
-                self._vis_enabled = True
+        self.anchor_east_tf.set_debug_vis(False)
+        self.anchor_west_tf.set_debug_vis(True)
+        self.anchor_north_tf.set_debug_vis(False)
+        self.anchor_south_tf.set_debug_vis(False)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
 
         # no termination at the moment
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
+        is_grasp_right = self.right_ee_object_euclidean_distance > 0.1 # check
+        is_grasp_left = self.left_ee_object_euclidean_distance > 0.1   # check
         too_far = self.ee_euclidean_distance > 0.40 # 0.20
         out_of_reach =self.object_pos[:,2] < 0.5
-        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
+        termination = out_of_reach | too_far #| is_grasp_right | is_grasp_left
         
         # print("termination:", is_grasp_right[0].item(), is_grasp_left[0].item(), too_far[0].item(), out_of_reach[0].item())
 
