@@ -44,7 +44,7 @@ import torch
 import isaaclab.sim as sim_utils
 from isaaclab.utils.math import combine_frame_transforms
 from isaaclab.assets import AssetBaseCfg
-from assets.airec_gripper_temp import AIREC_CFG
+from assets.airec_finger import AIREC_CFG
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.markers import VisualizationMarkers
