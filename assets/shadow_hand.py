@@ -50,7 +50,8 @@ SHADOW_HAND_CFG = ArticulationCfg(
     init_state=ArticulationCfg.InitialStateCfg(
        
         # pos=(0.95, 0.0, 0.90),
-           pos=(0.95, 0.0, 0.95),
+        #    pos=(0.95, 0.0, 0.95),
+            pos=(0.85, 0.0, 0.80),
         # rot=(0.0, 0.7071, 0.7071, 0.0),
         rot=(0.5, 0.5, -0.5, -0.5),
         joint_pos={

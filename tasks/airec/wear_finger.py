@@ -8,7 +8,7 @@ from __future__ import annotations
 import torch
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import RigidObject, RigidObjectCfg, DeformableObjectCfg
+from isaaclab.assets import RigidObject, RigidObjectCfg, DeformableObjectCfg, DeformableObject
 from isaaclab.sim.spawners.materials.physics_materials_cfg import (
     DeformableBodyMaterialCfg,   
 )
@@ -47,7 +47,8 @@ class WearEnvCfg(AIRECEnvCfg):
     default_thumb_goal_pos = [0.70, -0.050, 1.07]
     default_pinky_goal_pos = [0.70, 0.050, 1.07]
     # default_object_pos = [0.27, 0.00, 1.07] # 0.13 # 1.07　default maybe for airec1
-    default_object_pos = [0.27, 0.00, 1.07] # airec2
+    # default_object_pos = [0.27, 0.00, 1.07] # airec1
+    default_object_pos = [0.26, 0.00, 0.85] # airec2
 
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
@@ -394,6 +395,7 @@ class WearEnv(AIRECEnv):
         # debugging
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
 
+
     def _setup_scene(self):
         super()._setup_scene()
         self.goal_north_markers = VisualizationMarkers(self.cfg.glove_north)
@@ -502,8 +504,6 @@ class WearEnv(AIRECEnv):
             r_stretch,
             r_right_ee_thumb_distance,
             r_left_ee_pinky_distance,
-            r_garment_right_ee_distance, 
-            r_garment_left_ee_distance
         ) = compute_rewards(
             self.reaching_object_goal_scale,
             self.reaching_ee_object_scale,
@@ -532,8 +532,6 @@ class WearEnv(AIRECEnv):
             "r_stretch": r_stretch,
             "reach_reward_right": r_right_ee_thumb_distance,
             "reach_reward_left": r_left_ee_pinky_distance,
-            "garment_right_ee_distance_reward": r_garment_right_ee_distance,
-            "garment_left_ee_distance_reward": r_garment_left_ee_distance
         }
 
         if "tactile" in self.cfg.obs_list:
@@ -634,12 +632,12 @@ class WearEnv(AIRECEnv):
             env_ids = self.robot._ALL_INDICES
 
         # print("number of nodes", self.object.data.nodal_pos_w.size())
-        self.goal_north_pos = self.object.data.nodal_pos_w[:, self.anchor_idx["north"], :]
-        self.goal_south_pos = self.object.data.nodal_pos_w[:, self.anchor_idx["south"], :]
-        self.goal_east_pos = self.object.data.nodal_pos_w[:, self.anchor_idx["east"], :]
-        self.goal_west_pos = self.object.data.nodal_pos_w[:, self.anchor_idx["west"], :]
+        self.goal_north_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["north"], :] - self.scene.env_origins[env_ids]  
+        self.goal_south_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["south"], :] - self.scene.env_origins[env_ids]  
+        self.goal_east_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["east"], :] - self.scene.env_origins[env_ids] 
+        self.goal_west_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["west"], :] - self.scene.env_origins[env_ids]
 
-        self.goal_cent_pos = (self.goal_north_pos+self.goal_south_pos+self.goal_east_pos+self.goal_west_pos)/4.0
+        self.goal_cent_pos[env_ids] = (self.goal_north_pos[env_ids]+self.goal_south_pos[env_ids]+self.goal_east_pos[env_ids]+self.goal_west_pos[env_ids])/4.0
         
         self.goal_wrist_pos[env_ids] = self.wrist_goal_frame.data.target_pos_source[..., 0, :][env_ids]
         self.thumb_goal_pos[env_ids] = self.thumb_goal_frame.data.target_pos_source[..., 0, :][env_ids]
@@ -658,9 +656,9 @@ class WearEnv(AIRECEnv):
         self.thumb_target_markers.visualize(self.thumb_target, self.identity_quat)
         self.pinky_target_markers.visualize(self.pinky_target, self.identity_quat)
         
-        self.garment_right_ee_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.goal_east_pos[env_ids]
+        self.garment_right_ee_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.goal_west_pos[env_ids]  
         self.garment_right_ee_euclidean_distance[env_ids] = torch.norm(self.garment_right_ee_distance[env_ids], dim=1)
-        self.garment_left_ee_distance[env_ids] = self.left_first_finger_pos[env_ids] - self.goal_west_pos[env_ids]
+        self.garment_left_ee_distance[env_ids] = self.left_first_finger_pos[env_ids] - self.goal_east_pos[env_ids]
         self.garment_left_ee_euclidean_distance[env_ids] = torch.norm(self.garment_left_ee_distance[env_ids], dim=1)
 
         B = len(env_ids)
@@ -714,8 +712,8 @@ class WearEnv(AIRECEnv):
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
-
-from tasks.airec.airec import distance_reward, distance_cond_reward, joint_vel_penalty, object_goal_reward, angular_distance_reward, insert_success_reward, success_reward, wrist_distance_reward
+        
+from tasks.airec.airec2_finger import distance_reward, distance_cond_reward, joint_vel_penalty, object_goal_reward, angular_distance_reward, insert_success_reward, success_reward, wrist_distance_reward
 
 @torch.jit.script
 def compute_rewards(
@@ -752,10 +750,12 @@ def compute_rewards(
 
     # FOR REACHING (include condition))
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.01) * stretch_object_scale
+    # print("garment_right_ee_euclidean_distance", garment_right_ee_euclidean_distance[0].item())
+    # print("garment_left_ee_euclidean_distance", garment_left_ee_euclidean_distance[0].item())
     r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.05) * reaching_object_goal_scale
     r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.09) * reaching_object_goal_scale
-    r_garment_right_ee_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * garment_tracking_scale
-    r_garment_left_ee_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * garment_tracking_scale
+    # r_garment_right_ee_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * garment_tracking_scale
+    # r_garment_left_ee_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * garment_tracking_scale
     
     # FOR REACHING+INSERTING
     # r_garment_thumb_distance = distance_reward(goal_distance_thumb_euclidean_distance, std=0.09) * reaching_object_goal_scale
@@ -773,6 +773,6 @@ def compute_rewards(
     # minillion bonus reward
     # r_object_goal = object_goal_reward(right_ee_thumb_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale
     # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
-    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_garment_right_ee_distance + r_garment_left_ee_distance
+    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance 
 
-    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_garment_right_ee_distance, r_garment_left_ee_distance)
+    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance)

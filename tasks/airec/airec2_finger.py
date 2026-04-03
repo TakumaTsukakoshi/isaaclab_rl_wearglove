@@ -571,6 +571,7 @@ class AIRECEnv(DirectRLEnv):
         
         self.joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
+        self.joint_pos_error = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         
@@ -701,76 +702,6 @@ class AIRECEnv(DirectRLEnv):
         }
         self._vis_enabled = True
 
-        # self._policy_enabled = False # flag policy starts
-        # self._phase = "pregrasp"
-        # self._pregrasp_steps = 0
-        # # threshold of grasping
-        # self._grasp_min_distance = 0.018
-        # self._grasp_max_distance = 0.085
-        # self._grasp_min_steps = 20
-        # self._pregrasp_duration_s = 0.5
-        # self._pregrasp_total_steps = int(
-        #     self._pregrasp_duration_s / (self.cfg.physics_dt * self.cfg.decimation)
-        # )
-        # self._grip_latched_q = None # (num_envs, num_grip)
-        
-        # _open_target_by_name = {
-        #     "right_hand_first_finger_joint_1": 1.35,
-        #     "right_hand_second_finger_joint_1": 1.35,
-        #     "right_hand_third_finger_joint_1": 1.56,
-        #     "right_hand_thumb_joint_1": 1.32,
-        #     "right_hand_thumb_joint_2": 0.0,
-        #     "right_hand_thumb_joint_3": 0.0,
-        #     "right_hand_first_finger_joint_2": 0.0,
-        #     "right_hand_second_finger_joint_2": 0.0,
-        #     "right_hand_third_finger_joint_2": 1.56,
-        #     "right_hand_thumb_joint_4": 0.0,
-        #     "left_hand_first_finger_joint_1": 1.35,
-        #     "left_hand_second_finger_joint_1": 1.35,
-        #     "left_hand_third_finger_joint_1": 1.56,
-        #     "left_hand_thumb_joint_1": 1.32,
-        #     "left_hand_thumb_joint_2": 0.0,
-        #     "left_hand_thumb_joint_3": 0.0,
-        #     "left_hand_first_finger_joint_2": 0.0,
-        #     "left_hand_second_finger_joint_2": 0.0,
-        #     "left_hand_third_finger_joint_2": 1.56,
-        #     "left_hand_thumb_joint_4": 0.00,
-        # }
-
-        # _close_target_by_name = {
-        #     "right_hand_first_finger_joint_1": 1.35,
-        #     "right_hand_second_finger_joint_1": 1.35,
-        #     "right_hand_third_finger_joint_1": 1.56,
-        #     "right_hand_thumb_joint_1": 1.32,
-        #     "right_hand_thumb_joint_2": 0.23,
-        #     "right_hand_thumb_joint_3": 0.07,
-        #     "right_hand_first_finger_joint_2": 0.49,
-        #     "right_hand_second_finger_joint_2": 0.49,
-        #     "right_hand_third_finger_joint_2": 1.56,
-        #     "right_hand_thumb_joint_4": 0.0,
-        #     "left_hand_first_finger_joint_1": 1.35,
-        #     "left_hand_second_finger_joint_1": 1.35,
-        #     "left_hand_third_finger_joint_1": 1.56,
-        #     "left_hand_thumb_joint_1": 1.32,
-        #     "left_hand_thumb_joint_2": 0.23,
-        #     "left_hand_thumb_joint_3": 0.07,
-        #     "left_hand_first_finger_joint_2": 0.49,
-        #     "left_hand_second_finger_joint_2": 0.49,
-        #     "left_hand_third_finger_joint_2": 1.56,
-        #     "left_hand_thumb_joint_4": 0.0,
-        # }
-
-        # def _vec_from_name_map(name_map: dict):
-        #     vals = []
-        #     for jname in self.cfg.manual_joint_names: 
-        #         if jname not in name_map:
-        #             raise RuntimeError(f"'{jname}' isn't included in namemap")
-        #         vals.append(name_map[jname])
-        #     return torch.tensor(vals, device=self.device, dtype=torch.float32).unsqueeze(0)  # (1, G)
-
-        # self._grip_open_vec  = _vec_from_name_map(_open_target_by_name).expand(self.num_envs, -1)   # (N, G)
-        # self._grip_close_vec = _vec_from_name_map(_close_target_by_name).expand(self.num_envs, -1)  # (N, G)
-        # self._grasp = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
     def _configure_gym_env_spaces(self):
         pass
@@ -794,6 +725,9 @@ class AIRECEnv(DirectRLEnv):
 
     def _setup_scene(self):
 
+        # create deformable/rigid object for this environment
+        self._add_object_to_scene()
+
         self.robot = Articulation(self.cfg.robot_cfg)
         self.hand = Articulation(self.cfg.hand_cfg)
         # collision_cfg = sim_utils.CollisionPropertiesCfg(
@@ -801,8 +735,6 @@ class AIRECEnv(DirectRLEnv):
         # )
         # success = modify_collision_properties("/World/envs/env_0/Robot/base_link", collision_cfg)
         # print("[INFO]Collision disabled?", success)
-
-        self._add_object_to_scene()
 
         # FrameTransformer provides interface for reporting the transform of
         self.left_first_finger_frame = FrameTransformer(self.cfg.left_first_finger_config)
@@ -937,60 +869,6 @@ class AIRECEnv(DirectRLEnv):
         #     self.wholebody_contact_sensor = ContactSensor(self.cfg.wholebody_contact_cfg)
         #     self.scene.sensors["wholebody_contact_sensor"] = self.wholebody_contact_sensor
 
-    def _scripted_pregrasp(self, q_cmd):
-        p = min(1.0, float(self._pregrasp_steps) / max(1, self._pregrasp_total_steps))
-        grip_q = self._grip_q_from_ratio(p)  # (N,G)
-
-        # まず現在の全関節にベースを書き、グリッパ列だけ上書き
-        q_cmd = self.robot.data.joint_pos[:, :].clone()
-        joint_name_list = []
-        joint_name = self.robot.joint_names
-        for i, col in enumerate(self._grip_cols):
-            q_cmd[:, col] = grip_q[:, i]
-            joint_name_list.append(joint_name[col])
-        # print(f"joint_name_list: {joint_name_list}")
-        # import ipdb; ipdb.set_trace()
-        # クランプ＆部分ターゲット
-        lower_all = self.robot_dof_lower_limits[:]
-        upper_all = self.robot_dof_upper_limits[:]
-        q_cmd = torch.clamp(q_cmd, lower_all, upper_all)
-        q_cmd_gripper = q_cmd[:, self._grip_cols]
-        # self.robot.set_joint_position_target(q_cmd_gripper, joint_ids=self._grip_cols)
-        self._pregrasp_steps += 1
-
-    def _grip_limits(self):
-        all_idx = torch.tensor(self._all_actuated_dof_indices, device=self.device, dtype=torch.long)
-        lower_all = self.robot_dof_lower_limits[all_idx]
-        upper_all = self.robot_dof_upper_limits[all_idx]
-        lower_g = self.robot_dof_lower_limits[self._grip_cols].unsqueeze(0).expand(self.num_envs, -1)
-        upper_g = self.robot_dof_upper_limits[self._grip_cols].unsqueeze(0).expand(self.num_envs, -1)
-        
-        return lower_g, upper_g, lower_all, upper_all
-
-    def _grip_open_q(self):
-        return self._grip_open_vec
-
-    def _grip_close_q(self):
-        print("[INFO] Close hand...")
-        return self._grip_close_vec
-
-    def _grip_q_from_ratio(self, s: torch.Tensor):
-        """
-        s: (num_envs,) or スカラー in [0,1]  — 0=開, 1=閉
-        返り値: (num_envs, num_grip)
-        """
-        if not torch.is_tensor(s):
-            s = torch.tensor(float(s), device=self.device)
-        if s.dim() == 0:
-            s = s.expand(self.num_envs)
-        s = torch.clamp(s, 0.0, 1.0).view(-1, 1)
-        return (1.0 - s) * self._grip_open_vec + s * self._grip_close_vec
-
-    def _set_grip_q(self, q_cmd, grip_q):
-        for i, col in enumerate(self._grip_cols):
-            q_cmd[:, col] = grip_q[:, i]
-        return q_cmd
-    
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         Store actions from policy in a class variable
@@ -1092,8 +970,9 @@ class AIRECEnv(DirectRLEnv):
     def _get_proprioception(self):
         prop = torch.cat(
             (
-                self.normalised_joint_pos,
-                self.normalised_joint_vel,
+                self.normalised_joint_pos[:, self.actuated_dof_indices],
+                self.normalised_joint_vel[:, self.actuated_dof_indices],
+                self.joint_pos_error[:, self.actuated_dof_indices],
                 self.right_first_finger_pos,
                 self.right_first_finger_rot,
                 # self.right_first_upper_finger_pos,
@@ -1651,7 +1530,7 @@ class AIRECEnv(DirectRLEnv):
         vel_full = self.robot.data.joint_vel[env_ids]
         self.joint_pos[env_ids] = pos_full[:, self.actuated_idx]
         self.joint_vel[env_ids] = vel_full[:, self.actuated_idx]
-
+        self.joint_pos_error[env_ids] = self.joint_pos_cmd[env_ids] - self.joint_pos[env_ids]
         lower = self.robot_dof_lower_limits[self.actuated_idx]
         upper = self.robot_dof_upper_limits[self.actuated_idx]
         self.normalised_joint_pos[env_ids] = unscale(self.joint_pos[env_ids], lower, upper)
@@ -1747,11 +1626,11 @@ class AIRECEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # no termination at the moment
-        is_grasp_right = self.right_ee_object_euclidean_distance > 0.1 # check
-        is_grasp_left = self.left_ee_object_euclidean_distance > 0.1   # check
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
         too_far = self.ee_euclidean_distance > 0.40 # 0.20
         out_of_reach =self.object_pos[:,2] < 0.5
-        termination = out_of_reach | too_far #| is_grasp_right | is_grasp_left
+        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
         
         # print("termination:", is_grasp_right[0].item(), is_grasp_left[0].item(), too_far[0].item(), out_of_reach[0].item())
 
