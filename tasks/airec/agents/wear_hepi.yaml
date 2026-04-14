@@ -1,0 +1,96 @@
+# Agent YAML for AIREC_Wear_TaskSpace_HEPi (6D EE velocity → integrated pose → IK; HEPi encoder).
+#
+# Reference: ``geometry_rl/configs/cloth_hanging_multi_empn_trpl_cfg.yaml`` — same *family* (Ponita/HEPi cloth),
+# but numeric defaults below are **reduced** vs ``&latent_dim 64`` so Isaac Lab + one GPU stay under VRAM.
+#
+# VRAM (32GB Isaac + HEPi): defaults below are **smaller** than cloth_hanging ``latent_dim: 64`` on purpose.
+# For cloth-parity widths set latent_dim: 64, num_ori: 16, hiddens [64,64], and increase hepi_max_graph_nodes
+# only if you have spare GPU memory.
+seed: 42
+
+observations:
+  obs_list:
+    - prop
+    - gt
+    - hepi_glove_pos
+    - hepi_glove_vel
+    - hepi_ee_pos
+    - hepi_ee_vel
+    - hepi_target_pos
+  obs_stack: 1
+  preprocess:
+    normalise_prop: True
+    binary_tactile: True
+
+encoder:
+  type: wear_hepi
+  method: early
+  hiddens: [96, 64]
+  activations: ["elu", "elu"]
+  layernorm: True
+  state_preprocessor: True # default is none
+  hepi:
+    latent_dim: 40
+    knn_k: 6
+    input_dim_node: 5
+    forward_chunk: 1
+    # Ponita orientation samples; 12↓ saves VRAM vs paper 16 (see ``geometry_rl`` HEPi).
+    num_ori: 12
+
+policy:
+  clip_log_std: True
+  initial_log_std: 0
+  min_log_std: -20.0
+  max_log_std: 2.0
+  hiddens: [96, 64]
+  # Unbounded mean for Gaussian policy (``tanh`` last layer can saturate; not needed for action mean).
+  activations: ["elu", "elu", "identity"]
+
+value:
+  hiddens: [96, 64]
+  activations: ["elu", "elu", "identity"]
+
+pixels:
+  img_dim: 84
+  latent_img_dim: 128
+  channels: 3
+
+agent:
+  rollouts: 2
+  learning_epochs: 1
+  mini_batches: 4
+  discount_factor: 0.99
+  lambda: 0.95
+  learning_rate: 1.0595873261695062e-05
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 1.0
+  ratio_clip: 0.2
+  value_clip: 0.2
+  clip_predicted_values: True
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0
+  rewards_shaper_scale: 1.0
+  augment: False
+
+trainer:
+  # Must be strictly less than scene.num_envs (WearFingerHepiTaskSpaceEnvCfg defaults to 2).
+  num_eval_envs: 2
+  max_global_timesteps_M: 200
+
+experiment:
+  directory: "airec2_finger"
+  experiment_name: "wear_hepi"
+  save_checkpoints: 2
+  upload_videos: 0
+  video_dir: "videos"
+  tb_log: True
+  debug: 0
+  wandb: 1
+  wandb_kwargs: {
+    "entity": "",
+    "project": "isaac_lab",
+    "group": "airec_wear_hepi",
+    "name": "wear_hepi",
+  }

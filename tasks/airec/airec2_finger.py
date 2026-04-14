@@ -171,9 +171,11 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     manual_joint_names = []
     ###########################################################################################
 
-    # robot
+    # robot — keep articulation_root explicit so PhysX does not bind a subtree (right arm only);
+    # see assets/airec_finger.py on ``articulation_root_prim_path`` / dry-airec2_standard.usd.
     robot_cfg: ArticulationCfg = AIREC_CFG.replace(
-        prim_path="/World/envs/env_.*/Robot"
+        prim_path="/World/envs/env_.*/Robot",
+        articulation_root_prim_path="/base_link",
     )
 
     #: Teleop mixin / some tasks: when True, base DOFs are commanded as velocities (see ``TeleopJointSpaceMixin``).
@@ -290,7 +292,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # actuated_joint_names = base_wheels + actuated_base_joints + actuated_head_joints + actuated_torso_joints + actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
 
     # currently 28
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
+    # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -302,7 +305,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # frame transformers for fingertips
     left_first_finger_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/base_link",
-        debug_vis=True,
+        debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
@@ -334,7 +337,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     right_first_finger_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/base_link",
-        debug_vis=True,
+        debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
@@ -510,7 +513,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     normalise_prop = True
     normalise_pixels = True
     num_cameras = 1
-    object_type = "deformable"  # "none" (no scene object) | "rigid" | "deformable"
+    object_type = "deformable"  # "none" (no scene object) | "rigid" | "deformable" — override in task cfgs (e.g. WearEnvCfg)
     binary_tactile = False
     OPEN_IS_UPPER = True  # True: 上限=開, 下限=閉 / False: 上限=閉, 下限=開
 
@@ -546,22 +549,15 @@ class AIRECEnv(DirectRLEnv):
 
         ############################# list of actuated joints/manual joints #################################
         self.actuated_dof_indices = list()
-        self.manual_dof_indices = list()
         policy_set = set(self.cfg.actuated_joint_names)
-        manual_set = set(self.cfg.manual_joint_names)
         self.actuated_dof_indices = [
             i for i, n in enumerate(self.robot.joint_names) if n in policy_set
         ]
-        self.manual_dof_indices = [
-            i for i, n in enumerate(self.robot.joint_names) if n in manual_set
-        ]
+
         # verify joint names
         if len(self.actuated_dof_indices) != len(self.cfg.actuated_joint_names):
             missing = sorted(set(self.cfg.actuated_joint_names) - set(self.robot.joint_names))
             raise RuntimeError(f"actuated_joint_names not found in USD: {missing}")
-        if len(self.manual_dof_indices) != len(self.cfg.manual_joint_names):
-            missing = sorted(set(self.cfg.manual_joint_names) - set(self.robot.joint_names))
-            raise RuntimeError(f"manual_joint_names not found in USD: {missing}")
         #####################################################################################################
 
         self._actuated_name_to_col = {self.robot.joint_names[i]: i for i in self.actuated_dof_indices}
@@ -720,8 +716,6 @@ class AIRECEnv(DirectRLEnv):
             "object_found_med": None,
             "object_found_hard": None,
         }
-        self._vis_enabled = True
-
 
     def _configure_gym_env_spaces(self):
         pass
@@ -747,22 +741,19 @@ class AIRECEnv(DirectRLEnv):
 
     def _setup_scene(self):
 
-        # create deformable/rigid object for this environment
-        self._add_object_to_scene()
-
+        # Instantiate articulations before deformable/rigid task objects. Spawning a soft body first on some
+        # Isaac Sim 5.x + GPU stacks can invalidate PhysX articulation views (weakref.proxy dies on first
+        # scene.update — ReferenceError in articulation_data.joint_vel).
         self.robot = Articulation(self.cfg.robot_cfg)
         self.hand = Articulation(self.cfg.hand_cfg)
-        # collision_cfg = sim_utils.CollisionPropertiesCfg(
-        #     collision_enabled=False 
-        # )
-        # success = modify_collision_properties("/World/envs/env_0/Robot/base_link", collision_cfg)
-        # print("[INFO]Collision disabled?", success)
 
+        # self._add_object_to_scene()
+        
         # FrameTransformer provides interface for reporting the transform of
         self.left_first_finger_frame = FrameTransformer(self.cfg.left_first_finger_config)
-        self.left_first_finger_frame.set_debug_vis(False)
+        self.left_first_finger_frame.set_debug_vis(True)
         self.right_first_finger_frame = FrameTransformer(self.cfg.right_first_finger_config)
-        self.right_first_finger_frame.set_debug_vis(False)
+        self.right_first_finger_frame.set_debug_vis(True)
         self.left_first_upper_finger_frame = FrameTransformer(self.cfg.left_first_upper_finger_config)
         self.left_first_upper_finger_frame.set_debug_vis(False)
         self.right_first_upper_finger_frame = FrameTransformer(self.cfg.right_first_upper_finger_config)
@@ -1661,16 +1652,6 @@ class AIRECEnv(DirectRLEnv):
         # self.left_ee_object_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.east_edge_rot[env_ids]))
         # self.left_ee_object_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.east_edge_rot[env_ids])
         
-        if not self._vis_enabled:
-            if (self.anchor_east_tf.data is not None and self.anchor_west_tf.data is not None):
-                self.anchor_east_tf.set_debug_vis(True) 
-                self.anchor_west_tf.set_debug_vis(True) 
-                # self.anchor_north_tf.set_debug_vis(True) 
-                # self.anchor_south_tf.set_debug_vis(True) 
-                # self.right_first_finger_frame.set_debug_vis(True) # right-west
-                # self.left_first_finger_frame.set_debug_vis(True)   # left-east
-                self._vis_enabled = True
-
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
 
@@ -1762,6 +1743,7 @@ def distance_cond_reward(object_ee_distance, goal_object_distance, minimal_width
     return r_reach
 
 @torch.jit.script
+
 def distance_reward(object_ee_distance, std: float = 0.1):
     r_reach = 1 - torch.tanh(object_ee_distance / std)
     return r_reach

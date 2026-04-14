@@ -51,8 +51,9 @@ SHADOW_HAND_CFG = ArticulationCfg(
        
         # pos=(0.95, 0.0, 0.90),
         #    pos=(0.95, 0.0, 0.95),
-            pos=(0.85, 0.0, 0.80),
-        # rot=(0.0, 0.7071, 0.7071, 0.0),
+            # pos=(0.85, 0.0, 0.80), # default
+             pos=(0.80, 0.0, 0.77),
+        # rot=(0.0, 0.7071, 0.7071, 0.0),# imitation
         rot=(0.5, 0.5, -0.5, -0.5),
         joint_pos={
             #".*": 0.0,          # default: open hand

@@ -21,7 +21,16 @@ parser.add_argument("--video_interval", type=int, default=500, help="Interval be
 parser.add_argument("--video_dir", type=str, default=None, help="Directory to save recorded videos.")
 
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument(
+    "--task",
+    type=str,
+    default=None,
+    help=(
+        "Gym task id (must be registered). Joint-space: e.g. AIREC_Wear. "
+        "Task-space (diff IK): AIREC_Wear_TaskSpace, AIREC2_Finger_TaskSpace. "
+        "HEPi + 6D EE velocity: AIREC_Wear_TaskSpace_HEPi (use --agent_cfg wear_hepi)."
+    ),
+)
 parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the agent configuration.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 # Rendering options (useful for RTX5090 and similar GPUs)
@@ -67,7 +76,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
     try:
         main()
     except Exception as err:

@@ -159,7 +159,13 @@ def make_models(env, env_cfg, agent_cfg, dtype):
     observation_space = env.observation_space["policy"]
     action_space = env.action_space
 
-    encoder = Encoder(observation_space, action_space, env_cfg, agent_cfg, device=env.device)
+    enc_type = agent_cfg.get("encoder", {}).get("type", "mlp")
+    if enc_type == "wear_hepi":
+        from tasks.airec.encoder_wear_hepi import WearHepiFusionEncoder
+
+        encoder = WearHepiFusionEncoder(observation_space, action_space, env_cfg, agent_cfg, device=env.device)
+    else:
+        encoder = Encoder(observation_space, action_space, env_cfg, agent_cfg, device=env.device)
     z_dim = encoder.num_outputs
 
     policy = GaussianPolicy(
@@ -294,6 +300,12 @@ def train_one_seed(args_cli, env, agent_cfg=None, env_cfg=None, writer=None, see
 
     # Create tensors in memory for RL (only for the training envs, not eval envs)
     env.num_train_envs = env_cfg.scene.num_envs - agent_cfg["trainer"]["num_eval_envs"]
+    if env.num_train_envs < 1:
+        raise ValueError(
+            f"num_train_envs must be >= 1 (got {env.num_train_envs}): scene.num_envs={env_cfg.scene.num_envs} "
+            f"and trainer.num_eval_envs={agent_cfg['trainer']['num_eval_envs']}. "
+            "Set num_eval_envs < scene.num_envs or increase --num_envs."
+        )
     rl_memory = make_memory(env, env_cfg, size=agent_cfg["agent"]["rollouts"], num_envs=env.num_train_envs)
     ssl_task = make_aux(env, rl_memory, encoder, value, value_preprocessor, env_cfg, agent_cfg, writer)
 
