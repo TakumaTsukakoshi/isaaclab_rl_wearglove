@@ -53,7 +53,9 @@ class TeleopWearGloveEnvCfg(WearEnvCfg):
             super().__post_init__()
         except AttributeError:
             pass
-        # Override scene configuration for single environment teleop after parent initialization
+        # Deformable gloves require replicate_physics=False (Isaac Lab InteractiveSceneCfg note: optimized PhysX
+        # parsing does not support deformables with replication). True + soft body has been observed to leave
+        # articulation tensor views stale → weakref.ReferenceError in articulation_data.joint_vel on scene.update.
         object.__setattr__(self, "scene", InteractiveSceneCfg(num_envs=1, env_spacing=2.0, replicate_physics=False))
         object.__setattr__(self, "viewer", teleop_viewer_cfg(self.viewer_mode))
 

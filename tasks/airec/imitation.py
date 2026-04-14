@@ -40,6 +40,7 @@ class ImitationEnvCfg(AIRECEnvCfg):
     #: No scene object — freespace / teleop imitation. For a **deformable glove**, use
     #: :class:`tasks.airec.teleop_wearglove.TeleopWearGloveEnv` / ``--task wearglove`` (see :class:`WearEnvCfg`).
     #: Ignored when :attr:`imitation_demo_path` is set (length matches demo).
+    object_type = "none"
     episode_length_s = 10.0
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=1, env_spacing=3.0, replicate_physics=False)
 
