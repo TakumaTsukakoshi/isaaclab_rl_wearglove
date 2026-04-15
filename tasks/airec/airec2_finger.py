@@ -151,7 +151,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = False
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4, env_spacing=3, replicate_physics=replicate_physics
+        num_envs=8, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055

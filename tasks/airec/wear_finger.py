@@ -97,15 +97,15 @@ class WearEnvCfg(AIRECEnvCfg):
             deformable_props=DeformableBodyPropertiesCfg(
                 deformable_enabled=True,
                 kinematic_enabled=False,
-                self_collision=True,
-                simulation_hexahedral_resolution=40,  # default 10 
+                self_collision=False,
+                simulation_hexahedral_resolution=10,  # default 10 
                 # simulation_hexahedral_resolution=20,  # default 10 
                 collision_simplification=True,
                 collision_simplification_remeshing=True,
-                collision_simplification_remeshing_resolution=30, # 40
+                collision_simplification_remeshing_resolution=10, # 40
                 collision_simplification_target_triangle_count=0,
                 collision_simplification_force_conforming=True,
-                solver_position_iteration_count=64, # default 8
+                solver_position_iteration_count=12, # default 8
                 # solver_position_iteration_count=32, # default 8
                 contact_offset=0.010, # default
                 rest_offset=0.006, # default
@@ -482,14 +482,6 @@ class WearEnv(AIRECEnv):
         gt = torch.cat(
             (   
                 # xyz diffs (3,)
-                self.right_ee_thumb_distance,
-                # rotation quaternion (4,)
-                # self.right_ee_goal_rotation,
-                # xyz diffs (3,)
-                self.left_ee_pinky_distance,
-                # rotation quaternion (4,)
-                # self.left_ee_goal_rotation,
-                # xyz diffs (3,)
                 self.ee_distance,
                 # euclidean distance (1,)
                 self.ee_euclidean_distance.unsqueeze(1),
@@ -514,20 +506,20 @@ class WearEnv(AIRECEnv):
                 # angular distances (1,)
                 self.left_ee_pinky_angular_distance.unsqueeze(1),
                 # xyz diffs (3,)
-                self.depth_distance.unsqueeze(1),
-                # xyz diffs (3,)
-                self.depth_thumb_distance.unsqueeze(1),
-                # xyz diffs (3,)
-                self.depth_pinky_distance.unsqueeze(1),
+                # self.depth_distance.unsqueeze(1),
+                # # xyz diffs (3,)
+                # self.depth_thumb_distance.unsqueeze(1),
+                # # xyz diffs (3,)
+                # self.depth_pinky_distance.unsqueeze(1),
 
-                # xyz diffs (3,)
-                self.goal_wrist_pos,
-                # xyz diffs (3,)
-                self.goal_cent_pos,
-                # xyz diffs (3,)
-                self.goal_north_pos,
-                # xyz diffs (3,)
-                self.goal_south_pos,
+                # # xyz diffs (3,)
+                # self.goal_wrist_pos,
+                # # xyz diffs (3,)
+                # self.goal_cent_pos,
+                # # xyz diffs (3,)
+                # self.goal_north_pos,
+                # # xyz diffs (3,)
+                # self.goal_south_pos,
             ),
             dim=-1,
         )
@@ -716,9 +708,15 @@ class WearEnv(AIRECEnv):
         # self.goal_west_markers.visualize(self.goal_west_pos[env_ids], self.identity_quat)
         # self.goal_cent_markers.visualize(self.goal_cent_pos, self.goal_cent_rot)
         
-        # Visualize thumb and pinky targets
-        self.thumb_target_markers.visualize(self.thumb_target+self.scene.env_origins[env_ids], self.identity_quat)
-        self.pinky_target_markers.visualize(self.pinky_target+self.scene.env_origins[env_ids], self.identity_quat)
+        # Visualize thumb and pinky targets (must index by env_ids: subset reset has |env_ids| < num_envs)
+        self.thumb_target_markers.visualize(
+            self.thumb_target[env_ids] + self.scene.env_origins[env_ids],
+            self.identity_quat[env_ids],
+        )
+        self.pinky_target_markers.visualize(
+            self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
+            self.identity_quat[env_ids],
+        )
         
         self.garment_right_ee_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.goal_west_pos[env_ids]  
         self.garment_right_ee_euclidean_distance[env_ids] = torch.norm(self.garment_right_ee_distance[env_ids], dim=1)
@@ -772,7 +770,6 @@ class WearEnv(AIRECEnv):
         self.left_ee_pinky_rotation[env_ids] = quat_mul(self.left_first_finger_rot[env_ids], quat_conjugate(self.pinky_goal_rot[env_ids]))
         self.left_ee_pinky_angular_distance[env_ids] = rotation_distance(self.left_first_finger_rot[env_ids], self.pinky_goal_rot[env_ids])
         # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
-        
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
@@ -810,21 +807,19 @@ def compute_rewards(
     pinky_height: torch.Tensor,
     minimal_width: float,
 ):
-    joint_vel_penalty_scale = 0
-    rotation_object_goal_scale = 0.5 # 10.0
-    insert_scale = 0.0
+
+    rotation_object_goal_scale = 0.0 # 10.0
     reaching_object_goal_scale = 1.0
-    stretch_object_scale = 1.5
-    depth_reward_scale = 10.0
-    depth_thumb_reward_scale = 3.0
-    depth_pinky_reward_scale = 3.0
+    stretch_object_scale = 0.5
+    depth_reward_scale = 0.0
+    depth_thumb_reward_scale = 0.0
+    depth_pinky_reward_scale = 0.0
 
     # FOR REACHING (include condition))
-    r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.01) * stretch_object_scale
-    r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.04) * reaching_object_goal_scale
-    r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.02) * reaching_object_goal_scale
-    # print(f"r_right_ee_thumb_distance: {right_ee_thumb_euclidean_distance[0]}, left_ee_pinky_euclidean_distance: {left_ee_pinky_euclidean_distance[0]}")
-    
+    r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.03) * stretch_object_scale # 0.055
+    r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale * 0.0
+    r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.3) * reaching_object_goal_scale
+
     # FOR REACHING+INSERTING
     # r_garment_thumb_distance = distance_reward(goal_distance_thumb_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # r_garment_pinky_distance = distance_reward(garment_pinky_euclidean_distance, std=0.09) * reaching_object_goal_scale
