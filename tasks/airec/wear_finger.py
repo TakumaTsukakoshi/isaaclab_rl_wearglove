@@ -558,6 +558,8 @@ class WearEnv(AIRECEnv):
                 r_depth_pinky_distance,
                 r_angular_right_ee_thumb,
                 r_angular_left_ee_pinky,
+                r_right_ee_touch_distance,
+                r_left_ee_touch_distance,
             ) = compute_rewards(
                 self.reaching_object_goal_scale,
                 self.reaching_ee_object_scale,
@@ -595,6 +597,8 @@ class WearEnv(AIRECEnv):
                 "depth_pinky_reward": r_depth_pinky_distance,
                 "angular_reward_right": r_angular_right_ee_thumb,
                 "angular_reward_left": r_angular_left_ee_pinky,
+                "touch_reward_right": r_right_ee_touch_distance,
+                "touch_reward_left": r_left_ee_touch_distance,
             }
 
         if "tactile" in self.cfg.obs_list:
@@ -831,8 +835,9 @@ def compute_rewards(
 ):
 
     rotation_object_goal_scale = 0.0 # 10.0
-    reaching_object_goal_scale = 1.0
+    reaching_object_goal_scale = 0.0
     stretch_object_scale = 0.0
+    touching_object_goal_scale = 1.0
     depth_reward_scale = 0.0
     depth_thumb_reward_scale = 0.0
     depth_pinky_reward_scale = 0.0
@@ -841,7 +846,8 @@ def compute_rewards(
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.04) * stretch_object_scale # 0.03
     r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-
+    r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
+    r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # FOR REACHING+INSERTING
     # r_garment_thumb_distance = distance_reward(goal_distance_thumb_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # r_garment_pinky_distance = distance_reward(garment_pinky_euclidean_distance, std=0.09) * reaching_object_goal_scale
@@ -861,6 +867,6 @@ def compute_rewards(
     # minillion bonus reward
     # r_object_goal = object_goal_reward(right_ee_thumb_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale
     # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
-    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky
+    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance
 
-    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky)
+    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance)
