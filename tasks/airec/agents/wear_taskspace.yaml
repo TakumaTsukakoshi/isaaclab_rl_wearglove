@@ -1,4 +1,4 @@
-# Agent YAML for AIREC_Wear_TaskSpace (14D task-space actions; policy/output size comes from the env).
+# Agent YAML for AIREC_Wear_TaskSpace (26D: 14D dual-arm poses + 12D thumb/first-finger; sizes come from the env).
 seed: 42
 
 observations:

@@ -55,6 +55,8 @@ class WearEnvCfg(AIRECEnvCfg):
       Goal frames (:attr:`thumb_goal_config`, :attr:`pinky_goal_config`, :attr:`wrist_goal_config`, …)
       point at Shadow Hand links so rewards and insertion logic test alignment of the garment / AIREC
       hands **toward** that hand — the standard setup for “can AIREC wear the glove toward Shadow Hand?”.
+    - **Task-space RL** (optional): :mod:`tasks.airec.wear_finger_taskspace` uses dual-arm diff IK plus the same
+      thumb / first-finger joints as ``assets/airec_finger`` defaults; see :class:`~tasks.airec.wear_finger_taskspace.WearFingerTaskSpaceEnvCfg`.
     """
 
     object_type = "deformable"
@@ -68,6 +70,7 @@ class WearEnvCfg(AIRECEnvCfg):
     # default_object_pos = [0.27, 0.00, 1.07] # 0.13 # 1.07　default maybe for airec1
     # default_object_pos = [0.27, 0.00, 1.07] # airec1
     # default_object_pos = [0.26, 0.00, 0.85] # airec2 default
+    # default_object_pos = [0.18, 0.00, 0.83] # airec2
     default_object_pos = [0.18, 0.00, 0.83] # airec2
 
     #: If True, use arXiv:2502.07005 App. B.7 (cloth-hanging) style reward via :mod:`tasks.airec.mdp.rewards`.
@@ -98,14 +101,14 @@ class WearEnvCfg(AIRECEnvCfg):
                 deformable_enabled=True,
                 kinematic_enabled=False,
                 self_collision=False,
-                simulation_hexahedral_resolution=10,  # default 10 
+                simulation_hexahedral_resolution=20,  # default 10 
                 # simulation_hexahedral_resolution=20,  # default 10 
                 collision_simplification=True,
                 collision_simplification_remeshing=True,
                 collision_simplification_remeshing_resolution=10, # 40
                 collision_simplification_target_triangle_count=0,
                 collision_simplification_force_conforming=True,
-                solver_position_iteration_count=12, # default 8
+                solver_position_iteration_count=16, # default 8
                 # solver_position_iteration_count=32, # default 8
                 contact_offset=0.010, # default
                 rest_offset=0.006, # default
@@ -133,8 +136,9 @@ class WearEnvCfg(AIRECEnvCfg):
     # goal_marker_cfg.prim_path = "/World/envs/env_.*/Visuals/GoalMarker"
 
     # finger goal frame trandformers
+    # Source frame must match a rigid body prim in the spawned AIREC USD (AIREC2 uses ``world``; ``base_link`` may be absent).
     thumb_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -152,7 +156,7 @@ class WearEnvCfg(AIRECEnvCfg):
     )
 
     pinky_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -169,7 +173,7 @@ class WearEnvCfg(AIRECEnvCfg):
     )
 
     fore_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-            prim_path="/World/envs/env_.*/Robot/base_link",
+            prim_path="/World/envs/env_.*/Robot/world",
             debug_vis=False,
             visualizer_cfg=goal_marker_cfg,
             target_frames=[
@@ -186,7 +190,7 @@ class WearEnvCfg(AIRECEnvCfg):
             )
     
     middle_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -203,7 +207,7 @@ class WearEnvCfg(AIRECEnvCfg):
     )
 
     ring_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -221,7 +225,7 @@ class WearEnvCfg(AIRECEnvCfg):
 
 
     wrist_goal_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=goal_marker_cfg,
         target_frames=[
@@ -431,16 +435,15 @@ class WearEnv(AIRECEnv):
         self.goal_east_markers  = VisualizationMarkers(self.cfg.glove_east)
         self.goal_west_markers  = VisualizationMarkers(self.cfg.glove_west)
         self.goal_cent_markers  = VisualizationMarkers(self.cfg.glove_cent)
-
         # Initialize visualization markers for thumb and pinky targets
         self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
         self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
         
 
         self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
-        self.thumb_goal_frame.set_debug_vis(True)
+        self.thumb_goal_frame.set_debug_vis(False)
         self.pinky_goal_frame = FrameTransformer(self.cfg.pinky_goal_config)
-        self.pinky_goal_frame.set_debug_vis(True)
+        self.pinky_goal_frame.set_debug_vis(False)
         self.fore_goal_frame = FrameTransformer(self.cfg.fore_goal_config)
         self.fore_goal_frame.set_debug_vis(False)
         self.middle_goal_frame = FrameTransformer(self.cfg.middle_goal_config)
@@ -541,6 +544,9 @@ class WearEnv(AIRECEnv):
         if self.cfg.use_geometryrl_b7_reward:
             rewards, b7_log = geometryrl_b7_cloth_hanging_reward(self)
             self.extras["log"] = dict(b7_log)
+            term_log = getattr(self, "_term_log", None)
+            if term_log is not None:
+                self.extras["log"].update(term_log)
         else:
             (
                 rewards,
@@ -598,6 +604,12 @@ class WearEnv(AIRECEnv):
                     "normalised_forces_right_x": self.normalised_forces[:, 1],
                 }
             )
+        
+        # Termination flags from ``AIRECEnv._get_dones`` (same control step; merged here because
+        # ``_get_rewards`` overwrites ``extras["log"]`` after ``_get_dones`` runs).
+        term_log = getattr(self, "_term_log", None)
+        if term_log is not None:
+            self.extras["log"].update(term_log)
 
         self.extras["counters"] = {}
         return rewards
@@ -642,6 +654,7 @@ class WearEnv(AIRECEnv):
         # if you also want actual outward offset targets
         direction = pinky - thumb
         norm = torch.norm(direction, dim=-1, keepdim=True).clamp_min(1e-8)
+        # print(f"norm: {norm}")
         unit_dir = direction / norm
 
         # self.thumb_target[env_ids] = thumb - thumb_offset * unit_dir + self.scene.env_origins[env_ids]
@@ -691,6 +704,7 @@ class WearEnv(AIRECEnv):
             env_ids = self.robot._ALL_INDICES
 
         # print("number of nodes", self.object.data.nodal_pos_w.size())
+        # print(f"anchor_idx: {self.anchor_idx}")
         self.goal_north_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["north"], :] - self.scene.env_origins[env_ids]  
         self.goal_south_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["south"], :] - self.scene.env_origins[env_ids]  
         self.goal_east_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["east"], :] - self.scene.env_origins[env_ids] 
@@ -704,8 +718,9 @@ class WearEnv(AIRECEnv):
         # Visualize goal markers
         # self.goal_north_markers.visualize(self.goal_north_pos, self.goal_north_rot)
         # self.goal_south_markers.visualize(self.goal_south_pos, self.goal_south_rot)
-        # self.goal_east_markers.visualize(self.goal_east_pos[env_ids], self.identity_quat)
-        # self.goal_west_markers.visualize(self.goal_west_pos[env_ids], self.identity_quat)
+        # East/West use identity quaternion; must be indexed by env_ids on partial resets.
+        # self.goal_east_markers.visualize(self.goal_east_pos[env_ids], self.identity_quat[env_ids])
+        # self.goal_west_markers.visualize(self.goal_west_pos[env_ids], self.identity_quat[env_ids])
         # self.goal_cent_markers.visualize(self.goal_cent_pos, self.goal_cent_rot)
         
         # Visualize thumb and pinky targets (must index by env_ids: subset reset has |env_ids| < num_envs)
@@ -717,10 +732,15 @@ class WearEnv(AIRECEnv):
             self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
             self.identity_quat[env_ids],
         )
-        
-        self.garment_right_ee_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.goal_west_pos[env_ids]  
+        self.goal_east_markers.visualize(self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids])
+        self.goal_west_markers.visualize(self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids])
+        # self.goal_north_markers.visualize(self.goal_north_pos[env_ids] , self.identity_quat[env_ids])
+        # self.goal_south_markers.visualize(self.goal_south_pos[env_ids] , self.identity_quat[env_ids])
+        # self.goal_cent_markers.visualize(self.goal_cent_pos[env_ids] , self.identity_quat[env_ids])
+
+        self.garment_right_ee_distance[env_ids] = self.right_ee_pos[env_ids] - self.goal_west_pos[env_ids]  
         self.garment_right_ee_euclidean_distance[env_ids] = torch.norm(self.garment_right_ee_distance[env_ids], dim=1)
-        self.garment_left_ee_distance[env_ids] = self.left_first_finger_pos[env_ids] - self.goal_east_pos[env_ids]
+        self.garment_left_ee_distance[env_ids] = self.left_ee_pos[env_ids] - self.goal_east_pos[env_ids]
         self.garment_left_ee_euclidean_distance[env_ids] = torch.norm(self.garment_left_ee_distance[env_ids], dim=1)
 
         B = len(env_ids)
@@ -760,18 +780,20 @@ class WearEnv(AIRECEnv):
         self.top_wrist_euclidean_distance[env_ids] = torch.norm(self.top_wrist_distance[env_ids], dim=1)
         self.under_wrist_euclidean_distance[env_ids] = torch.norm(self.under_wrist_distance[env_ids], dim=1)
         # print(f"east: {self.west_edge_pos[0]} thumb_goal_pos:{self.thumb_goal_pos[0]}")
-        self.right_ee_thumb_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.thumb_target[env_ids]
+        self.right_ee_thumb_distance[env_ids] = self.right_ee_pos[env_ids] - self.thumb_target[env_ids]
         self.right_ee_thumb_euclidean_distance[env_ids] = torch.norm(self.right_ee_thumb_distance[env_ids], dim=1)
-        self.right_ee_thumb_rotation[env_ids] = quat_mul(self.right_first_finger_rot[env_ids], quat_conjugate(self.thumb_goal_rot[env_ids]))
-        self.right_ee_thumb_angular_distance[env_ids] = rotation_distance(self.right_first_finger_rot[env_ids], self.thumb_goal_rot[env_ids])
+        self.right_ee_thumb_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.thumb_goal_rot[env_ids]))
+        self.right_ee_thumb_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.thumb_goal_rot[env_ids])
         # self.left_ee_goal_distance[env_ids] = self.left_l_ee_pos[env_ids] - self.pinky_goal_pos[env_ids]
-        self.left_ee_pinky_distance[env_ids] = self.left_first_finger_pos[env_ids] - self.pinky_target[env_ids]
+        self.left_ee_pinky_distance[env_ids] = self.left_ee_pos[env_ids] - self.pinky_target[env_ids]
         self.left_ee_pinky_euclidean_distance[env_ids] = torch.norm(self.left_ee_pinky_distance[env_ids], dim=1)
-        self.left_ee_pinky_rotation[env_ids] = quat_mul(self.left_first_finger_rot[env_ids], quat_conjugate(self.pinky_goal_rot[env_ids]))
-        self.left_ee_pinky_angular_distance[env_ids] = rotation_distance(self.left_first_finger_rot[env_ids], self.pinky_goal_rot[env_ids])
+        self.left_ee_pinky_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.pinky_goal_rot[env_ids]))
+        self.left_ee_pinky_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.pinky_goal_rot[env_ids])
         # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
+        # print(f"goal_stretch_euclidean_distance: {self.goal_stretch_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}, ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
+        # print(f"garment_right_ee_euclidean_distance: {self.garment_right_ee_euclidean_distance[0]}, garment_left_ee_euclidean_distance: {self.garment_left_ee_euclidean_distance[0]}, right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}, left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]}")
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
         self.depth_distance[env_ids] = torch.abs(self.goal_cent_pos[env_ids, 0] - self.goal_wrist_pos[env_ids, 0])
         # print(f"depth_distance: {self.depth_distance[0]}") # ~0.35
@@ -810,15 +832,15 @@ def compute_rewards(
 
     rotation_object_goal_scale = 0.0 # 10.0
     reaching_object_goal_scale = 1.0
-    stretch_object_scale = 0.5
+    stretch_object_scale = 0.0
     depth_reward_scale = 0.0
     depth_thumb_reward_scale = 0.0
     depth_pinky_reward_scale = 0.0
 
     # FOR REACHING (include condition))
-    r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.03) * stretch_object_scale # 0.055
-    r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale * 0.0
-    r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.3) * reaching_object_goal_scale
+    r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.04) * stretch_object_scale # 0.03
+    r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
+    r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
 
     # FOR REACHING+INSERTING
     # r_garment_thumb_distance = distance_reward(goal_distance_thumb_euclidean_distance, std=0.09) * reaching_object_goal_scale

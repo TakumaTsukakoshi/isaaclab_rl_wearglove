@@ -1,4 +1,4 @@
-# Agent YAML for AIREC2_Finger_TaskSpace (14D task-space actions).
+# Agent YAML for AIREC2_Finger_TaskSpace (26D: 14D poses + 12D hands; policy width comes from the env).
 seed: 42
 
 observations:

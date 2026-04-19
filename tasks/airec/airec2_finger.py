@@ -115,6 +115,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     default_goal_euclidean_distance = 0.19
 
+    # Task-space / Cartesian control (``airec2_finger_taskspace``, ``wear_finger_taskspace``; joint-space ignores these).
+    task_space_pos_min: tuple[float, float, float] = (-0.55, -0.55, 0.35)
+    task_space_pos_max: tuple[float, float, float] = (0.55, 0.55, 1.45)
+    #: Maps hand actions in ``[-1, 1]`` to ``default_joint_pos ± fraction * (upper-lower)/2`` (per joint).
+    taskspace_hand_span_fraction: float = 0.35
+
     # simulation
     sim: SimulationCfg = SimulationCfg(
         dt=physics_dt,
@@ -175,7 +181,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # see assets/airec_finger.py on ``articulation_root_prim_path`` / dry-airec2_standard.usd.
     robot_cfg: ArticulationCfg = AIREC_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
-        articulation_root_prim_path="/base_link",
+        articulation_root_prim_path="/world",
     )
 
     #: Teleop mixin / some tasks: when True, base DOFs are commanded as velocities (see ``TeleopJointSpaceMixin``).
@@ -220,45 +226,45 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
     
     # actuated_lhand_joints=[
-    #     "left_hand_first_finger_joint_1",
+    #     "left_hand_ee_joint_1",
     #     "left_hand_second_finger_joint_1",
     #     "left_hand_third_finger_joint_1",
     #     "left_hand_thumb_joint_1",
     #     "left_hand_thumb_joint_2",
     #     "left_hand_thumb_joint_3",
-    #     "left_hand_first_finger_joint_2",
+    #     "left_hand_ee_joint_2",
     #     "left_hand_second_finger_joint_2",
     #     "left_hand_third_finger_joint_2",
     #     "left_hand_thumb_joint_4",
     # ]
 
     # actuated_rhand_joints=[
-    #     "right_hand_first_finger_joint_1",
+    #     "right_hand_ee_joint_1",
     #     "right_hand_second_finger_joint_1",
     #     "right_hand_third_finger_joint_1",
     #     "right_hand_thumb_joint_1",
     #     "right_hand_thumb_joint_2",
     #     "right_hand_thumb_joint_3",
-    #     "right_hand_first_finger_joint_2",
+    #     "right_hand_ee_joint_2",
     #     "right_hand_second_finger_joint_2",
     #     "right_hand_third_finger_joint_2",
     #     "right_hand_thumb_joint_4",
     # ]
     actuated_lhand_joints=[
-        "left_hand_first_finger_joint_1",
+        "left_hand_ee_joint_1",
         "left_hand_thumb_joint_1",
         "left_hand_thumb_joint_2",
         "left_hand_thumb_joint_3",
-        "left_hand_first_finger_joint_2",
+        "left_hand_ee_joint_2",
         "left_hand_thumb_joint_4",
     ]
 
     actuated_rhand_joints=[
-        "right_hand_first_finger_joint_1",
+        "right_hand_ee_joint_1",
         "right_hand_thumb_joint_1",
         "right_hand_thumb_joint_2",
         "right_hand_thumb_joint_3",
-        "right_hand_first_finger_joint_2",
+        "right_hand_ee_joint_2",
         "right_hand_thumb_joint_4",
     ]
 
@@ -303,14 +309,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     marker_cfg.prim_path = "/Visuals/EndEffectorFrameTransformer"
 
     # frame transformers for fingertips
-    left_first_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+    left_ee_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
                 prim_path="/World/envs/env_.*/Robot/left_hand_first_finger_link_1",
-                name="left_first_finger",
+                name="left_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[0.0, 0.0, 1.0, 0.0]
@@ -319,14 +325,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         ],
     )
 
-    left_first_upper_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+    left_upper_ee_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
                 prim_path="/World/envs/env_.*/Robot/left_hand_first_finger_link_2",
-                name="left_first_upper_finger",
+                name="left_upper_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[0.0, 0.0, 1.0, 0.0]
@@ -335,14 +341,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         ],
     )
 
-    right_first_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+    right_ee_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
                 prim_path="/World/envs/env_.*/Robot/right_hand_first_finger_link_1",
-                name="right_first_finger",
+                name="right_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[1.0, 0.0, 0.0, 0.0]
@@ -351,14 +357,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         ],
     )
 
-    right_first_upper_finger_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+    right_upper_ee_config: FrameTransformerCfg = FrameTransformerCfg(
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
                 prim_path="/World/envs/env_.*/Robot/right_hand_first_finger_link_2",
-                name="right_first_upper_finger",
+                name="right_upper_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
                     rot=[1.0, 0.0, 0.0, 0.0]
@@ -368,7 +374,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     )
 
     right_thumb_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
@@ -384,7 +390,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     )
 
     left_thumb_config: FrameTransformerCfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",
+        prim_path="/World/envs/env_.*/Robot/world",
         debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
@@ -403,7 +409,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_east_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_east_marker_cfg.prim_path = "/World/Visuals/AnchorEastMarker"
     anchor_east_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_east_marker_cfg,                  
         target_frames=[
@@ -422,7 +428,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_west_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_west_marker_cfg.prim_path = "/World/Visuals/AnchorWestMarker"
     anchor_west_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_west_marker_cfg,              
         target_frames=[
@@ -440,7 +446,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_north_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_north_marker_cfg.prim_path = "/World/Visuals/AnchorNorthMarker"
     anchor_north_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_north_marker_cfg,              
         target_frames=[
@@ -458,7 +464,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_south_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_south_marker_cfg.prim_path = "/World/Visuals/AnchorSouthMarker"
     anchor_south_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_south_marker_cfg,              
         target_frames=[
@@ -476,7 +482,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     anchor_center_marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
     anchor_center_marker_cfg.prim_path = "/World/Visuals/AnchorCenterMarker"
     anchor_center_tf_cfg = FrameTransformerCfg(
-        prim_path="/World/envs/env_.*/Robot/base_link",  
+        prim_path="/World/envs/env_.*/Robot/world",  
         debug_vis=False,
         visualizer_cfg=anchor_center_marker_cfg,              
         target_frames=[
@@ -529,6 +535,11 @@ class AIRECEnv(DirectRLEnv):
     #   |-- _get_observations()
 
     cfg: AIRECEnvCfg
+
+    @property
+    def policy_action_dim(self) -> int:
+        """Policy / actor width (same as :attr:`cfg.num_actions`)."""
+        return int(self.cfg.num_actions)
 
     def __init__(self, cfg: AIRECEnvCfg, render_mode: str | None = None, **kwargs):
 
@@ -600,18 +611,18 @@ class AIRECEnv(DirectRLEnv):
         # glove specific
         self.object_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.object_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # right_first_finger
-        self.right_first_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_first_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # right_first_upper_finger
-        self.right_first_upper_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_first_upper_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # left_first_finger
-        self.left_first_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_first_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        # left_first_upper_finger
-        self.left_first_upper_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_first_upper_finger_rot = torch.zeros((self.num_envs, 4), device=self.device)           
+        # right_ee
+        self.right_ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_ee_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        # right_upper_ee
+        self.right_upper_ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_upper_ee_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        # left_ee
+        self.left_ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_ee_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        # left_upper_ee
+        self.left_upper_ee_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_upper_ee_rot = torch.zeros((self.num_envs, 4), device=self.device)           
         # right_thumb
         self.right_thumb_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.right_thumb_rot = torch.zeros((self.num_envs, 4), device=self.device)
@@ -750,14 +761,14 @@ class AIRECEnv(DirectRLEnv):
         # self._add_object_to_scene()
         
         # FrameTransformer provides interface for reporting the transform of
-        self.left_first_finger_frame = FrameTransformer(self.cfg.left_first_finger_config)
-        self.left_first_finger_frame.set_debug_vis(True)
-        self.right_first_finger_frame = FrameTransformer(self.cfg.right_first_finger_config)
-        self.right_first_finger_frame.set_debug_vis(True)
-        self.left_first_upper_finger_frame = FrameTransformer(self.cfg.left_first_upper_finger_config)
-        self.left_first_upper_finger_frame.set_debug_vis(False)
-        self.right_first_upper_finger_frame = FrameTransformer(self.cfg.right_first_upper_finger_config)
-        self.right_first_upper_finger_frame.set_debug_vis(False)
+        self.left_ee_frame = FrameTransformer(self.cfg.left_ee_config)
+        self.left_ee_frame.set_debug_vis(False)
+        self.right_ee_frame = FrameTransformer(self.cfg.right_ee_config)
+        self.right_ee_frame.set_debug_vis(False)
+        self.left_upper_ee_frame = FrameTransformer(self.cfg.left_upper_ee_config)
+        self.left_upper_ee_frame.set_debug_vis(True)
+        self.right_upper_ee_frame = FrameTransformer(self.cfg.right_upper_ee_config)
+        self.right_upper_ee_frame.set_debug_vis(True)
         self.left_thumb_frame = FrameTransformer(self.cfg.left_thumb_config)
         self.left_thumb_frame.set_debug_vis(False)
         self.right_thumb_frame = FrameTransformer(self.cfg.right_thumb_config)
@@ -847,10 +858,10 @@ class AIRECEnv(DirectRLEnv):
         # register to scene
         self.scene.articulations["robot"] = self.robot
         self.scene.articulations["hand"] = self.hand
-        self.scene.sensors["left_first_finger_frame"] = self.left_first_finger_frame
-        self.scene.sensors["right_first_finger_frame"] = self.right_first_finger_frame
-        self.scene.sensors["left_first_upper_finger_frame"] = self.left_first_upper_finger_frame
-        self.scene.sensors["right_first_upper_finger_frame"] = self.right_first_upper_finger_frame
+        self.scene.sensors["left_ee_frame"] = self.left_ee_frame
+        self.scene.sensors["right_ee_frame"] = self.right_ee_frame
+        self.scene.sensors["left_upper_ee_frame"] = self.left_upper_ee_frame
+        self.scene.sensors["right_upper_ee_frame"] = self.right_upper_ee_frame
         self.scene.sensors["left_thumb_frame"] = self.left_thumb_frame
         self.scene.sensors["right_thumb_frame"] = self.right_thumb_frame
         self.scene.sensors["anchor_east_tf"] = self.anchor_east_tf
@@ -988,14 +999,14 @@ class AIRECEnv(DirectRLEnv):
                 self.normalised_joint_pos,
                 self.normalised_joint_vel,
                 self.joint_pos_error,
-                self.right_first_finger_pos,
-                self.right_first_finger_rot,
-                # self.right_first_upper_finger_pos,
-                # self.right_first_upper_finger_rot,
-                self.left_first_finger_pos,
-                self.left_first_finger_rot,
-                # self.left_first_upper_finger_pos,
-                # self.left_first_upper_finger_rot,
+                self.right_ee_pos,
+                self.right_ee_rot,
+                # self.right_upper_ee_pos,
+                # self.right_upper_ee_rot,
+                self.left_ee_pos,
+                self.left_ee_rot,
+                # self.left_upper_ee_pos,
+                # self.left_upper_ee_rot,
                 # self.right_thumb_pos,
                 # self.right_thumb_rot,
                 # self.left_thumb_pos,
@@ -1264,7 +1275,7 @@ class AIRECEnv(DirectRLEnv):
 
     def _choose_mouth_nodes_4dirs(
         self,
-        end_slice_ratio: float = 0.05,
+        end_slice_ratio: float = 0.1,
         axis_hint=None,
         entry_plane_ratio: float = 1.0,
         ring_quantile: float = 0.0,
@@ -1565,22 +1576,22 @@ class AIRECEnv(DirectRLEnv):
         self.normalised_joint_pos[env_ids] = unscale(self.joint_pos[env_ids], lower, upper)
         
         #################### validate aperture ############ #################
-        self.right_first_finger_pos[env_ids] = self.right_first_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.right_first_finger_rot[env_ids] = self.right_first_finger_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.left_first_finger_pos[env_ids] = self.left_first_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.left_first_finger_rot[env_ids] = self.left_first_finger_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.right_first_upper_finger_pos[env_ids] = self.right_first_upper_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.right_first_upper_finger_rot[env_ids] = self.right_first_upper_finger_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.left_first_upper_finger_pos[env_ids] = self.left_first_upper_finger_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.left_first_upper_finger_rot[env_ids] = self.left_first_upper_finger_frame.data.target_quat_source[..., 0, :][env_ids]
+        self.right_ee_pos[env_ids] = self.right_ee_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.right_ee_rot[env_ids] = self.right_ee_frame.data.target_quat_source[..., 0, :][env_ids]
+        self.left_ee_pos[env_ids] = self.left_ee_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.left_ee_rot[env_ids] = self.left_ee_frame.data.target_quat_source[..., 0, :][env_ids]
+        self.right_upper_ee_pos[env_ids] = self.right_upper_ee_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.right_upper_ee_rot[env_ids] = self.right_upper_ee_frame.data.target_quat_source[..., 0, :][env_ids]
+        self.left_upper_ee_pos[env_ids] = self.left_upper_ee_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.left_upper_ee_rot[env_ids] = self.left_upper_ee_frame.data.target_quat_source[..., 0, :][env_ids]
         self.right_thumb_pos[env_ids] = self.right_thumb_frame.data.target_pos_source[..., 0, :][env_ids]
         self.right_thumb_rot[env_ids] = self.right_thumb_frame.data.target_quat_source[..., 0, :][env_ids]  
         self.left_thumb_pos[env_ids] = self.left_thumb_frame.data.target_pos_source[..., 0, :][env_ids]
         self.left_thumb_rot[env_ids] = self.left_thumb_frame.data.target_quat_source[..., 0, :][env_ids]  
-        # self.right_ee_distance[env_ids] = ((self.right_first_finger_pos[env_ids] + self.right_first_upper_finger_pos[env_ids])/2) - self.right_thumb_pos[env_ids]
-        self.right_ee_distance[env_ids] = self.right_first_upper_finger_pos[env_ids] - self.right_thumb_pos[env_ids]
+        # self.right_ee_distance[env_ids] = ((self.right_ee_pos[env_ids] + self.right_upper_ee_pos[env_ids])/2) - self.right_thumb_pos[env_ids]
+        self.right_ee_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.right_thumb_pos[env_ids]
         self.right_ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_distance[env_ids], dim=1)
-        self.left_ee_distance[env_ids] = self.left_first_upper_finger_pos[env_ids] - self.left_thumb_pos[env_ids]
+        self.left_ee_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.left_thumb_pos[env_ids]
         self.left_ee_euclidean_distance[env_ids] = torch.norm(self.left_ee_distance[env_ids], dim=1)
         # left_closed  = self.left_ee_euclidean_distance[env_ids] < self._grasp_min_distance
         # right_closed = self.right_ee_euclidean_distance[env_ids]< self._grasp_min_distance
@@ -1592,9 +1603,9 @@ class AIRECEnv(DirectRLEnv):
         # joint vel roughly between -2.5, 2.5, so dividing by 3.
         self.normalised_joint_vel[env_ids] = self.joint_vel[env_ids] / self.cfg.vel_max_magnitude
         if self.cfg.object_type == "none":
-            self.ee_pos[env_ids] = (self.right_first_finger_pos[env_ids] + self.left_first_finger_pos[env_ids]) / 2
+            self.ee_pos[env_ids] = (self.right_upper_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids]) / 2
             self.ee_distance[env_ids] = torch.abs(
-                self.right_first_finger_pos[env_ids] - self.left_first_finger_pos[env_ids]
+                self.right_upper_ee_pos[env_ids] - self.left_upper_ee_pos[env_ids]
             )
             self.ee_euclidean_distance[env_ids] = torch.norm(self.ee_distance[env_ids], dim=1)
             self.ee_goal_euclidean_distance[env_ids] = torch.abs(
@@ -1612,13 +1623,13 @@ class AIRECEnv(DirectRLEnv):
             self.object_rot[env_ids] = self.estimate_node_quat(node_idx=self.anchor_idx["east"],env_ids=env_ids)
         
         # ee_distance
-        self.ee_pos[env_ids] = (self.right_first_finger_pos[env_ids] + self.left_first_finger_pos[env_ids])/2
+        self.ee_pos[env_ids] = (self.right_upper_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids])/2
         
         ################################## conform of left/right ee pos ##########################
-        self.ee_distance[env_ids] = torch.abs(self.right_first_finger_pos[env_ids] - self.left_first_finger_pos[env_ids])
+        self.ee_distance[env_ids] = torch.abs(self.right_upper_ee_pos[env_ids] - self.left_upper_ee_pos[env_ids])
         self.ee_euclidean_distance[env_ids] = torch.norm(self.ee_distance[env_ids], dim=1)
-        self.right_ee_left_ee_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.left_ee_rot[env_ids]))
-        self.ee_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.left_ee_rot[env_ids])
+        self.right_ee_left_ee_rotation[env_ids] = quat_mul(self.right_upper_ee_rot[env_ids], quat_conjugate(self.left_upper_ee_rot[env_ids]))
+        self.ee_angular_distance[env_ids] = rotation_distance(self.right_upper_ee_rot[env_ids], self.left_upper_ee_rot[env_ids])
         self.ee_goal_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.goal_euclidean_distance[env_ids])
         # print(f"ee_goal_euclidean_distance: {self.ee_euclidean_distance[0]}, goal_distance:{self.goal_euclidean_distance[0]}")
         env_all = torch.arange(self.num_envs, device=self.device, dtype=torch.int32)
@@ -1638,15 +1649,15 @@ class AIRECEnv(DirectRLEnv):
         self.south_edge_rot[env_ids] = self.anchor_south_tf.data.target_quat_source[..., 0, :][env_ids]
 
         # gripper and ee distances #############################################################checkn direction!!!!!!!!!
-        # self.right_ee_object_distance[env_ids] = ((self.right_first_finger_pos[env_ids] + self.right_first_upper_finger_pos[env_ids])/2) - self.west_edge_pos[env_ids]
-        self.right_ee_object_distance[env_ids] = self.right_first_finger_pos[env_ids] - self.west_edge_pos[env_ids]
+        # self.right_ee_object_distance[env_ids] = ((self.right_ee_pos[env_ids] + self.right_upper_ee_pos[env_ids])/2) - self.west_edge_pos[env_ids]
+        self.right_ee_object_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.west_edge_pos[env_ids]
         self.right_ee_object_euclidean_distance[env_ids] = torch.norm(self.right_ee_object_distance[env_ids], dim=1)
         # print(f"self.right_ee_object_euclidean_distance:{self.right_ee_object_euclidean_distance}")
         # self.right_ee_object_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.west_edge_rot[env_ids]))
         # self.right_ee_object_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.west_edge_rot[env_ids])
 
-        # self.left_ee_object_distance[env_ids] = ((self.left_first_finger_pos[env_ids] + self.left_first_upper_finger_pos[env_ids])/2) - self.east_edge_pos[env_ids]
-        self.left_ee_object_distance[env_ids] = self.left_first_finger_pos[env_ids] - self.east_edge_pos[env_ids]
+        # self.left_ee_object_distance[env_ids] = ((self.left_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids])/2) - self.east_edge_pos[env_ids]
+        self.left_ee_object_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.east_edge_pos[env_ids]
         self.left_ee_object_euclidean_distance[env_ids] = torch.norm(self.left_ee_object_distance[env_ids], dim=1)
         # print(f"self.left_ee_object_euclidean_distance:{self.left_ee_object_euclidean_distance}")
         # self.left_ee_object_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.east_edge_rot[env_ids]))
@@ -1656,13 +1667,25 @@ class AIRECEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # no termination at the moment
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
+        # is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
+        # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.060 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.060   # check
         too_far = self.ee_euclidean_distance > 0.40 # 0.20
-        out_of_reach =self.object_pos[:,2] < 0.5
+        out_of_reach =self.object_pos[:,2] < 0.1
         termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
-        
-        # print("termination:", is_grasp_right[0].item(), is_grasp_left[0].item(), too_far[0].item(), out_of_reach[0].item())
+        # termination = too_far
+        # termination = too_far | is_grasp_right | is_grasp_left
+       
+        # For wandb: ``_get_dones`` runs before ``_get_rewards``; ``WearEnv._get_rewards`` merges
+        # these into ``extras["log"]`` so ``Trainer`` / ``EpisodeTracker`` see ``infos["log"]``.
+        self._term_log = {
+            "term_grasp_right": is_grasp_right.float(),
+            "term_grasp_left": is_grasp_left.float(),
+            "term_too_far": too_far.float(),
+            "term_out_of_reach": out_of_reach.float(),
+            "term_any": termination.float(),
+        }
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
 

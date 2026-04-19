@@ -110,10 +110,6 @@ class WearFingerHepiTaskSpaceEnv(WearEnv):
 
     cfg: WearFingerHepiTaskSpaceEnvCfg  # type: ignore[assignment]
 
-    @property
-    def policy_action_dim(self) -> int:
-        return int(self.cfg.num_actions)
-
     def __init__(self, cfg: WearFingerHepiTaskSpaceEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         self._hepi_v = int(self.object.data.default_nodal_state_w.shape[1])
