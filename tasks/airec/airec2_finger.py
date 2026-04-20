@@ -1626,7 +1626,7 @@ class AIRECEnv(DirectRLEnv):
         self.ee_pos[env_ids] = (self.right_upper_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids])/2
         
         ################################## conform of left/right ee pos ##########################
-        self.ee_distance[env_ids] = torch.abs(self.right_upper_ee_pos[env_ids] - self.left_upper_ee_pos[env_ids])
+        self.ee_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.left_upper_ee_pos[env_ids]
         self.ee_euclidean_distance[env_ids] = torch.norm(self.ee_distance[env_ids], dim=1)
         self.right_ee_left_ee_rotation[env_ids] = quat_mul(self.right_upper_ee_rot[env_ids], quat_conjugate(self.left_upper_ee_rot[env_ids]))
         self.ee_angular_distance[env_ids] = rotation_distance(self.right_upper_ee_rot[env_ids], self.left_upper_ee_rot[env_ids])
