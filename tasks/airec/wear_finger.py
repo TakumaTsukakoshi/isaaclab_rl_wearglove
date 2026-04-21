@@ -64,6 +64,13 @@ class WearEnvCfg(AIRECEnvCfg):
       thumb / first-finger joints as ``assets/airec_finger`` defaults; see :class:`~tasks.airec.wear_finger_taskspace.WearFingerTaskSpaceEnvCfg`.
     """
 
+    # Debug switch: run the same env with/without glove.
+    # - True: spawn deformable glove + compute glove-related features/rewards
+    # - False: skip glove spawn and glove-dependent computations (uses object_type="none")
+    _use_glove: bool = False
+    #: If True, use arXiv:2502.07005 App. B.7 (cloth-hanging) style reward via :mod:`tasks.airec.mdp.rewards`.
+    use_geometryrl_b7_reward: bool = False
+
     object_type = "deformable"
 
     # reset config
@@ -77,9 +84,6 @@ class WearEnvCfg(AIRECEnvCfg):
     # default_object_pos = [0.26, 0.00, 0.85] # airec2 default
     # default_object_pos = [0.18, 0.00, 0.83] # airec2
     default_object_pos = [0.14, 0.00, 0.83] # airec2
-
-    #: If True, use arXiv:2502.07005 App. B.7 (cloth-hanging) style reward via :mod:`tasks.airec.mdp.rewards`.
-    use_geometryrl_b7_reward: bool = False
 
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
@@ -339,6 +343,11 @@ class WearEnv(AIRECEnv):
     cfg: WearEnvCfg
 
     def __init__(self, cfg: WearEnvCfg, render_mode: str | None = None, **kwargs):
+        # Make the glove toggle affect all base-class logic (reset, object spawning, etc.).
+        # AIRECEnv has a special path for object_type == "none" that avoids deformable bookkeeping.
+        self._use_glove = bool(getattr(cfg, "use_glove", True))
+        if not self._use_glove:
+            cfg.object_type = "none"
         super().__init__(cfg, render_mode, **kwargs)
 
         # define glove opening edges
@@ -436,12 +445,20 @@ class WearEnv(AIRECEnv):
 
     def _setup_scene(self):
         super()._setup_scene()
-        self._add_object_to_scene()
-        self.goal_north_markers = VisualizationMarkers(self.cfg.glove_north)
-        self.goal_south_markers = VisualizationMarkers(self.cfg.glove_south)
-        self.goal_east_markers  = VisualizationMarkers(self.cfg.glove_east)
-        self.goal_west_markers  = VisualizationMarkers(self.cfg.glove_west)
-        self.goal_cent_markers  = VisualizationMarkers(self.cfg.glove_cent)
+        # Glove-dependent objects/visuals are only spawned when enabled.
+        if self._use_glove:
+            self._add_object_to_scene()
+            self.goal_north_markers = VisualizationMarkers(self.cfg.glove_north)
+            self.goal_south_markers = VisualizationMarkers(self.cfg.glove_south)
+            self.goal_east_markers = VisualizationMarkers(self.cfg.glove_east)
+            self.goal_west_markers = VisualizationMarkers(self.cfg.glove_west)
+            self.goal_cent_markers = VisualizationMarkers(self.cfg.glove_cent)
+        else:
+            self.goal_north_markers = None
+            self.goal_south_markers = None
+            self.goal_east_markers = None
+            self.goal_west_markers = None
+            self.goal_cent_markers = None
         # Initialize visualization markers for thumb and pinky targets
         self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
         self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
@@ -555,6 +572,20 @@ class WearEnv(AIRECEnv):
             if term_log is not None:
                 self.extras["log"].update(term_log)
         else:
+            # If glove is disabled, keep the same reward interface but feed neutral glove-only terms.
+            if self._use_glove:
+                garment_r = self.garment_right_ee_euclidean_distance
+                garment_l = self.garment_left_ee_euclidean_distance
+                depth = self.depth_distance
+                depth_t = self.depth_thumb_distance
+                depth_p = self.depth_pinky_distance
+            else:
+                garment_r = torch.full((self.num_envs,), 1e3, device=self.device, dtype=torch.float32)
+                garment_l = torch.full((self.num_envs,), 1e3, device=self.device, dtype=torch.float32)
+                depth = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
+                depth_t = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
+                depth_p = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
+
             (
                 rewards,
                 r_stretch,
@@ -579,14 +610,14 @@ class WearEnv(AIRECEnv):
                 self.left_ee_pinky_euclidean_distance,
                 self.right_ee_thumb_angular_distance,
                 self.left_ee_pinky_angular_distance,
-                self.garment_right_ee_euclidean_distance,
-                self.garment_left_ee_euclidean_distance,
+                garment_r,
+                garment_l,
                 self.joint_vel,
                 self.right_insert_success,
                 self.left_insert_success,
-                self.depth_distance,
-                self.depth_thumb_distance,
-                self.depth_pinky_distance,
+                depth,
+                depth_t,
+                depth_p,
                 self.goal_wrist_pos[:, 2],
                 self.north_edge_pos[:, 2],
                 self.south_edge_pos[:, 2],
@@ -714,13 +745,28 @@ class WearEnv(AIRECEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
 
-        # print("number of nodes", self.object.data.nodal_pos_w.size())
-        # print(f"anchor_idx: {self.anchor_idx}")
-        self.goal_north_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["north"], :] - self.scene.env_origins[env_ids]  
-        self.goal_south_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["south"], :] - self.scene.env_origins[env_ids]  
-        self.goal_east_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["east"], :] - self.scene.env_origins[env_ids] 
-        self.goal_west_pos[env_ids] = self.object.data.nodal_pos_w[env_ids, self.anchor_idx["west"], :] - self.scene.env_origins[env_ids]
-        self.goal_cent_pos[env_ids] = (self.goal_north_pos[env_ids]+self.goal_south_pos[env_ids])/2.0
+        if self._use_glove:
+            # Glove-derived reference points (from deformable nodal positions).
+            self.goal_north_pos[env_ids] = (
+                self.object.data.nodal_pos_w[env_ids, self.anchor_idx["north"], :] - self.scene.env_origins[env_ids]
+            )
+            self.goal_south_pos[env_ids] = (
+                self.object.data.nodal_pos_w[env_ids, self.anchor_idx["south"], :] - self.scene.env_origins[env_ids]
+            )
+            self.goal_east_pos[env_ids] = (
+                self.object.data.nodal_pos_w[env_ids, self.anchor_idx["east"], :] - self.scene.env_origins[env_ids]
+            )
+            self.goal_west_pos[env_ids] = (
+                self.object.data.nodal_pos_w[env_ids, self.anchor_idx["west"], :] - self.scene.env_origins[env_ids]
+            )
+            self.goal_cent_pos[env_ids] = (self.goal_north_pos[env_ids] + self.goal_south_pos[env_ids]) / 2.0
+        else:
+            # No glove: keep tensors valid but neutral.
+            self.goal_north_pos[env_ids] = 0.0
+            self.goal_south_pos[env_ids] = 0.0
+            self.goal_east_pos[env_ids] = 0.0
+            self.goal_west_pos[env_ids] = 0.0
+            self.goal_cent_pos[env_ids] = 0.0
         
         self.goal_wrist_pos[env_ids] = self.wrist_goal_frame.data.target_pos_source[..., 0, :][env_ids]
         self.thumb_goal_pos[env_ids] = self.thumb_goal_frame.data.target_pos_source[..., 0, :][env_ids]
@@ -743,16 +789,31 @@ class WearEnv(AIRECEnv):
             self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
             self.identity_quat[env_ids],
         )
-        self.goal_east_markers.visualize(self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids])
-        self.goal_west_markers.visualize(self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids])
+        if self._use_glove and self.goal_east_markers is not None:
+            self.goal_east_markers.visualize(
+                self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
+            self.goal_west_markers.visualize(
+                self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
         # self.goal_north_markers.visualize(self.goal_north_pos[env_ids] , self.identity_quat[env_ids])
         # self.goal_south_markers.visualize(self.goal_south_pos[env_ids] , self.identity_quat[env_ids])
         # self.goal_cent_markers.visualize(self.goal_cent_pos[env_ids] , self.identity_quat[env_ids])
 
-        self.garment_right_ee_distance[env_ids] = self.right_ee_pos[env_ids] - self.goal_west_pos[env_ids]  
-        self.garment_right_ee_euclidean_distance[env_ids] = torch.norm(self.garment_right_ee_distance[env_ids], dim=1)
-        self.garment_left_ee_distance[env_ids] = self.left_ee_pos[env_ids] - self.goal_east_pos[env_ids]
-        self.garment_left_ee_euclidean_distance[env_ids] = torch.norm(self.garment_left_ee_distance[env_ids], dim=1)
+        if self._use_glove:
+            self.garment_right_ee_distance[env_ids] = self.right_ee_pos[env_ids] - self.goal_west_pos[env_ids]
+            self.garment_right_ee_euclidean_distance[env_ids] = torch.norm(
+                self.garment_right_ee_distance[env_ids], dim=1
+            )
+            self.garment_left_ee_distance[env_ids] = self.left_ee_pos[env_ids] - self.goal_east_pos[env_ids]
+            self.garment_left_ee_euclidean_distance[env_ids] = torch.norm(
+                self.garment_left_ee_distance[env_ids], dim=1
+            )
+        else:
+            self.garment_right_ee_distance[env_ids] = 0.0
+            self.garment_right_ee_euclidean_distance[env_ids] = 1e3
+            self.garment_left_ee_distance[env_ids] = 0.0
+            self.garment_left_ee_euclidean_distance[env_ids] = 1e3
 
         B = len(env_ids)
         dt_b = torch.full((B,), float(self.cfg.physics_dt), device=self.device)
@@ -806,10 +867,18 @@ class WearEnv(AIRECEnv):
         # print(f"goal_stretch_euclidean_distance: {self.goal_stretch_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}, ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
         # print(f"garment_right_ee_euclidean_distance: {self.garment_right_ee_euclidean_distance[0]}, garment_left_ee_euclidean_distance: {self.garment_left_ee_euclidean_distance[0]}, right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}, left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]}")
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
-        self.depth_distance[env_ids] = torch.abs(self.goal_cent_pos[env_ids, 0] - self.goal_wrist_pos[env_ids, 0])
-        # print(f"depth_distance: {self.depth_distance[0]}") # ~0.35
-        self.depth_thumb_distance[env_ids] = torch.abs(self.goal_west_pos[env_ids, 0] - self.thumb_target[env_ids, 0])
-        self.depth_pinky_distance[env_ids] = torch.abs(self.goal_east_pos[env_ids, 0] - self.pinky_target[env_ids, 0])
+        if self._use_glove:
+            self.depth_distance[env_ids] = torch.abs(self.goal_cent_pos[env_ids, 0] - self.goal_wrist_pos[env_ids, 0])
+            self.depth_thumb_distance[env_ids] = torch.abs(
+                self.goal_west_pos[env_ids, 0] - self.thumb_target[env_ids, 0]
+            )
+            self.depth_pinky_distance[env_ids] = torch.abs(
+                self.goal_east_pos[env_ids, 0] - self.pinky_target[env_ids, 0]
+            )
+        else:
+            self.depth_distance[env_ids] = 0.0
+            self.depth_thumb_distance[env_ids] = 0.0
+            self.depth_pinky_distance[env_ids] = 0.0
         # print(f"goal_west_pos: {self.goal_west_pos[0]} thumb_target: {self.thumb_target[0]}")
         # print(f"goal_east_pos: {self.goal_east_pos[0]} pinky_target: {self.pinky_target[0]}")
 
@@ -852,8 +921,8 @@ def compute_rewards(
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
     # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale # default 0.4
-    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale  # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale  # default 0.3
     r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])
