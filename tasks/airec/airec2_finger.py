@@ -1669,12 +1669,12 @@ class AIRECEnv(DirectRLEnv):
         # no termination at the moment
         # is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.060 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.060   # check
-        too_far = self.ee_euclidean_distance > 0.40 # 0.20
-        out_of_reach =self.object_pos[:,2] < 0.1
-        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
-        # termination = too_far
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.070 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.070   # check
+        too_far = self.ee_euclidean_distance >1.40 # 0.40 20
+        out_of_reach =self.object_pos[:,2] < 0.3
+        # termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
+        termination = too_far
         # termination = too_far | is_grasp_right | is_grasp_left
        
         # For wandb: ``_get_dones`` runs before ``_get_rewards``; ``WearEnv._get_rewards`` merges
@@ -1766,7 +1766,6 @@ def distance_cond_reward(object_ee_distance, goal_object_distance, minimal_width
     return r_reach
 
 @torch.jit.script
-
 def distance_reward(object_ee_distance, std: float = 0.1):
     r_reach = 1 - torch.tanh(object_ee_distance / std)
     return r_reach

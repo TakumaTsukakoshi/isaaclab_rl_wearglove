@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 import isaaclab.sim as sim_utils
@@ -46,6 +48,9 @@ import sys
 sys.path.append("tasks/airec")
 from insert_rew import InsertReward
 
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
 @configclass
 class WearEnvCfg(AIRECEnvCfg):
     """Glove + AIREC + Shadow Hand.
@@ -79,7 +84,9 @@ class WearEnvCfg(AIRECEnvCfg):
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
 
-    object_usd = '/home/tamon/code/isaaclab_rl_wearglove/assets/Glove/GL_Gloves068/GL_Gloves068_obj_revise.usd'
+    object_usd = os.path.join(
+        _REPO_ROOT, "assets", "Glove", "GL_Gloves068", "GL_Gloves068_obj_revise.usd"
+    )
 
     object_cfg: DeformableObjectCfg = DeformableObjectCfg(
         prim_path="/World/envs/env_.*/Object",
@@ -833,21 +840,22 @@ def compute_rewards(
     pinky_height: torch.Tensor,
     minimal_width: float,
 ):
-
     rotation_object_goal_scale = 0.0 # 10.0
-    reaching_object_goal_scale = 0.0
-    stretch_object_scale = 1.0
-    touching_object_goal_scale = 0.1
+    reaching_object_goal_scale = 1.0    
+    stretch_object_scale = 0.0
+    touching_object_goal_scale = 0.0
     depth_reward_scale = 0.0
     depth_thumb_reward_scale = 0.0
     depth_pinky_reward_scale = 0.0
 
     # FOR REACHING (include condition))
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
-    r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
-    r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.02) * touching_object_goal_scale 
-    r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.02) * touching_object_goal_scale 
+    # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
+    # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
+    r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
+    r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])
     # FOR REACHING+INSERTING
     # r_garment_thumb_distance = distance_reward(goal_distance_thumb_euclidean_distance, std=0.09) * reaching_object_goal_scale

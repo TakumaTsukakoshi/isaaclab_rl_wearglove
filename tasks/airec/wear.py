@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 import isaaclab.sim as sim_utils
@@ -36,6 +38,9 @@ import sys
 sys.path.append("tasks/airec")
 from insert_rew import InsertReward
 
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
 @configclass
 class WearEnvCfg(AIRECEnvCfg):
 
@@ -50,8 +55,10 @@ class WearEnvCfg(AIRECEnvCfg):
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
 
-    object_usd = '/home/tamon/code/isaaclab_rl_wearglove/assets/Glove/GL_Gloves068/GL_Gloves068_obj_revise.usd'
-    # object_usd = '/home/tamon/code/isaaclab_rl_wearglove/assets/torus/torus.usdz'
+    object_usd = os.path.join(
+        _REPO_ROOT, "assets", "Glove", "GL_Gloves068", "GL_Gloves068_obj_revise.usd"
+    )
+    # object_usd = os.path.join(_REPO_ROOT, "assets", "torus", "torus.usdz")
 
     object_cfg: DeformableObjectCfg = DeformableObjectCfg(
         prim_path="/World/envs/env_.*/Object",
