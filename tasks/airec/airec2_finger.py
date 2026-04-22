@@ -1671,10 +1671,10 @@ class AIRECEnv(DirectRLEnv):
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
         is_grasp_right = self.garment_right_ee_euclidean_distance > 0.070 # check
         is_grasp_left = self.garment_left_ee_euclidean_distance > 0.070   # check
-        too_far = self.ee_euclidean_distance > 0.50 # 0.40 20
+        too_far = self.ee_euclidean_distance > 0.60 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.3
         # termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
-        termination = too_far 
+        termination = out_of_reach * 0.0
         # termination = too_far | is_grasp_right | is_grasp_left
        
         # For wandb: ``_get_dones`` runs before ``_get_rewards``; ``WearEnv._get_rewards`` merges

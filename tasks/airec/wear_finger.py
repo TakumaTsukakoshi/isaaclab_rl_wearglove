@@ -67,7 +67,7 @@ class WearEnvCfg(AIRECEnvCfg):
     # Debug switch: run the same env with/without glove.
     # - True: spawn deformable glove + compute glove-related features/rewards
     # - False: skip glove spawn and glove-dependent computations (uses object_type="none")
-    _use_glove: bool = False
+    use_glove: bool = False
     #: If True, use arXiv:2502.07005 App. B.7 (cloth-hanging) style reward via :mod:`tasks.airec.mdp.rewards`.
     use_geometryrl_b7_reward: bool = False
 
@@ -318,6 +318,17 @@ class WearEnvCfg(AIRECEnvCfg):
         }
     )
 
+    fore_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/fore_target_marker",
+        markers={
+            "sphere":
+            sim_utils.SphereCfg(
+                radius=0.01,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),  # Green
+            ),
+        }
+    )
+
     pinky_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/pinky_target_marker",
         markers={
@@ -379,6 +390,7 @@ class WearEnv(AIRECEnv):
         self.unit_dir = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.thumb_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.pinky_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.fore_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         
         # Identity rotations for thumb and pinky target visualization
         self.identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float, device=self.device).unsqueeze(0).expand(self.num_envs, -1)
@@ -564,6 +576,15 @@ class WearEnv(AIRECEnv):
             e = self._normalize_env_ids(env_ids)
         self.prev_actions[e] = 0.0
 
+        # When glove is disabled we force ``object_type="none"``. In that mode, the base env early-returns
+        # before calling ``_reset_target_pose`` / ``_reset_goal_aperture``, so ShadowHand can keep an old
+        # orientation. Reset it explicitly so use_glove toggling doesn't change goal-hand rotation.
+        if not self._use_glove:
+            self._reset_target_pose(e)
+            # Refresh transforms before aperture logic (thumb/pinky goal frames depend on ShadowHand pose).
+            self._compute_intermediate_values(env_ids=e)
+            self._reset_goal_aperture(e)
+
     def _get_rewards(self) -> torch.Tensor:
         if self.cfg.use_geometryrl_b7_reward:
             rewards, b7_log = geometryrl_b7_cloth_hanging_reward(self)
@@ -663,8 +684,8 @@ class WearEnv(AIRECEnv):
     
     def _reset_goal_aperture(self, env_ids, thumb_offset=0.02, pinky_offset=0.02):
         # raw thumb / pinky positions
-        thumb = self.pinky_goal_pos[env_ids]      # shape: (N, 3)
-        pinky = self.thumb_goal_pos[env_ids]     # shape: (N, 3)
+        thumb = self.thumb_goal_pos[env_ids]      # shape: (N, 3)
+        pinky = self.pinky_goal_pos[env_ids]     # shape: (N, 3)
 
         # wrist origin
         wrist_origin = self.goal_wrist_pos[env_ids]   # shape: (N, 3)
@@ -921,7 +942,7 @@ def compute_rewards(
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
     # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale  # default 0.4
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale  * 0.0# default 0.4
     r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale  # default 0.3
     r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
