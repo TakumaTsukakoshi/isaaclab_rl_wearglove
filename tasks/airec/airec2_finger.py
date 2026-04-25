@@ -42,6 +42,7 @@ from isaaclab.sim.spawners.materials.physics_materials_cfg import RigidBodyMater
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import (
+    quat_apply,
     quat_conjugate,
     quat_from_angle_axis,
     quat_mul,
@@ -69,7 +70,7 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 500  # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 250  # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
     decimation = 10  # 10 # # 50 Hz
@@ -92,6 +93,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # reset config
     reset_object_position_noise = 0.01
+    #: If False, rigid / articulated task objects keep ``default_root_state`` orientation on reset (no ``randomize_rotation``).
+    randomize_object_rotation: bool = True
     # lift stuff
     minimal_width = 0.02
     minimal_distance = 0.02
@@ -125,26 +128,27 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=physics_dt,
         render_interval=decimation,
-        # physics_material=RigidBodyMaterialCfg(
-        #     static_friction=1.0,
-        #     dynamic_friction=1.0,
-        # ),
-        physics_material=DeformableBodyMaterialCfg(
-            youngs_modulus=1.0e7,     #  8e7
-            poissons_ratio=0.45,      #  0.48
-            density=300.0,            #  300 kg/m^3
-            damping_scale=1.0,
-            elasticity_damping=0.03, #  0.012
-            dynamic_friction=0.5,     #  0.6
+        physics_material=RigidBodyMaterialCfg(
+            static_friction=1.0,
+            dynamic_friction=1.0,
         ),
+        # physics_material=DeformableBodyMaterialCfg(
+        #     youngs_modulus=1.0e7,     #  8e7
+        #     poissons_ratio=0.45,      #  0.48
+        #     density=300.0,            #  300 kg/m^3
+        #     damping_scale=1.0,
+        #     elasticity_damping=0.03, #  0.012
+        #     dynamic_friction=0.5,     #  0.6
+        # ),
             
         physx=PhysxCfg(
             bounce_threshold_velocity=0.2,
             gpu_max_rigid_contact_count=2**20, # default 2**23
             gpu_max_rigid_patch_count=2**18, #23, default 5 * 2 ** 15. # change 2**20 to default 1119
             gpu_temp_buffer_capacity=2**20, # default 2**20
-            gpu_max_soft_body_contacts= 2**24, # default 2**20 
-            gpu_collision_stack_size=2**30, # default 2**26
+            gpu_max_soft_body_contacts= 2**24, # default 2**20
+            # Narrow-phase stack; PhysX can demand >2**30 bytes when contact count spikes (e.g. dense meshes).
+            gpu_collision_stack_size=2**31,
             # gpu_temp_buffer_capacity=2**18, # default 2**20
             # gpu_max_soft_body_contacts= 2**18, # default 2**20 
             # gpu_collision_stack_size=2**26, # default 2**26
@@ -520,6 +524,9 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     normalise_pixels = True
     num_cameras = 1
     object_type = "deformable"  # "none" (no scene object) | "rigid" | "deformable" — override in task cfgs (e.g. WearEnvCfg)
+    #: If True, spawn visible red cuboids at ``Visuals/Anchor{East,West,North,South,Center}/Geom`` (rim kinematic bodies).
+    #: Set False for rigid tasks (e.g. bracelet) to hide them while keeping physics anchors.
+    show_anchor_rim_cuboids: bool = True
     binary_tactile = False
     OPEN_IS_UPPER = True  # True: 上限=開, 下限=閉 / False: 上限=閉, 下限=開
 
@@ -782,13 +789,18 @@ class AIRECEnv(DirectRLEnv):
         rb_center_path_env0 = "/World/envs/env_0/Visuals/AnchorCenter/Geom"
 
         stage = SimulationContext.instance().stage
-        ensure_xform_prim("/World/Visuals") 
+        ensure_xform_prim("/World/Visuals")
+        _show_anchor_cubes = bool(getattr(self.cfg, "show_anchor_rim_cuboids", True))
+        _anchor_cube_vis = sim_utils.PreviewSurfaceCfg(
+            diffuse_color=(1.0, 0.0, 0.0),
+            opacity=1.0 if _show_anchor_cubes else 0.0,
+        )
         if not stage.GetPrimAtPath(rb_east_path_env0):
             anchor_rb_cfg = sim_utils.CuboidCfg(
                 size=(0.01, 0.01, 0.01),
                 rigid_props=RigidBodyPropertiesCfg(disable_gravity=True, kinematic_enabled=True),
                 physics_material=RigidBodyMaterialCfg(static_friction=0.0, dynamic_friction=0.0, restitution=0.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                visual_material=_anchor_cube_vis,
             )
             anchor_rb_cfg.func(rb_east_path_env0, anchor_rb_cfg)
         
@@ -797,7 +809,7 @@ class AIRECEnv(DirectRLEnv):
                 size=(0.01, 0.01, 0.01),
                 rigid_props=RigidBodyPropertiesCfg(disable_gravity=True, kinematic_enabled=True),
                 physics_material=RigidBodyMaterialCfg(static_friction=0.0, dynamic_friction=0.0, restitution=0.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                visual_material=_anchor_cube_vis,
             )
             anchor_rb_cfg.func(rb_west_path_env0, anchor_rb_cfg)
         
@@ -806,7 +818,7 @@ class AIRECEnv(DirectRLEnv):
                 size=(0.01, 0.01, 0.01),
                 rigid_props=RigidBodyPropertiesCfg(disable_gravity=True, kinematic_enabled=True),
                 physics_material=RigidBodyMaterialCfg(static_friction=0.0, dynamic_friction=0.0, restitution=0.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                visual_material=_anchor_cube_vis,
             )
             anchor_rb_cfg.func(rb_north_path_env0, anchor_rb_cfg)
         
@@ -815,7 +827,7 @@ class AIRECEnv(DirectRLEnv):
                 size=(0.01, 0.01, 0.01),
                 rigid_props=RigidBodyPropertiesCfg(disable_gravity=True, kinematic_enabled=True),
                 physics_material=RigidBodyMaterialCfg(static_friction=0.0, dynamic_friction=0.0, restitution=0.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                visual_material=_anchor_cube_vis,
             )
             anchor_rb_cfg.func(rb_south_path_env0, anchor_rb_cfg)
         
@@ -824,7 +836,7 @@ class AIRECEnv(DirectRLEnv):
                 size=(0.01, 0.01, 0.01),
                 rigid_props=RigidBodyPropertiesCfg(disable_gravity=True, kinematic_enabled=True),
                 physics_material=RigidBodyMaterialCfg(static_friction=0.0, dynamic_friction=0.0, restitution=0.0),
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                visual_material=_anchor_cube_vis,
             )
             anchor_rb_cfg.func(rb_center_path_env0, anchor_rb_cfg)
 
@@ -1119,12 +1131,15 @@ class AIRECEnv(DirectRLEnv):
             self._grip_latched_q = None
             return
       
-        self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[1.0, 0.0, 0.0])
-        # print("Anchor idx:", self.anchor_idx)
-        self.prev_anchor_idx = self.anchor_idx
-           
-        if self.cfg.object_type == "deformable" and self.anchor_idx is None:
-            self.anchor_idx = self._choose_mouth_nodes_4dirs()
+        if self.cfg.object_type == "deformable":
+            self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[1.0, 0.0, 0.0])
+            self.prev_anchor_idx = self.anchor_idx
+            if self.anchor_idx is None:
+                self.anchor_idx = self._choose_mouth_nodes_4dirs()
+        elif self.cfg.object_type == "rigid":
+            # Rigid tasks drive anchor prims from the object's root pose (see ``_set_anchor_state``).
+            self.anchor_idx = {"north": 0, "south": 0, "east": 0, "west": 0}
+            self.prev_anchor_idx = self.anchor_idx
 
         # reset goals
         self._reset_target_pose(env_ids)
@@ -1193,10 +1208,12 @@ class AIRECEnv(DirectRLEnv):
             + self.cfg.reset_object_position_noise * pos_noise
             + self.scene.env_origins[env_ids]
         )
-        rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)  # noise for X and Y rotation
-        object_default_state[:, 3:7] = randomize_rotation(
-            rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
-        )
+        if self.cfg.randomize_object_rotation:
+            rot_noise = sample_uniform(-1.0, 1.0, (len(env_ids), 2), device=self.device)
+            object_default_state[:, 3:7] = randomize_rotation(
+                rot_noise[:, 0], rot_noise[:, 1], self.x_unit_tensor[env_ids], self.y_unit_tensor[env_ids]
+            )
+        # else: leave quaternion from ``default_root_state`` clone (spawn / USD default).
         object_default_state[:, 7:] = torch.zeros_like(self.object.data.default_root_state[env_ids, 7:])
         self.object.write_root_state_to_sim(object_default_state, env_ids)
 
@@ -1593,6 +1610,7 @@ class AIRECEnv(DirectRLEnv):
         self.right_ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_distance[env_ids], dim=1)
         self.left_ee_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.left_thumb_pos[env_ids]
         self.left_ee_euclidean_distance[env_ids] = torch.norm(self.left_ee_distance[env_ids], dim=1)
+        # print(f"right_upper_ee_pos: {self.right_upper_ee_pos[0]}, left_upper_ee_pos: {self.left_upper_ee_pos[0]}")
         # left_closed  = self.left_ee_euclidean_distance[env_ids] < self._grasp_min_distance
         # right_closed = self.right_ee_euclidean_distance[env_ids]< self._grasp_min_distance
         # print(f"left_ee_euclidean_distance: {self.left_ee_euclidean_distance[0]}, right_ee_euclidean_distance: {self.right_ee_euclidean_distance[0]}")
@@ -1613,14 +1631,19 @@ class AIRECEnv(DirectRLEnv):
             )
             return
 
-        self.nodal_state[env_ids] = self.object.data.nodal_state_w[env_ids]
-        self.object_pos[env_ids] = self.nodal_state[:, self.anchor_idx["east"], :3] - self.scene.env_origins[env_ids]
-
-        # deformable doesn't have quat
-        if self.cfg.object_type == "rigid":
-            self.object_rot[env_ids] = self.object.data.root_quat_w[env_ids]
         if self.cfg.object_type == "deformable":
-            self.object_rot[env_ids] = self.estimate_node_quat(node_idx=self.anchor_idx["east"],env_ids=env_ids)
+            self.nodal_state[env_ids] = self.object.data.nodal_state_w[env_ids]
+            self.object_pos[env_ids] = (
+                self.nodal_state[:, self.anchor_idx["east"], :3] - self.scene.env_origins[env_ids]
+            )
+            self.object_rot[env_ids] = self.estimate_node_quat(
+                node_idx=self.anchor_idx["east"], env_ids=env_ids
+            )
+        elif self.cfg.object_type == "rigid":
+            self.object_pos[env_ids] = (
+                self.object.data.root_pos_w[env_ids] - self.scene.env_origins[env_ids]
+            )
+            self.object_rot[env_ids] = self.object.data.root_quat_w[env_ids]
         
         # ee_distance
         self.ee_pos[env_ids] = (self.right_upper_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids])/2
@@ -1669,12 +1692,12 @@ class AIRECEnv(DirectRLEnv):
         # no termination at the moment
         # is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.070 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.070   # check
-        too_far = self.ee_euclidean_distance > 0.60 # 0.40 20
-        out_of_reach =self.object_pos[:,2] < 0.3
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.10 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.10   # check
+        too_far = self.ee_euclidean_distance > 1.0 # 0.40 20
+        out_of_reach =self.object_pos[:,2] < 0.4
         # termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
-        termination = out_of_reach * 0.0
+        termination = too_far | out_of_reach
         # termination = too_far | is_grasp_right | is_grasp_left
        
         # For wandb: ``_get_dones`` runs before ``_get_rewards``; ``WearEnv._get_rewards`` merges
@@ -1691,8 +1714,31 @@ class AIRECEnv(DirectRLEnv):
 
         return termination, time_out
     
+    def _rigid_anchor_body_offset(self, anchor_mode: str) -> torch.Tensor:
+        """Small object-frame offsets (m) for rim debug anchors when ``object_type=="rigid"``."""
+        key = anchor_mode.lower()
+        lut = {
+            "east": (0.0, 0.03, 0.0),
+            "west": (0.0, -0.03, 0.0),
+            "north": (0.0, 0.0, 0.03),
+            "south": (0.0, 0.0, -0.03),
+        }
+        if key not in lut:
+            raise KeyError(f"Unknown rigid anchor mode: {anchor_mode!r}")
+        return torch.tensor(lut[key], device=self.device, dtype=torch.float32)
+
     def _set_anchor_state(self, rigid_anchor, anchor_mode: str, env_all):
         root = rigid_anchor.data.default_root_state.clone().to(self.device)
+        if self.cfg.object_type == "rigid":
+            off_b = self._rigid_anchor_body_offset(anchor_mode).unsqueeze(0).expand(len(env_all), 3)
+            q = self.object.data.root_quat_w[env_all]
+            pos_w = self.object.data.root_pos_w[env_all] + quat_apply(q, off_b)
+            quat_w = self.object.data.root_quat_w[env_all]
+            root[:, 0:3] = pos_w
+            root[:, 3:7] = quat_w
+            rigid_anchor.write_root_state_to_sim(root, env_ids=env_all)
+            return
+
         idx = self.anchor_idx[anchor_mode]
         pos_w = self.nodal_state[:, idx, :3].to(self.device)
         quat_w = self.estimate_node_quat(node_idx=idx).to(self.device)

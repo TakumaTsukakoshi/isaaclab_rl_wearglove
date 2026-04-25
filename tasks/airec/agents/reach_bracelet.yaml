@@ -69,7 +69,7 @@ experiment:
   video_dir: "videos"
   tb_log: True
   debug: 0
-  wandb: 0
+  wandb: 1
   wandb_kwargs: {
     "entity": "t-u-k-a-36taku-waseda-university",
     "project": "isaac_lab",

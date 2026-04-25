@@ -20,6 +20,7 @@ from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import (
+    quat_apply,
     quat_conjugate,
     quat_mul,
     sample_uniform,
@@ -70,9 +71,11 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     use_geometryrl_b7_reward: bool = False
 
     object_type = "rigid"
+    #: Hide parent ``AIRECEnv`` red kinematic anchor cuboids on the rim (still used for ``north_edge_pos`` etc.).
+    show_anchor_rim_cuboids: bool = False
 
     # reset config
-    reset_object_position_noise = 0.05
+    reset_object_position_noise = 0.00
     #: Bracelet keeps ``object_cfg.init_state.rot`` on every reset (only position noise applies).
     randomize_object_rotation: bool = False
     reset_goal_position_noise = 0.01  # scale factor for -1 to 1 m
@@ -83,13 +86,22 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     # default_object_pos = [0.27, 0.00, 1.07] # airec1
     # default_object_pos = [0.26, 0.00, 0.85] # airec2 default
     # default_object_pos = [0.18, 0.00, 0.83] # airec2
-    default_object_pos = [0.20, 0.00, 1.0] # airec2
+    default_object_pos = [0.24, 0.00, 0.88] # airec2
 
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
 
+    #: Rim sample points on the rigid bracelet in the object's **root frame** (m). Each reset step:
+    #: ``p_env = root_pos_w + quat_apply(root_quat_w, offset) - env_origin`` (same env-local convention as the glove's nodal rim).
+    #: **Center** follows the glove task: ``goal_cent_pos = (goal_north_pos + goal_south_pos) / 2`` (midpoint of N–S, not the geometric centroid of four points).
+    #: Tune offsets to match ``bracelet.usd`` (opening normal / lateral axes).
+    bracelet_rim_offset_north: tuple[float, float, float] = (0.0, 0.03, 0.0)
+    bracelet_rim_offset_south: tuple[float, float, float] = (0.0, -0.03, 0.0)
+    bracelet_rim_offset_east: tuple[float, float, float] = (0.10, 0.0, 0.0)
+    bracelet_rim_offset_west: tuple[float, float, float] = (-0.10, 0.0, 0.0)
+
     object_usd = os.path.join(
-        _REPO_ROOT, "assets", "Bracelet", "bracelet.usd"
+        _REPO_ROOT, "assets", "Bracelet", "bracelet_b.usd"
     )
 
     object_cfg: RigidObjectCfg = RigidObjectCfg(
@@ -240,7 +252,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
         ],
     )
 
-    # Optional bracelet / opening rim markers (N, S, E, W, centre) — only used when ``use_glove`` is True.
+    # N/S/E/W/C rim markers (``VisualizationMarkers`` spheres); used when glove *or* rigid bracelet rim is active.
     bracelet_north: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/goal_north_marker",
         markers={
@@ -451,10 +463,14 @@ class ReachBraceletEnv(AIRECEnv):
 
     def _setup_scene(self):
         super()._setup_scene()
+        # Parent enables upper-fingertip frame debug by default; it draws extra axes near the workspace.
+        self.left_upper_ee_frame.set_debug_vis(False)
+        self.right_upper_ee_frame.set_debug_vis(False)
         # Rigid / deformable task object (bracelet) is added whenever ``object_type != "none"``.
         if self.cfg.object_type != "none":
             self._add_object_to_scene()
-        if self._use_glove:
+        # N/S/E/W/C markers: deformable glove uses nodal rim; rigid bracelet uses root pose + cfg offsets.
+        if self._use_glove or self.cfg.object_type == "rigid":
             self.goal_north_markers = VisualizationMarkers(self.cfg.bracelet_north)
             self.goal_south_markers = VisualizationMarkers(self.cfg.bracelet_south)
             self.goal_east_markers = VisualizationMarkers(self.cfg.bracelet_east)
@@ -588,7 +604,7 @@ class ReachBraceletEnv(AIRECEnv):
                 self.extras["log"].update(term_log)
         else:
             # Without deformable rim features, keep the same reward API with neutral garment / depth terms.
-            if self._use_glove:
+            if self._use_glove or self.cfg.object_type == "rigid":
                 garment_r = self.garment_right_ee_euclidean_distance
                 garment_l = self.garment_left_ee_euclidean_distance
                 depth = self.depth_distance
@@ -613,6 +629,7 @@ class ReachBraceletEnv(AIRECEnv):
                 r_angular_left_ee_pinky,
                 r_right_ee_touch_distance,
                 r_left_ee_touch_distance,
+                r_joint_vel,
             ) = compute_rewards(
                 self.reaching_object_goal_scale,
                 self.reaching_ee_object_scale,
@@ -620,6 +637,7 @@ class ReachBraceletEnv(AIRECEnv):
                 self.episode_length_buf,
                 self.object_goal_tracking_scale,
                 self.joint_vel_penalty_scale,
+                self.ee_euclidean_distance,
                 self.goal_stretch_euclidean_distance,
                 self.right_ee_thumb_euclidean_distance,
                 self.left_ee_pinky_euclidean_distance,
@@ -639,7 +657,8 @@ class ReachBraceletEnv(AIRECEnv):
                 self.thumb_target[:, 2],
                 self.pinky_target[:, 2],
                 self.cfg.minimal_width,
-            )
+                self.joint_vel,
+                )
 
             self.extras["log"] = {
                 "r_stretch": r_stretch,
@@ -652,6 +671,7 @@ class ReachBraceletEnv(AIRECEnv):
                 "angular_reward_left": r_angular_left_ee_pinky,
                 "touch_reward_right": r_right_ee_touch_distance,
                 "touch_reward_left": r_left_ee_touch_distance,
+                "joint_vel_reward": r_joint_vel,
             }
 
         if "tactile" in self.cfg.obs_list:
@@ -718,6 +738,8 @@ class ReachBraceletEnv(AIRECEnv):
         # self.pinky_target[env_ids] = pinky + pinky_offset * unit_dir + self.scene.env_origins[env_ids]
         self.thumb_target[env_ids] = thumb - thumb_offset * unit_dir 
         self.pinky_target[env_ids] = pinky + pinky_offset * unit_dir 
+        # print("pinky_target", self.pinky_target[0])
+        # print("thumb_target", self.thumb_target[0])
 
         # Euclidean distance between offset targets
         target_delta = self.thumb_target[env_ids] - self.pinky_target[env_ids]
@@ -755,6 +777,37 @@ class ReachBraceletEnv(AIRECEnv):
         self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
         self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
 
+    def _bracelet_rim_goals_env_local(self, env_ids: torch.Tensor) -> None:
+        """Set ``goal_{north,south,east,west}_pos`` and ``goal_cent_pos`` (env-local) for a rigid bracelet.
+
+        Glove uses mesh nodes; here ``p_env = root_pos_w + quat_apply(root_quat_w, offset_b) - env_origin`` with
+        body-frame offsets from :attr:`ReachBraceletEnvCfg.bracelet_rim_offset_*`. Center matches the glove task:
+        ``(north + south) / 2``.
+        """
+        if self.cfg.object_type != "rigid" or not hasattr(self, "object") or self.object is None:
+            return
+        B = int(env_ids.shape[0])
+        root_p = self.object.data.root_pos_w[env_ids]
+        root_q = self.object.data.root_quat_w[env_ids]
+        origins = self.scene.env_origins[env_ids]
+
+        def _expand_off(t: tuple[float, float, float]) -> torch.Tensor:
+            return torch.tensor(t, device=self.device, dtype=torch.float32).unsqueeze(0).expand(B, 3)
+
+        self.goal_north_pos[env_ids] = (
+            root_p + quat_apply(root_q, _expand_off(self.cfg.bracelet_rim_offset_north)) - origins
+        )
+        self.goal_south_pos[env_ids] = (
+            root_p + quat_apply(root_q, _expand_off(self.cfg.bracelet_rim_offset_south)) - origins
+        )
+        self.goal_east_pos[env_ids] = (
+            root_p + quat_apply(root_q, _expand_off(self.cfg.bracelet_rim_offset_east)) - origins
+        )
+        self.goal_west_pos[env_ids] = (
+            root_p + quat_apply(root_q, _expand_off(self.cfg.bracelet_rim_offset_west)) - origins
+        )
+        self.goal_cent_pos[env_ids] = (self.goal_north_pos[env_ids] + self.goal_south_pos[env_ids]) / 2.0
+
     def _compute_intermediate_values(self, reset=False, env_ids: torch.Tensor | None = None):
         super()._compute_intermediate_values()
         if env_ids is None:
@@ -775,8 +828,10 @@ class ReachBraceletEnv(AIRECEnv):
                 self.object.data.nodal_pos_w[env_ids, self.anchor_idx["west"], :] - self.scene.env_origins[env_ids]
             )
             self.goal_cent_pos[env_ids] = (self.goal_north_pos[env_ids] + self.goal_south_pos[env_ids]) / 2.0
+        elif self.cfg.object_type == "rigid":
+            self._bracelet_rim_goals_env_local(env_ids)
         else:
-            # No nodal rim: keep goal tensors valid but neutral.
+            # No garment rim (e.g. ``object_type=="none"``).
             self.goal_north_pos[env_ids] = 0.0
             self.goal_south_pos[env_ids] = 0.0
             self.goal_east_pos[env_ids] = 0.0
@@ -806,18 +861,24 @@ class ReachBraceletEnv(AIRECEnv):
             self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
             self.identity_quat[env_ids],
         )
-        if self._use_glove and self.goal_east_markers is not None:
+        if self.goal_east_markers is not None:
             self.goal_east_markers.visualize(
                 self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
             )
             self.goal_west_markers.visualize(
                 self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
             )
-        # self.goal_north_markers.visualize(self.goal_north_pos[env_ids] , self.identity_quat[env_ids])
-        # self.goal_south_markers.visualize(self.goal_south_pos[env_ids] , self.identity_quat[env_ids])
-        # self.goal_cent_markers.visualize(self.goal_cent_pos[env_ids] , self.identity_quat[env_ids])
+            self.goal_north_markers.visualize(
+                self.goal_north_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
+            self.goal_south_markers.visualize(
+                self.goal_south_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
+            self.goal_cent_markers.visualize(
+                self.goal_cent_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
 
-        if self._use_glove:
+        if self._use_glove or self.cfg.object_type == "rigid":
             self.garment_right_ee_distance[env_ids] = self.right_ee_pos[env_ids] - self.goal_west_pos[env_ids]
             self.garment_right_ee_euclidean_distance[env_ids] = torch.norm(
                 self.garment_right_ee_distance[env_ids], dim=1
@@ -885,10 +946,11 @@ class ReachBraceletEnv(AIRECEnv):
         # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
+        # print(f"ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
         # print(f"goal_stretch_euclidean_distance: {self.goal_stretch_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}, ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
         # print(f"garment_right_ee_euclidean_distance: {self.garment_right_ee_euclidean_distance[0]}, garment_left_ee_euclidean_distance: {self.garment_left_ee_euclidean_distance[0]}, right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}, left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]}")
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
-        if self._use_glove:
+        if self._use_glove or self.cfg.object_type == "rigid":
             self.depth_distance[env_ids] = torch.abs(self.goal_cent_pos[env_ids, 0] - self.goal_wrist_pos[env_ids, 0])
             self.depth_thumb_distance[env_ids] = torch.abs(
                 self.goal_west_pos[env_ids, 0] - self.thumb_target[env_ids, 0]
@@ -910,6 +972,7 @@ def compute_rewards(
     episode_timestep_counter: torch.Tensor,
     object_goal_tracking_scale: float,
     joint_vel_penalty_scale: float,
+    ee_euclidean_distance: torch.Tensor,
     goal_stretch_euclidean_distance: torch.Tensor,
     right_ee_thumb_euclidean_distance: torch.Tensor,
     left_ee_pinky_euclidean_distance: torch.Tensor,
@@ -930,20 +993,21 @@ def compute_rewards(
     pinky_height: torch.Tensor,
     minimal_width: float,
 ):
-    rotation_object_goal_scale = 0.5 # 10.0
+    rotation_object_goal_scale = 0.0 # 10.0
     reaching_object_goal_scale = 1.0    
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
-    depth_reward_scale = 0.0
+    depth_reward_scale = 10.0
     depth_thumb_reward_scale = 0.0
     depth_pinky_reward_scale = 0.0
+    joint_vel_penalty_scale = -0.01
 
     # FOR REACHING (include condition))
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
     # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale * 0.0 # default 0.4
-    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale # default 0.3
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale * (ee_euclidean_distance < 0.3) # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (ee_euclidean_distance < 0.3) # default 0.3
     r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])
@@ -953,7 +1017,7 @@ def compute_rewards(
     # r_garment_fore_distance = distance_reward(garment_fore_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # r_garment_middle_distance = distance_reward(garment_middle_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # r_garment_ring_distance = distance_reward(garment_ring_euclidean_distance, std=0.09) * reaching_object_goal_scale
-    r_depth_distance = distance_reward(depth_distance, std=0.1) * (top_height > wrist_height) * (wrist_height < bottom_height) * depth_reward_scale
+    r_depth_distance = distance_reward(depth_distance, std=0.1) * (top_height > wrist_height) * (wrist_height < bottom_height) * depth_reward_scale * (ee_euclidean_distance < 0.3)
     r_depth_thumb_distance = distance_reward(depth_thumb_distance, std=0.03) * (top_height > thumb_height) * (thumb_height < bottom_height) * depth_thumb_reward_scale
     r_depth_pinky_distance = distance_reward(depth_pinky_distance, std=0.06) * (top_height > pinky_height) * (pinky_height < bottom_height) * depth_pinky_reward_scale
 
@@ -966,6 +1030,6 @@ def compute_rewards(
     # minillion bonus reward
     # r_object_goal = object_goal_reward(right_ee_thumb_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale
     # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
-    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance
+    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance + r_joint_vel
 
-    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance)
+    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance, r_joint_vel)

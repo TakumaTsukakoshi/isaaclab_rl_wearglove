@@ -477,9 +477,9 @@ class WearEnv(AIRECEnv):
         
 
         self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
-        self.thumb_goal_frame.set_debug_vis(False)
+        self.thumb_goal_frame.set_debug_vis(True)
         self.pinky_goal_frame = FrameTransformer(self.cfg.pinky_goal_config)
-        self.pinky_goal_frame.set_debug_vis(False)
+        self.pinky_goal_frame.set_debug_vis(True)
         self.fore_goal_frame = FrameTransformer(self.cfg.fore_goal_config)
         self.fore_goal_frame.set_debug_vis(False)
         self.middle_goal_frame = FrameTransformer(self.cfg.middle_goal_config)
@@ -792,6 +792,8 @@ class WearEnv(AIRECEnv):
         self.goal_wrist_pos[env_ids] = self.wrist_goal_frame.data.target_pos_source[..., 0, :][env_ids]
         self.thumb_goal_pos[env_ids] = self.thumb_goal_frame.data.target_pos_source[..., 0, :][env_ids]
         self.pinky_goal_pos[env_ids] = self.pinky_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.thumb_goal_rot[env_ids] = self.thumb_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+        self.pinky_goal_rot[env_ids] = self.pinky_goal_frame.data.target_quat_source[..., 0, :][env_ids]
         
         # Visualize goal markers
         # self.goal_north_markers.visualize(self.goal_north_pos, self.goal_north_rot)
@@ -874,14 +876,18 @@ class WearEnv(AIRECEnv):
         self.under_wrist_euclidean_distance[env_ids] = torch.norm(self.under_wrist_distance[env_ids], dim=1)
         # print(f"east: {self.west_edge_pos[0]} thumb_goal_pos:{self.thumb_goal_pos[0]}")
         self.right_ee_thumb_distance[env_ids] = self.right_ee_pos[env_ids] - self.thumb_target[env_ids]
+        # print(f"right_ee_pos: {self.right_ee_pos[0]} thumb_target: {self.thumb_target[0]}")
         self.right_ee_thumb_euclidean_distance[env_ids] = torch.norm(self.right_ee_thumb_distance[env_ids], dim=1)
+        # print(f"right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
         self.right_ee_thumb_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.thumb_goal_rot[env_ids]))
         self.right_ee_thumb_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.thumb_goal_rot[env_ids])
+        # print(f"right_ee_thumb_angular_distance: {self.right_ee_thumb_angular_distance[0]}")
         # self.left_ee_goal_distance[env_ids] = self.left_l_ee_pos[env_ids] - self.pinky_goal_pos[env_ids]
         self.left_ee_pinky_distance[env_ids] = self.left_ee_pos[env_ids] - self.pinky_target[env_ids]
         self.left_ee_pinky_euclidean_distance[env_ids] = torch.norm(self.left_ee_pinky_distance[env_ids], dim=1)
         self.left_ee_pinky_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.pinky_goal_rot[env_ids]))
         self.left_ee_pinky_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.pinky_goal_rot[env_ids])
+        # print(f"left_ee_pinky_angular_distance: {self.left_ee_pinky_angular_distance[0]}")
         # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
@@ -930,7 +936,7 @@ def compute_rewards(
     pinky_height: torch.Tensor,
     minimal_width: float,
 ):
-    rotation_object_goal_scale = 0.0 # 10.0
+    rotation_object_goal_scale = 0.5 # 10.0
     reaching_object_goal_scale = 1.0    
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
@@ -942,8 +948,8 @@ def compute_rewards(
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
     # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale  # default 0.4
-    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale  # default 0.3
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale * 0.0 # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale # default 0.3
     r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])
@@ -959,8 +965,8 @@ def compute_rewards(
 
     # FOR REACHING+INSERTING+TERMINATE
     # r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5  
-    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.3) * rotation_object_goal_scale
-    r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.2) * rotation_object_goal_scale
+    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * rotation_object_goal_scale * 0.0
+    r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.2) * rotation_object_goal_scale 
     r_joint_vel = joint_vel_penalty(robot_joint_vel) * joint_vel_penalty_scale
 
     # minillion bonus reward
