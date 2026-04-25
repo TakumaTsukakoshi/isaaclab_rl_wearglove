@@ -1,0 +1,78 @@
+seed: 42
+
+observations:
+  obs_list: 
+  - prop
+  - gt
+  obs_stack: 1
+  preprocess:
+    normalise_prop: True
+    binary_tactile: True
+
+encoder:
+  method: "early"
+  hiddens: [512, 256]
+  activations: ["elu", "elu"]
+  layernorm: True
+  state_preprocessor: None
+
+policy:
+  clip_log_std: True
+  initial_log_std: 0
+  min_log_std: -20.0
+  max_log_std: 2.0
+  hiddens: [128, 64]
+  activations: ["elu", "elu", "tanh"]
+  
+value:
+  hiddens: [128, 64]
+  activations: ["elu", "elu", "identity"]
+
+pixels:
+  img_dim: 84
+  latent_img_dim: 128
+  channels: 3
+
+
+
+# PPO agent configuration (field names are from PPO_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
+agent:
+  rollouts: 32
+  learning_epochs: 8
+  mini_batches: 16
+  discount_factor: 0.99
+  lambda: 0.95
+  learning_rate: 1.0595873261695062e-05
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 1.0
+  ratio_clip: 0.2
+  value_clip: 0.2
+  clip_predicted_values: True
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0
+  rewards_shaper_scale: 1.0
+  augment: False
+
+trainer:
+  num_eval_envs: 10
+  max_global_timesteps_M: 200
+
+# logging and checkpoints
+experiment:
+  directory: "airec2_finger"
+  experiment_name: "reach_bracelet"
+  save_checkpoints: 2
+  upload_videos: 0
+  video_dir: "videos"
+  tb_log: True
+  debug: 0
+  wandb: 0
+  wandb_kwargs: {
+    "entity": "t-u-k-a-36taku-waseda-university",
+    "project": "isaac_lab",
+    "group": "airec_reach_bracelet",
+    "name": "reach_bracelet",
+  }

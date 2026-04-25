@@ -34,7 +34,7 @@ SHADOW_HAND_CFG = ArticulationCfg(
             retain_accelerations=True,
             max_depenetration_velocity=1000.0,
         ),
-        scale=(0.8, 0.8, 0.8),
+        scale=(1.0, 1.0, 1.0),
         # scale=(0.7, 0.7, 0.7),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,
@@ -52,7 +52,7 @@ SHADOW_HAND_CFG = ArticulationCfg(
         # pos=(0.95, 0.0, 0.90),
         #    pos=(0.95, 0.0, 0.95),
             # pos=(0.85, 0.0, 0.80), # default
-             pos=(0.79, 0.0, 0.77),
+             pos=(0.83, 0.0, 0.77),
         # rot=(0.0, 0.7071, 0.7071, 0.0),# imitation
         rot=(0.5, 0.5, -0.5, -0.5),
         joint_pos={

@@ -5,7 +5,7 @@
 import gymnasium as gym
 import os
 
-from . import agents, airec2_finger_taskspace, wear_finger, wear_finger_taskspace, wear_finger_hepi
+from . import agents, airec2_finger_taskspace, wear_finger, wear_finger_taskspace, wear_finger_hepi, reach_bracelet
 
 print("Registering AIREC environments")
 
@@ -15,16 +15,17 @@ agent_config = os.path.join(agents_dir, "wear.yaml")
 wear_taskspace_agent = os.path.join(agents_dir, "wear_taskspace.yaml")
 wear_hepi_agent = os.path.join(agents_dir, "wear_hepi.yaml")
 airec2_taskspace_agent = os.path.join(agents_dir, "airec2_taskspace.yaml")
+reach_bracelet_agent = os.path.join(agents_dir, "reach_bracelet.yaml")
 
-# gym.register(
-#     id="AIREC_Wear",
-#     entry_point="tasks.airec.wear_finger:WearEnv",
-#     kwargs={
-#         "env_cfg_entry_point": wear_finger.WearEnvCfg,
-#         "skrl_cfg_entry_point": agent_config,
-#     },
-#     disable_env_checker=True,
-# )
+gym.register(
+    id="AIREC_Wear",
+    entry_point="tasks.airec.wear_finger:WearEnv",
+    kwargs={
+        "env_cfg_entry_point": wear_finger.WearEnvCfg,
+        "skrl_cfg_entry_point": agent_config,
+    },
+    disable_env_checker=True,
+)
 
 gym.register(
     id="AIREC_Wear_TaskSpace",
@@ -52,6 +53,16 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": airec2_finger_taskspace.AIREC2FingerTaskSpaceEnvCfg,
         "skrl_cfg_entry_point": airec2_taskspace_agent,
+    },
+    disable_env_checker=True,
+)
+
+gym.register(
+    id="AIREC_Reach_Bracelet",
+    entry_point="tasks.airec.reach_bracelet:ReachBraceletEnv",
+    kwargs={
+        "env_cfg_entry_point": reach_bracelet.ReachBraceletEnvCfg,
+        "skrl_cfg_entry_point": reach_bracelet_agent,
     },
     disable_env_checker=True,
 )
