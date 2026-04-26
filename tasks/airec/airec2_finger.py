@@ -148,7 +148,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             gpu_temp_buffer_capacity=2**20, # default 2**20
             gpu_max_soft_body_contacts= 2**24, # default 2**20
             # Narrow-phase stack; PhysX can demand >2**30 bytes when contact count spikes (e.g. dense meshes).
-            gpu_collision_stack_size=2**31,
+            gpu_collision_stack_size=2**30,
             # gpu_temp_buffer_capacity=2**18, # default 2**20
             # gpu_max_soft_body_contacts= 2**18, # default 2**20 
             # gpu_collision_stack_size=2**26, # default 2**26

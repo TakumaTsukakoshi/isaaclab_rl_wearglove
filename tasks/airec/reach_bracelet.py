@@ -653,8 +653,8 @@ class ReachBraceletEnv(AIRECEnv):
                 depth_t,
                 depth_p,
                 self.goal_wrist_pos[:, 2],
-                self.north_edge_pos[:, 2],
-                self.south_edge_pos[:, 2],
+                self.goal_north_pos[:, 2],
+                self.goal_south_pos[:, 2],
                 self.thumb_target[:, 2],
                 self.pinky_target[:, 2],
                 self.cfg.minimal_width,
@@ -877,6 +877,7 @@ class ReachBraceletEnv(AIRECEnv):
             self.goal_cent_markers.visualize(
                 self.goal_cent_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
             )
+            # print(f"goal_north_pos: {self.goal_north_pos[0]}, goal_south_pos: {self.goal_south_pos[0]}, goal_east_pos: {self.goal_east_pos[0]}, goal_west_pos: {self.goal_west_pos[0]}, goal_cent_pos: {self.goal_cent_pos[0]}")
 
         if self._use_glove or self.cfg.object_type == "rigid":
             self.garment_right_ee_distance[env_ids] = self.right_ee_pos[env_ids] - self.goal_west_pos[env_ids]
@@ -1017,6 +1018,7 @@ def compute_rewards(
     # r_garment_fore_distance = distance_reward(garment_fore_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # r_garment_middle_distance = distance_reward(garment_middle_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # r_garment_ring_distance = distance_reward(garment_ring_euclidean_distance, std=0.09) * reaching_object_goal_scale
+    # print(f"top_height: {top_height[0]}, wrist_height: {wrist_height[0]}, bottom_height: {bottom_height[0]}")
     r_depth_distance = distance_reward(depth_distance, std=0.1) * (top_height > wrist_height) * (wrist_height < bottom_height) * depth_reward_scale * (ee_euclidean_distance < 0.3)
     r_depth_thumb_distance = distance_reward(depth_thumb_distance, std=0.03) * (top_height > thumb_height) * (thumb_height < bottom_height) * depth_thumb_reward_scale
     r_depth_pinky_distance = distance_reward(depth_pinky_distance, std=0.06) * (top_height > pinky_height) * (pinky_height < bottom_height) * depth_pinky_reward_scale
