@@ -1001,14 +1001,15 @@ def compute_rewards(
     depth_reward_scale = 10.0
     depth_thumb_reward_scale = 0.0
     depth_pinky_reward_scale = 0.0
-    joint_vel_penalty_scale = -0.01
+    # joint_vel_penalty_scale = -0.01
+    joint_vel_penalty_scale = 0.0
 
     # FOR REACHING (include condition))
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
     # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale * (ee_euclidean_distance < 0.3) # default 0.4
-    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (ee_euclidean_distance < 0.3) # default 0.3
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height < bottom_height) *(ee_euclidean_distance < 0.3) # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height < bottom_height) *(ee_euclidean_distance < 0.3) # default 0.3
     r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])
