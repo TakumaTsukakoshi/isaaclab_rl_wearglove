@@ -331,7 +331,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     left_upper_ee_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/world",
-        debug_vis=False,
+        debug_vis=True,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
@@ -363,7 +363,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     right_upper_ee_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/world",
-        debug_vis=False,
+        debug_vis=True,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
