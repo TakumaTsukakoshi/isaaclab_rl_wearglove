@@ -51,8 +51,8 @@ from isaaclab.utils.math import (
 )
 import isaaclab.utils.math as math_utils
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
-from assets.airec_finger import AIREC_CFG  
-from assets.shadow_hand import SHADOW_HAND_CFG
+from assets_cfg.airec_finger import AIREC_CFG  
+from assets_cfg.shadow_hand import SHADOW_HAND_CFG
 from pxr import Sdf, Usd, UsdPhysics, Sdf
 from isaaclab.sim import SimulationContext
 import re
