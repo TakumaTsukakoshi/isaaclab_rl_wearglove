@@ -70,10 +70,10 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 250  # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 500 # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
-    decimation = 10  # 10 # # 50 Hz
+    decimation = 5  # 10 # # 50 Hz
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -1692,12 +1692,12 @@ class AIRECEnv(DirectRLEnv):
         # no termination at the moment
         # is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.10 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.10   # check
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.50 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.50   # check
         too_far = self.ee_euclidean_distance > 1.0 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
-        # termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
-        termination = too_far | out_of_reach
+        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
+        # termination = too_far | out_of_reach
         # termination = too_far | is_grasp_right | is_grasp_left
        
         # For wandb: ``_get_dones`` runs before ``_get_rewards``; ``WearEnv._get_rewards`` merges

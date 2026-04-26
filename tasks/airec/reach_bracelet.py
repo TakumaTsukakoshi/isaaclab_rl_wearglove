@@ -86,7 +86,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     # default_object_pos = [0.27, 0.00, 1.07] # airec1
     # default_object_pos = [0.26, 0.00, 0.85] # airec2 default
     # default_object_pos = [0.18, 0.00, 0.83] # airec2
-    default_object_pos = [0.24, 0.00, 0.88] # airec2
+    default_object_pos = [0.24, 0.00, 0.85] # airec2
 
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
@@ -116,8 +116,8 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
             # scale=(1.0, 1.5, 1.4),
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
-                # contact_offset=0.01, # default 0.005
-                # rest_offset=0.006, # default 0.003
+                contact_offset=0.02, # default 0.005
+                rest_offset=0.005, # default 0.003
             ),
 
 
@@ -125,8 +125,9 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
-                solver_position_iteration_count=16,
-                solver_velocity_iteration_count=8,
+                solver_position_iteration_count=64,
+                solver_velocity_iteration_count=32,
+                max_depenetration_velocity=0.5,
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(
             diffuse_color=(0.8, 0.2, 0.2),
@@ -657,7 +658,6 @@ class ReachBraceletEnv(AIRECEnv):
                 self.thumb_target[:, 2],
                 self.pinky_target[:, 2],
                 self.cfg.minimal_width,
-                self.joint_vel,
                 )
 
             self.extras["log"] = {
