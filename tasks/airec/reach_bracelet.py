@@ -557,20 +557,20 @@ class ReachBraceletEnv(AIRECEnv):
                 # angular distances (1,)
                 self.left_ee_pinky_angular_distance.unsqueeze(1),
                 # xyz diffs (3,)
-                # self.depth_distance.unsqueeze(1),
+                self.depth_distance.unsqueeze(1),
                 # # xyz diffs (3,)
                 # self.depth_thumb_distance.unsqueeze(1),
                 # # xyz diffs (3,)
                 # self.depth_pinky_distance.unsqueeze(1),
 
                 # # xyz diffs (3,)
-                # self.goal_wrist_pos,
+                self.goal_wrist_pos,
                 # # xyz diffs (3,)
-                # self.goal_cent_pos,
+                self.goal_cent_pos,
                 # # xyz diffs (3,)
-                # self.goal_north_pos,
+                self.goal_north_pos,
                 # # xyz diffs (3,)
-                # self.goal_south_pos,
+                self.goal_south_pos,
             ),
             dim=-1,
         )
@@ -994,7 +994,7 @@ def compute_rewards(
     pinky_height: torch.Tensor,
     minimal_width: float,
 ):
-    rotation_object_goal_scale = 0.0 # 10.0
+    rotation_object_goal_scale = 0.1 # 10.0
     reaching_object_goal_scale = 1.0    
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
@@ -1026,7 +1026,7 @@ def compute_rewards(
 
     # FOR REACHING+INSERTING+TERMINATE
     # r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5  
-    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * rotation_object_goal_scale * 0.0
+    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * rotation_object_goal_scale 
     r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.2) * rotation_object_goal_scale 
     r_joint_vel = joint_vel_penalty(robot_joint_vel) * joint_vel_penalty_scale
 
