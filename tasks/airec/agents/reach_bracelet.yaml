@@ -1,5 +1,9 @@
 seed: 42
 
+# Reach-bracelet only: pin Shadow Hand (root + all joints) each physics substep; AIREC is unchanged.
+# Set true to test whether instability comes from the Shadow Hand vs reward/task.
+freeze_shadow_hand_for_sanity_check: false
+
 observations:
   obs_list: 
   - prop
@@ -43,7 +47,8 @@ agent:
   mini_batches: 16
   discount_factor: 0.99
   lambda: 0.95
-  learning_rate: 1.0595873261695062e-05
+  # learning_rate: 1.0595873261695062e-05
+  learning_rate: 5.0e-6
   random_timesteps: 0
   learning_starts: 0
   grad_norm_clip: 1.0

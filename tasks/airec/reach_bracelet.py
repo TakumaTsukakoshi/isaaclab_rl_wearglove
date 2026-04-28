@@ -74,6 +74,12 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: Hide parent ``AIRECEnv`` red kinematic anchor cuboids on the rim (still used for ``north_edge_pos`` etc.).
     show_anchor_rim_cuboids: bool = False
 
+    #: If ``True``, the **Shadow Hand** is held to its **post-reset** pose every physics substep: targets + joint
+    #: state are written before ``scene.write_data_to_sim``, and the same pose is **written again immediately after**
+    #: each ``sim.step`` so contact impulses cannot accumulate drift. AIREC is unchanged. Use to test whether
+    #: instability comes from the Shadow Hand vs. reward / task / arms / bracelet.
+    freeze_shadow_hand_for_sanity_check: bool = False
+
     # reset config
     reset_object_position_noise = 0.00
     #: Bracelet keeps ``object_cfg.init_state.rot`` on every reset (only position noise applies).
@@ -461,6 +467,74 @@ class ReachBraceletEnv(AIRECEnv):
         # debugging
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
 
+        # Shadow-hand freeze sanity check: post-reset pose (joint + root) held before/after each PhysX step.
+        n_hand_dof = int(self.hand.data.joint_pos.shape[1])
+        n_root = int(self.hand.data.root_state_w.shape[1])
+        self._shadow_hand_freeze_joint_pos = torch.zeros(
+            (self.num_envs, n_hand_dof), device=self.device, dtype=self.hand.data.joint_pos.dtype
+        )
+        self._shadow_hand_freeze_root_state = torch.zeros(
+            (self.num_envs, n_root), device=self.device, dtype=self.hand.data.root_state_w.dtype
+        )
+
+        self._install_shadow_hand_post_sim_step_freeze()
+
+    def _install_shadow_hand_post_sim_step_freeze(self) -> None:
+        """Wrap ``sim.step`` so the Shadow Hand pose is re-applied after each physics substep."""
+        if getattr(self, "_shadow_hand_post_sim_freeze_installed", False):
+            return
+        orig_step = self.sim.step
+        env = self
+
+        def _step_then_maybe_repin_shadow_hand(render: bool = True, *args, **kwargs):
+            out = orig_step(render, *args, **kwargs)
+            if getattr(env.cfg, "freeze_shadow_hand_for_sanity_check", False):
+                env._pin_shadow_hand_frozen_pose(env._all_env_ids_tensor())
+            return out
+
+        self.sim.step = _step_then_maybe_repin_shadow_hand
+        self._shadow_hand_post_sim_freeze_installed = True
+
+    def _all_env_ids_tensor(self) -> torch.Tensor:
+        return torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+
+    def _pin_shadow_hand_pose_tensors(
+        self,
+        env_ids: torch.Tensor,
+        joint_pos: torch.Tensor,
+        root_state: torch.Tensor,
+    ) -> None:
+        """Hard-set Shadow Hand joints + root (zero body velocities in root row)."""
+        env_ids = self._normalize_env_ids(env_ids)
+        joint_vel = torch.zeros_like(joint_pos)
+        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
+        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+        root = root_state.clone()
+        if root.shape[-1] >= 13:
+            root[:, 7:13] = 0.0
+        self.hand.write_root_state_to_sim(root, env_ids=env_ids)
+
+    def _pin_shadow_hand_frozen_pose(self, env_ids: torch.Tensor | None = None) -> None:
+        if env_ids is None:
+            env_ids = self._all_env_ids_tensor()
+        env_ids = self._normalize_env_ids(env_ids)
+        self._pin_shadow_hand_pose_tensors(
+            env_ids,
+            self._shadow_hand_freeze_joint_pos[env_ids],
+            self._shadow_hand_freeze_root_state[env_ids],
+        )
+
+    def _capture_shadow_hand_freeze_pose_from_data(self, env_ids: torch.Tensor) -> None:
+        """Store current sim buffers as the frozen pose (e.g. glove path where ``_reset_target_pose`` is unused)."""
+        env_ids = self._normalize_env_ids(env_ids)
+        self._shadow_hand_freeze_joint_pos[env_ids] = self.hand.data.joint_pos[env_ids].clone()
+        self._shadow_hand_freeze_root_state[env_ids] = self.hand.data.root_state_w[env_ids].clone()
+
+    def _apply_action(self) -> None:
+        super()._apply_action()
+
+        if getattr(self.cfg, "freeze_shadow_hand_for_sanity_check", False):
+            self._pin_shadow_hand_frozen_pose(self._all_env_ids_tensor())
 
     def _setup_scene(self):
         super()._setup_scene()
@@ -582,19 +656,21 @@ class ReachBraceletEnv(AIRECEnv):
 
     def _reset_idx(self, env_ids: Sequence[int] | None = None):
         super()._reset_idx(env_ids)
+
         if env_ids is None:
             e = self.robot._ALL_INDICES
         else:
             e = self._normalize_env_ids(env_ids)
+
         self.prev_actions[e] = 0.0
 
-        # When ``_use_glove`` is False the base reset can skip goal-hand setup (``object_type=="none"`` path).
-        # For rigid bracelet we still refresh ShadowHand pose and thumb/pinky aperture after reset.
         if not self._use_glove:
             self._reset_target_pose(e)
-            # Refresh transforms before aperture logic (thumb/pinky goal frames depend on ShadowHand pose).
             self._compute_intermediate_values(env_ids=e)
             self._reset_goal_aperture(e)
+        elif getattr(self.cfg, "freeze_shadow_hand_for_sanity_check", False):
+            self._capture_shadow_hand_freeze_pose_from_data(e)
+            self._pin_shadow_hand_frozen_pose(e)
 
     def _get_rewards(self) -> torch.Tensor:
         if self.cfg.use_geometryrl_b7_reward:
@@ -694,6 +770,8 @@ class ReachBraceletEnv(AIRECEnv):
     def _normalize_env_ids(self, env_ids):
         if isinstance(env_ids, int):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
+        if isinstance(env_ids, slice):
+            return torch.arange(self.num_envs, device=self.device, dtype=torch.long)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
     def _reset_goal_aperture(self, env_ids, thumb_offset=0.02, pinky_offset=0.02):
@@ -777,6 +855,10 @@ class ReachBraceletEnv(AIRECEnv):
         self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
         self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
 
+        if getattr(self.cfg, "freeze_shadow_hand_for_sanity_check", False):
+            self._shadow_hand_freeze_joint_pos[env_ids] = joint_pos.clone()
+            self._shadow_hand_freeze_root_state[env_ids] = default_state.clone()
+
     def _bracelet_rim_goals_env_local(self, env_ids: torch.Tensor) -> None:
         """Set ``goal_{north,south,east,west}_pos`` and ``goal_cent_pos`` (env-local) for a rigid bracelet.
 
@@ -809,9 +891,15 @@ class ReachBraceletEnv(AIRECEnv):
         self.goal_cent_pos[env_ids] = (self.goal_north_pos[env_ids] + self.goal_south_pos[env_ids]) / 2.0
 
     def _compute_intermediate_values(self, reset=False, env_ids: torch.Tensor | None = None):
-        super()._compute_intermediate_values()
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
+        else:
+            env_ids = self._normalize_env_ids(env_ids)
+
+        if getattr(self.cfg, "freeze_shadow_hand_for_sanity_check", False):
+            self._pin_shadow_hand_frozen_pose(env_ids)
+
+        super()._compute_intermediate_values()
 
         if self._use_glove:
             # Deformable-object rim points (nodal anchors).
@@ -994,7 +1082,7 @@ def compute_rewards(
     pinky_height: torch.Tensor,
     minimal_width: float,
 ):
-    rotation_object_goal_scale = 0.1 # 10.0
+    rotation_object_goal_scale = 0.0 # 10.0
     reaching_object_goal_scale = 1.0    
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
@@ -1008,8 +1096,10 @@ def compute_rewards(
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
     # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.4
-    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.3
+    # r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.4
+    # r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.3
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.3
     r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])

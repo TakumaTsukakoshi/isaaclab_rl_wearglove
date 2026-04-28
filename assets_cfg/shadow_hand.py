@@ -24,6 +24,8 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 ##
 # Configuration
 ##
+STIFFNESS_SCALE = 100.0
+DAMPING_SCALE = 10.0
 
 SHADOW_HAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
@@ -31,12 +33,13 @@ SHADOW_HAND_CFG = ArticulationCfg(
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,
-            retain_accelerations=True,
+            retain_accelerations=False,
             max_depenetration_velocity=1000.0,
         ),
         scale=(1.0, 1.0, 1.0),
         # scale=(0.7, 0.7, 0.7),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            fix_root_link=True,
             enabled_self_collisions=True,
             solver_position_iteration_count=8,
             solver_velocity_iteration_count=0,
@@ -89,16 +92,16 @@ SHADOW_HAND_CFG = ArticulationCfg(
                 "robot0_THJ0": 0.81,
             },
             stiffness={
-                "robot0_WRJ.*": 5.0,
-                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 1.0,
-                "robot0_(LF|TH)J4": 1.0,
-                "robot0_THJ0": 1.0,
+                "robot0_WRJ.*": 5.0 * STIFFNESS_SCALE,
+                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 1.0 * STIFFNESS_SCALE,
+                "robot0_(LF|TH)J4": 1.0 * STIFFNESS_SCALE,
+                "robot0_THJ0": 1.0 * STIFFNESS_SCALE,
             },
             damping={
-                "robot0_WRJ.*": 0.5,
-                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 0.1,
-                "robot0_(LF|TH)J4": 0.1,
-                "robot0_THJ0": 0.1,
+                "robot0_WRJ.*": 0.5 * DAMPING_SCALE,
+                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 0.1 * DAMPING_SCALE,
+                "robot0_(LF|TH)J4": 0.1 * DAMPING_SCALE,
+                "robot0_THJ0": 0.1 * DAMPING_SCALE,
             },
         ),
     },
