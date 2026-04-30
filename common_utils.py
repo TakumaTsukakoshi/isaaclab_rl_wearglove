@@ -275,6 +275,15 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
                 agent_cfg["freeze_hands_for_sanity_check"]
             )
 
+    if hasattr(env_cfg, "hold_shadow_hand_finger_targets") and "hold_shadow_hand_finger_targets" in agent_cfg:
+        env_cfg.hold_shadow_hand_finger_targets = bool(agent_cfg["hold_shadow_hand_finger_targets"])
+    if hasattr(env_cfg, "shadow_hand_finger_targets_from_reset_pose") and (
+        "shadow_hand_finger_targets_from_reset_pose" in agent_cfg
+    ):
+        env_cfg.shadow_hand_finger_targets_from_reset_pose = bool(
+            agent_cfg["shadow_hand_finger_targets_from_reset_pose"]
+        )
+
     return env_cfg
 
 

@@ -2,6 +2,12 @@ seed: 42
 
 # Reach-bracelet only: pin Shadow Hand (root + all joints) each physics substep; AIREC is unchanged.
 # Set true to test whether instability comes from the Shadow Hand vs reward/task.
+freeze_shadow_hand_for_sanity_check: false
+
+# Shadow Hand finger joints only: re-send targets every physics substep (wrist unchanged).
+# If shadow_hand_finger_targets_from_reset_pose is true, targets match joint_pos right after _reset_target_pose.
+hold_shadow_hand_finger_targets: true
+shadow_hand_finger_targets_from_reset_pose: true
 
 # Deformable bracelet debug knobs (used by AIREC_Reach_Deformable_Bracelet).
 # Turn on to see entry patch stats and chosen indices.
