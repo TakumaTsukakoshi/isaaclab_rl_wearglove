@@ -388,6 +388,7 @@ AIREC_CFG = ArticulationCfg(
     #     "right_hand_third_finger_joint_2": radians(89),
     #     },
     # ),
+    # NOTE initial state for reach bracelet task
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
         joint_pos={
