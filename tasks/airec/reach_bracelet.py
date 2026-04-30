@@ -481,7 +481,23 @@ class ReachBraceletEnv(AIRECEnv):
 
         # debugging
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
-
+        self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
+        self._shadow_hand_finger_hold = torch.zeros(
+            (self.num_envs, len(self.finger_joint_ids)),
+            device=self.device,
+            dtype=self.hand.data.joint_pos.dtype,
+        )
+    
+    def _apply_action(self) -> None:
+        super()._apply_action()
+        # hold finger targets
+        finger_target_pos = self._shadow_hand_finger_hold
+        zv = torch.zeros_like(finger_target_pos)
+        self.hand.set_joint_position_target(
+            finger_target_pos,
+            joint_ids=self.finger_joint_ids,
+        )
+        self.hand.set_joint_velocity_target(zv, joint_ids=self.finger_joint_ids)
 
     def _setup_scene(self):
         super()._setup_scene()
@@ -797,6 +813,8 @@ class ReachBraceletEnv(AIRECEnv):
         self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
         self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+
 
     def _bracelet_rim_goals_env_local(self, env_ids: torch.Tensor) -> None:
         """Set ``goal_{north,south,east,west}_pos`` and ``goal_cent_pos`` (env-local) for a rigid bracelet.
