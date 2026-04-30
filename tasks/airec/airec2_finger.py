@@ -1218,12 +1218,7 @@ class AIRECEnv(DirectRLEnv):
         self.object.write_root_state_to_sim(object_default_state, env_ids)
 
     def _reset_robot(self, env_ids):
-        # joint_pos = self.robot.data.default_joint_pos[env_ids] + sample_uniform(
-        #     -0.05,
-        #     0.05,
-        #     (len(env_ids), self.robot.num_joints),
-        #     self.device,
-        # )
+
         joint_pos = self.robot.data.default_joint_pos[env_ids]
         # joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)

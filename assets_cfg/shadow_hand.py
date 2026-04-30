@@ -25,6 +25,9 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 # Configuration
 ##
 
+STIFFNESS_SCALE = 100.0
+DAMPING_SCALE = 10.0
+
 SHADOW_HAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/ShadowRobot/ShadowHand/shadow_hand_instanceable.usd",
@@ -89,16 +92,16 @@ SHADOW_HAND_CFG = ArticulationCfg(
                 "robot0_THJ0": 0.81,
             },
             stiffness={
-                "robot0_WRJ.*": 5.0,
-                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 1.0,
-                "robot0_(LF|TH)J4": 1.0,
-                "robot0_THJ0": 1.0,
+                "robot0_WRJ.*": 5.0 * STIFFNESS_SCALE,
+                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 1.0 * STIFFNESS_SCALE,
+                "robot0_(LF|TH)J4": 1.0 * STIFFNESS_SCALE,
+                "robot0_THJ0": 1.0 * STIFFNESS_SCALE,
             },
             damping={
-                "robot0_WRJ.*": 0.5,
-                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 0.1,
-                "robot0_(LF|TH)J4": 0.1,
-                "robot0_THJ0": 0.1,
+                "robot0_WRJ.*": 0.5 * DAMPING_SCALE,
+                "robot0_(FF|MF|RF|LF|TH)J(3|2|1)": 0.1 * DAMPING_SCALE,
+                "robot0_(LF|TH)J4": 0.1 * DAMPING_SCALE,
+                "robot0_THJ0": 0.1 * DAMPING_SCALE,
             },
         ),
     },
