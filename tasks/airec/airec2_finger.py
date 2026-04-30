@@ -118,24 +118,6 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     default_goal_euclidean_distance = 0.19
 
-    # -----------------------------
-    # Deformable "mouth/rim" anchors (N/S/E/W) selection
-    # -----------------------------
-    #: Long-axis hint (mouth ⇔ deep) in world frame used by :meth:`AIRECEnv._choose_mouth_nodes_4dirs`.
-    #: If set (default), the "+axis" side is treated as the mouth/entry side.
-    #: Set to ``None`` to use PCA auto-detection.
-    mouth_axis_hint: tuple[float, float, float] | None = (1.0, 0.0, 0.0)
-    #: Thickness of the end-slice as a fraction of object length along :attr:`mouth_axis_hint`.
-    mouth_end_slice_ratio: float = 0.1
-    #: Within the end-slice, keep only points close to the entry plane (fraction of slice thickness).
-    mouth_entry_plane_ratio: float = 1.0
-    #: Keep only outer-ring points by radius quantile in the entry slice (0 disables).
-    mouth_ring_quantile: float = 0.0
-    #: If True, print diagnostics from mouth/rim anchor selection (counts, alpha/beta ranges, chosen indices).
-    debug_mouth_anchor_selection: bool = False
-    #: If True, swap east/west anchors after selection (useful when the u-axis sign is flipped for a mesh).
-    swap_east_west_anchors: bool = False
-
     # Task-space / Cartesian control (``airec2_finger_taskspace``, ``wear_finger_taskspace``; joint-space ignores these).
     task_space_pos_min: tuple[float, float, float] = (-0.55, -0.55, 0.35)
     task_space_pos_max: tuple[float, float, float] = (0.55, 0.55, 1.45)
@@ -1150,15 +1132,7 @@ class AIRECEnv(DirectRLEnv):
             return
       
         if self.cfg.object_type == "deformable":
-            self.anchor_idx = self._choose_mouth_nodes_4dirs(
-                end_slice_ratio=float(getattr(self.cfg, "mouth_end_slice_ratio", 0.1)),
-                axis_hint=getattr(self.cfg, "mouth_axis_hint", [1.0, 0.0, 0.0]),
-                entry_plane_ratio=float(getattr(self.cfg, "mouth_entry_plane_ratio", 1.0)),
-                ring_quantile=float(getattr(self.cfg, "mouth_ring_quantile", 0.0)),
-                debug=bool(getattr(self.cfg, "debug_mouth_anchor_selection", True)),
-            )
-            if self.anchor_idx is not None and bool(getattr(self.cfg, "swap_east_west_anchors", False)):
-                self.anchor_idx["east"], self.anchor_idx["west"] = self.anchor_idx["west"], self.anchor_idx["east"]
+            self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[1.0, 0.0, 0.0])
             self.prev_anchor_idx = self.anchor_idx
             if self.anchor_idx is None:
                 self.anchor_idx = self._choose_mouth_nodes_4dirs()
@@ -1322,7 +1296,6 @@ class AIRECEnv(DirectRLEnv):
         axis_hint=None,
         entry_plane_ratio: float = 1.0,
         ring_quantile: float = 0.0,
-        debug: bool = False,
     ):
         """
         グローブ入口（mouth）近傍から、上下左右の4ノードのインデックスを返す。
@@ -1485,19 +1458,6 @@ class AIRECEnv(DirectRLEnv):
         # north = β 最大, south = β 最小
         idx_up    = idx_entry[torch.argmax(beta)]
         idx_down  = idx_entry[torch.argmin(beta)]
-
-        if debug:
-            try:
-                print(
-                    "[mouth_anchors] "
-                    f"V={int(P.shape[0])} entry_candidates={int(idx_entry.numel())} "
-                    f"alpha[min,max]=({alpha.min().item():.4g},{alpha.max().item():.4g}) "
-                    f"beta[min,max]=({beta.min().item():.4g},{beta.max().item():.4g}) "
-                    f"idx(east,west,north,south)=({int(idx_right)},{int(idx_left)},{int(idx_up)},{int(idx_down)})"
-                )
-            except Exception:
-                # Best-effort debug; never crash training due to printing.
-                pass
 
         return {
             "north": int(idx_up.item()),

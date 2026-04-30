@@ -5,15 +5,7 @@
 import gymnasium as gym
 import os
 
-from . import (
-    agents,
-    airec2_finger_taskspace,
-    wear_finger,
-    wear_finger_taskspace,
-    wear_finger_hepi,
-    reach_bracelet,
-    reach_deformable_bracelet,
-)
+from . import agents, airec2_finger_taskspace, wear_finger, wear_finger_taskspace, wear_finger_hepi, reach_bracelet
 
 print("Registering AIREC environments")
 
@@ -70,16 +62,6 @@ gym.register(
     entry_point="tasks.airec.reach_bracelet:ReachBraceletEnv",
     kwargs={
         "env_cfg_entry_point": reach_bracelet.ReachBraceletEnvCfg,
-        "skrl_cfg_entry_point": reach_bracelet_agent,
-    },
-    disable_env_checker=True,
-)
-
-gym.register(
-    id="AIREC_Reach_Deformable_Bracelet",
-    entry_point="tasks.airec.reach_deformable_bracelet:ReachDeformableBraceletEnv",
-    kwargs={
-        "env_cfg_entry_point": reach_deformable_bracelet.ReachDeformableBraceletEnvCfg,
         "skrl_cfg_entry_point": reach_bracelet_agent,
     },
     disable_env_checker=True,

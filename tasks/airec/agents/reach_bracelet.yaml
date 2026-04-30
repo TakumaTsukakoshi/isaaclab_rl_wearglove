@@ -1,20 +1,5 @@
 seed: 42
 
-# Reach-bracelet only: pin Shadow Hand (root + all joints) each physics substep; AIREC is unchanged.
-# Set true to test whether instability comes from the Shadow Hand vs reward/task.
-freeze_shadow_hand_for_sanity_check: false
-
-# Shadow Hand finger joints only: re-send targets every physics substep (wrist unchanged).
-# If shadow_hand_finger_targets_from_reset_pose is true, targets match joint_pos right after _reset_target_pose.
-hold_shadow_hand_finger_targets: true
-shadow_hand_finger_targets_from_reset_pose: true
-
-# Deformable bracelet debug knobs (used by AIREC_Reach_Deformable_Bracelet).
-# Turn on to see entry patch stats and chosen indices.
-debug_mouth_anchor_selection: false
-# If east/west look flipped for the deformable mesh, set true.
-swap_east_west_anchors: false
-
 observations:
   obs_list: 
   - prop
@@ -58,8 +43,7 @@ agent:
   mini_batches: 16
   discount_factor: 0.99
   lambda: 0.95
-  # learning_rate: 1.0595873261695062e-05
-  learning_rate: 1.0e-6
+  learning_rate: 1.0595873261695062e-05
   random_timesteps: 0
   learning_starts: 0
   grad_norm_clip: 1.0
@@ -79,7 +63,7 @@ trainer:
 # logging and checkpoints
 experiment:
   directory: "airec2_finger"
-  experiment_name: "reach_deformable_bracelet"
+  experiment_name: "reach_bracelet"
   save_checkpoints: 2
   upload_videos: 0
   video_dir: "videos"
@@ -90,5 +74,5 @@ experiment:
     "entity": "t-u-k-a-36taku-waseda-university",
     "project": "isaac_lab",
     "group": "airec_reach_bracelet",
-    "name": "reach_deformable_bracelet",
+    "name": "reach_bracelet",
   }

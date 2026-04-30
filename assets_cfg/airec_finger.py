@@ -320,7 +320,6 @@ AIREC_CFG = ArticulationCfg(
     # Do not override the USD-specified joint positions so that the original
     # drive (and other joint) properties remain intact.
     ###########################################################################
-    # NOTE: for wearing glove task
     # init_state=ArticulationCfg.InitialStateCfg(
     #     pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
     #     joint_pos={
@@ -389,7 +388,6 @@ AIREC_CFG = ArticulationCfg(
     #     "right_hand_third_finger_joint_2": radians(89),
     #     },
     # ),
-    # # NOTE: for reach rigid bracelet task
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
         joint_pos={
@@ -404,6 +402,7 @@ AIREC_CFG = ArticulationCfg(
         # "left_arm_joint_2": radians(-14),
         # "left_arm_joint_2": radians(-20), default
         "left_arm_joint_2": radians(-18),
+        "left_arm_joint_2": radians(-18),
         "left_arm_joint_3": radians(-14),
         # "left_arm_joint_4": radians(100),
         "left_arm_joint_4": radians(105),
@@ -411,10 +410,12 @@ AIREC_CFG = ArticulationCfg(
         # "left_arm_joint_6": radians(45),
         "left_arm_joint_6": radians(65),
         "left_arm_joint_7": radians(-13),
+        "left_arm_joint_7": radians(-13),
         # "right_arm_joint_1": radians(33),
         "right_arm_joint_1": radians(20),
         # "right_arm_joint_2": radians(-14),
         # "right_arm_joint_2": radians(-20),default
+        "right_arm_joint_2": radians(-18),
         "right_arm_joint_2": radians(-18),
         "right_arm_joint_3": radians(-14),
         # "right_arm_joint_4": radians(100),
@@ -422,6 +423,7 @@ AIREC_CFG = ArticulationCfg(
         "right_arm_joint_5": radians(26),
         # "right_arm_joint_6": radians(45),
         "right_arm_joint_6": radians(65),
+        "right_arm_joint_7": radians(13),
         "right_arm_joint_7": radians(13),
         # "left_hand_thumb_joint_1": radians(75),
         # "left_hand_thumb_joint_2": radians(13),
