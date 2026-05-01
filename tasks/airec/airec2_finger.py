@@ -523,7 +523,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     normalise_prop = True
     normalise_pixels = True
     num_cameras = 1
-    object_type = "deformable"  # "none" (no scene object) | "rigid" | "deformable" — override in task cfgs (e.g. WearEnvCfg)
+    object_type = "rigid"  # "none" (no scene object) | "rigid" | "deformable" — override in task cfgs (e.g. WearEnvCfg)
     #: If True, spawn visible red cuboids at ``Visuals/Anchor{East,West,North,South,Center}/Geom`` (rim kinematic bodies).
     #: Set False for rigid tasks (e.g. bracelet) to hide them while keeping physics anchors.
     show_anchor_rim_cuboids: bool = True
