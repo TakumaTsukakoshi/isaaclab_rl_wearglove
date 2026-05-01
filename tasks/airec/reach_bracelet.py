@@ -23,6 +23,7 @@ from isaaclab.utils.math import (
     quat_apply,
     quat_apply_inverse,
     quat_conjugate,
+    quat_from_euler_xyz,
     quat_mul,
     sample_uniform,
 )
@@ -813,7 +814,17 @@ class ReachBraceletEnv(AIRECEnv):
 
         init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
 
-        default_state[:, 3:7] = init_rot
+        # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
+        B = int(len(env_ids))
+        pitch_rad = sample_uniform(
+            torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+            torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+            (B,),
+            device=self.device,
+        )
+        zero = torch.zeros_like(pitch_rad)
+        q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
+        default_state[:, 3:7] = quat_mul(q_pitch, init_rot)
 
         default_state[:, 7:] = 0.0
 
