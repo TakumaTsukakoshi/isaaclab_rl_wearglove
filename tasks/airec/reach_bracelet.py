@@ -101,6 +101,10 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     bracelet_rim_offset_south: tuple[float, float, float] = (0.0, -0.03, 0.0)
     bracelet_rim_offset_east: tuple[float, float, float] = (0.10, 0.0, 0.0)
     bracelet_rim_offset_west: tuple[float, float, float] = (-0.10, 0.0, 0.0)
+    #: Opening-frame Z target for the wrist (m) in depth reward ``abs(z - desired)``.
+    bracelet_desired_insert_depth: float = 0.0
+    #: Soft in-opening gate ``exp(-max(0, radial^2-1)/std)``; larger = more lenient outside the ellipse.
+    bracelet_inside_opening_std: float = 0.15
 
     object_usd = os.path.join(
         _REPO_ROOT, "assets", "Bracelet", "bracelet_b.usd"
@@ -415,9 +419,11 @@ class ReachBraceletEnv(AIRECEnv):
         self.goal_stretch_euclidean_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.direction = torch.zeros((self.num_envs, 3), dtype =torch.float, device=self.device)
         self.norm = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        # Last aperture reset: wrist reference and lateral axis in **env-local** / **world direction** respectively.
         self.wrist_origin = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.wrist_lateral_axis = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.unit_dir = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        # Dynamic outward-biased reach targets (**env-local**), updated each step from live ShadowHand fingertips.
         self.thumb_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.pinky_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.fore_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
@@ -426,7 +432,8 @@ class ReachBraceletEnv(AIRECEnv):
         self.identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float, device=self.device).unsqueeze(0).expand(self.num_envs, -1)
 
 
-        # right and left goal positions/rotations
+        # ShadowHand thdistal / lfdistal poses from goal FrameTransformers (names are legacy ``*_goal_*``).
+        # ``*_pos`` are **live env-local** fingertip positions refreshed every step; ``*_rot`` are current tips.
         self.thumb_goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.thumb_goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
         self.pinky_goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
@@ -439,13 +446,37 @@ class ReachBraceletEnv(AIRECEnv):
         self.ring_goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
         self.goal_wrist_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
 
+        # Last ShadowHand root pose written in ``_reset_target_pose`` (same convention as ``write_root_state_to_sim``):
+        # position is **sim world** (includes ``env_origins``); quaternion **world** wxyz.
+        self.goal_hand_root_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.goal_hand_root_quat = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
+        self.goal_hand_root_quat[:, 0] = 1.0
+
         # Opening-frame kinematics buffers (world rotation, env-local positions).
         # These MUST be persistent (num_envs, 3) tensors because _compute_intermediate_values may run on a subset of env_ids.
         self.wrist_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.north_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.south_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        # Opening-frame offsets of dynamic ``thumb_target`` / ``pinky_target`` w.r.t. ``goal_cent_pos`` (bracelet frame).
         self.thumb_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.pinky_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.east_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.west_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.wrist_radial_normalized = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.inside_opening_soft = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.insert_depth = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        # ShadowHand fore/middle/ring tips in opening frame (live ``*_goal_pos`` w.r.t. ``goal_cent_pos``).
+        self.fore_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.middle_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.ring_in_open = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        # Ellipse ``(x/rx)^2 + (y/ry)^2`` in opening frame for each digit tip (actual goals, not outward targets).
+        self.thumb_radial_normalized = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.fore_radial_normalized = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.middle_radial_normalized = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.ring_radial_normalized = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.pinky_radial_normalized = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        # Soft gate from summed outside-ellipse mass over all five tips (opening frame).
+        self.fingers_inside_opening_soft = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.goal_wrist_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
 
         self.garment_right_ee_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
@@ -699,6 +730,9 @@ class ReachBraceletEnv(AIRECEnv):
                 depth,
                 depth_t,
                 depth_p,
+                self.inside_opening_soft,
+                self.fingers_inside_opening_soft,
+                self.wrist_radial_normalized,
                 # Use opening-frame Y (north/south axis) instead of world/env Z so wrist randomization doesn't break gating.
                 self.wrist_in_open[:, 1],
                 self.north_in_open[:, 1],
@@ -720,6 +754,16 @@ class ReachBraceletEnv(AIRECEnv):
                 "touch_reward_right": r_right_ee_touch_distance,
                 "touch_reward_left": r_left_ee_touch_distance,
                 "joint_vel_reward": r_joint_vel,
+                "inside_opening_soft": self.inside_opening_soft,
+                "wrist_radial_normalized": self.wrist_radial_normalized,
+                "insert_depth": self.insert_depth,
+                "depth_distance": self.depth_distance,
+                "fingers_inside_opening_soft": self.fingers_inside_opening_soft,
+                "thumb_radial_normalized": self.thumb_radial_normalized,
+                "fore_radial_normalized": self.fore_radial_normalized,
+                "middle_radial_normalized": self.middle_radial_normalized,
+                "ring_radial_normalized": self.ring_radial_normalized,
+                "pinky_radial_normalized": self.pinky_radial_normalized,
             }
 
         if "tactile" in self.cfg.obs_list:
@@ -744,60 +788,6 @@ class ReachBraceletEnv(AIRECEnv):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
-    def _reset_goal_aperture(self, env_ids, thumb_offset=0.03, pinky_offset=0.02):
-        # raw thumb / pinky positions
-        thumb = self.thumb_goal_pos[env_ids]      # shape: (N, 3)
-        pinky = self.pinky_goal_pos[env_ids]     # shape: (N, 3)
-
-        # wrist origin
-        wrist_origin = self.goal_wrist_pos[env_ids]   # shape: (N, 3)
-
-        # wrist lateral axis in world frame
-        # here you are assuming local/world lateral is +y
-        wrist_lateral_axis = torch.tensor(
-            [0.0, 1.0, 0.0],
-            dtype=thumb.dtype,
-            device=thumb.device
-        ).unsqueeze(0).expand(len(env_ids), 3)
-
-        # normalize lateral axis per env
-        axis_norm = torch.norm(wrist_lateral_axis, dim=-1, keepdim=True).clamp_min(1e-8)
-        wrist_lateral_axis = wrist_lateral_axis / axis_norm
-
-        # project thumb and pinky onto wrist lateral axis
-        thumb_vec = thumb - wrist_origin
-        pinky_vec = pinky - wrist_origin
-
-        thumb_t = torch.sum(thumb_vec * wrist_lateral_axis, dim=-1)   # shape: (N,)
-        pinky_t = torch.sum(pinky_vec * wrist_lateral_axis, dim=-1)   # shape: (N,)
-
-        # projected width along wrist lateral direction
-        # Convert scalar distance to 3D vector by repeating across dimensions
-        stretch_distance_scalar = torch.abs(thumb_t - pinky_t)  # shape: [N]
-        self.human_stretch_distance[env_ids] = stretch_distance_scalar.unsqueeze(-1).expand(-1, 3)
-
-        # if you also want actual outward offset targets
-        direction = pinky - thumb
-        norm = torch.norm(direction, dim=-1, keepdim=True).clamp_min(1e-8)
-        # print(f"norm: {norm}")
-        unit_dir = direction / norm
-
-        # self.thumb_target[env_ids] = thumb - thumb_offset * unit_dir + self.scene.env_origins[env_ids]
-        # self.pinky_target[env_ids] = pinky + pinky_offset * unit_dir + self.scene.env_origins[env_ids]
-        self.thumb_target[env_ids] = thumb - thumb_offset * unit_dir 
-        self.pinky_target[env_ids] = pinky + pinky_offset * unit_dir 
-        # print("pinky_target", self.pinky_target[0])
-        # print("thumb_target", self.thumb_target[0])
-
-        # Euclidean distance between offset targets
-        target_delta = self.thumb_target[env_ids] - self.pinky_target[env_ids]
-        # print("target_delta", target_delta)
-        self.human_stretch_euclidean_distance[env_ids] = torch.norm(target_delta, dim=-1)
-
-        # optionally store these too
-        self.wrist_origin[env_ids] = wrist_origin
-        self.wrist_lateral_axis[env_ids] = wrist_lateral_axis
-
     def _reset_target_pose(self, env_ids):
         # Make sure this is already on the right device once
         default_state = self.hand.data.default_root_state.clone()[env_ids]
@@ -822,9 +812,17 @@ class ReachBraceletEnv(AIRECEnv):
             (B,),
             device=self.device,
         )
+        yaw_rad = sample_uniform(
+            torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+            torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+            (B,),
+            device=self.device,
+        )
         zero = torch.zeros_like(pitch_rad)
+        q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
         q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
-        default_state[:, 3:7] = quat_mul(q_pitch, init_rot)
+        q_yaw_pitch = quat_mul(q_yaw, q_pitch)
+        default_state[:, 3:7] = quat_mul(q_yaw_pitch, init_rot)
 
         default_state[:, 7:] = 0.0
 
@@ -834,8 +832,55 @@ class ReachBraceletEnv(AIRECEnv):
         self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
         self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+        # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
+        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
+        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
         self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
 
+    def _update_goal_aperture_targets(self, env_ids, thumb_offset=0.03, pinky_offset=0.02) -> None:
+        """Recompute outward reach targets and stretch scalars from **current** ShadowHand geometry.
+
+        Live fingertip **env-local** positions are ``thumb_goal_pos`` / ``pinky_goal_pos`` (FrameTransformer to
+        ``robot0_thdistal`` / ``robot0_lfdistal``, updated each physics step). ``thumb_target`` / ``pinky_target``
+        are **env-local** points offset outward along the thumb→pinky line. Wrist lateral width still uses
+        hand-local ``+Y`` mapped by ``goal_hand_root_quat`` (cached at reset from the written root pose).
+        """
+        B = int(len(env_ids))
+        thumb_current = self.thumb_goal_pos[env_ids]
+        pinky_current = self.pinky_goal_pos[env_ids]
+        wrist_origin = self.goal_wrist_pos[env_ids]
+
+        dt = self.thumb_goal_pos.dtype
+        local_lateral = torch.tensor([0.0, 1.0, 0.0], device=self.device, dtype=dt).unsqueeze(0).expand(B, 3)
+        q_hand = self.goal_hand_root_quat[env_ids].to(dtype=dt)
+        wrist_lateral_axis = quat_apply(q_hand, local_lateral)
+
+        axis_norm = torch.norm(wrist_lateral_axis, dim=-1, keepdim=True).clamp_min(1e-6)
+        wrist_lateral_axis = wrist_lateral_axis / axis_norm
+
+        thumb_vec = thumb_current - wrist_origin
+        pinky_vec = pinky_current - wrist_origin
+        thumb_t = torch.sum(thumb_vec * wrist_lateral_axis, dim=-1)
+        pinky_t = torch.sum(pinky_vec * wrist_lateral_axis, dim=-1)
+        stretch_distance_scalar = torch.abs(thumb_t - pinky_t)
+        self.human_stretch_distance[env_ids] = stretch_distance_scalar.unsqueeze(-1).expand(-1, 3)
+
+        direction = pinky_current - thumb_current
+        norm = torch.norm(direction, dim=-1, keepdim=True).clamp_min(1e-6)
+        unit_dir = direction / norm
+
+        self.thumb_target[env_ids] = thumb_current - thumb_offset * unit_dir
+        self.pinky_target[env_ids] = pinky_current + pinky_offset * unit_dir
+
+        target_delta = self.thumb_target[env_ids] - self.pinky_target[env_ids]
+        self.human_stretch_euclidean_distance[env_ids] = torch.norm(target_delta, dim=-1)
+
+        self.wrist_origin[env_ids] = wrist_origin
+        self.wrist_lateral_axis[env_ids] = wrist_lateral_axis
+
+    def _reset_goal_aperture(self, env_ids, thumb_offset=0.03, pinky_offset=0.02):
+        """Reset-time hook: same as per-step aperture update (expects fresh fingertip frames if called after compute)."""
+        self._update_goal_aperture_targets(env_ids, thumb_offset=thumb_offset, pinky_offset=pinky_offset)
 
     def _bracelet_rim_goals_env_local(self, env_ids: torch.Tensor) -> None:
         """Set ``goal_{north,south,east,west}_pos`` and ``goal_cent_pos`` (env-local) for a rigid bracelet.
@@ -897,13 +942,23 @@ class ReachBraceletEnv(AIRECEnv):
             self.goal_east_pos[env_ids] = 0.0
             self.goal_west_pos[env_ids] = 0.0
             self.goal_cent_pos[env_ids] = 0.0
-        
+
+        # ShadowHand / wrist goals from FrameTransformer (source ``Robot/world``): **env-local** xyz, same frame as EE buffers.
         self.goal_wrist_pos[env_ids] = self.wrist_goal_frame.data.target_pos_source[..., 0, :][env_ids]
         self.thumb_goal_pos[env_ids] = self.thumb_goal_frame.data.target_pos_source[..., 0, :][env_ids]
         self.pinky_goal_pos[env_ids] = self.pinky_goal_frame.data.target_pos_source[..., 0, :][env_ids]
         self.thumb_goal_rot[env_ids] = self.thumb_goal_frame.data.target_quat_source[..., 0, :][env_ids]
         self.pinky_goal_rot[env_ids] = self.pinky_goal_frame.data.target_quat_source[..., 0, :][env_ids]
-        
+        self.fore_goal_pos[env_ids] = self.fore_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.fore_goal_rot[env_ids] = self.fore_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+        self.middle_goal_pos[env_ids] = self.middle_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.middle_goal_rot[env_ids] = self.middle_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+        self.ring_goal_pos[env_ids] = self.ring_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+        self.ring_goal_rot[env_ids] = self.ring_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+
+        # Dynamic outward targets track live fingertips; opening-frame terms below use the updated ``thumb_target`` / ``pinky_target``.
+        self._update_goal_aperture_targets(env_ids)
+
         # Visualize goal markers
         # self.goal_north_markers.visualize(self.goal_north_pos, self.goal_north_rot)
         # self.goal_south_markers.visualize(self.goal_south_pos, self.goal_south_rot)
@@ -1011,29 +1066,14 @@ class ReachBraceletEnv(AIRECEnv):
         # print(f"goal_stretch_euclidean_distance: {self.goal_stretch_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}, ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
         # print(f"garment_right_ee_euclidean_distance: {self.garment_right_ee_euclidean_distance[0]}, garment_left_ee_euclidean_distance: {self.garment_left_ee_euclidean_distance[0]}, right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}, left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]}")
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
-        if self._use_glove or self.cfg.object_type == "rigid":
-            self.depth_distance[env_ids] = torch.abs(self.goal_cent_pos[env_ids, 0] - self.goal_wrist_pos[env_ids, 0])
-            self.depth_thumb_distance[env_ids] = torch.abs(
-                self.goal_west_pos[env_ids, 0] - self.thumb_target[env_ids, 0]
-            )
-            self.depth_pinky_distance[env_ids] = torch.abs(
-                self.goal_east_pos[env_ids, 0] - self.pinky_target[env_ids, 0]
-            )
-        else:
-            self.depth_distance[env_ids] = 0.0
-            self.depth_thumb_distance[env_ids] = 0.0
-            self.depth_pinky_distance[env_ids] = 0.0
-        # print(f"goal_west_pos: {self.goal_west_pos[0]} thumb_target: {self.thumb_target[0]}")
-        # print(f"goal_east_pos: {self.goal_east_pos[0]} pinky_target: {self.pinky_target[0]}")
 
         # ------------------------------------------------------------------
-        # Wrist position expressed in the opening (bracelet) frame for robust
-        # reward gating under wrist pose randomization.
-        #
-        # We use env-local positions (already used everywhere in this task) and
-        # rotate by the opening quaternion in world; rotations are frame-invariant.
-        # For rigid bracelet: opening frame = object root frame.
-        # For deformable/glove-style mode: fall back to identity (same as old env axes).
+        # Opening / bracelet frame: ``goal_cent_pos``, ``goal_wrist_pos``, rim goals are **env-local**.
+        # ``wrist_in_open`` etc. are **opening-local** offsets from ``goal_cent_pos`` (inverse world quat of
+        # the rigid bracelet root). Opening-local x/y span the opening cross-section; local z is the depth
+        # axis candidate for insertion. Depth reward uses these (not raw world X) so policies cannot hack
+        # world-X alignment without sitting inside the rim ellipse.
+        # ``thumb_target`` / ``pinky_target`` were refreshed earlier via ``_update_goal_aperture_targets``.
         # ------------------------------------------------------------------
         if self.cfg.object_type == "rigid" and hasattr(self, "object") and self.object is not None:
             open_quat_w = self.object.data.root_quat_w[env_ids]
@@ -1046,17 +1086,109 @@ class ReachBraceletEnv(AIRECEnv):
         p_rel_wrist = self.goal_wrist_pos[env_ids] - p_open
         self.wrist_in_open[env_ids] = quat_apply_inverse(open_quat_w, p_rel_wrist)
 
-        # Also express north/south rim points in the opening frame so we can gate
-        # "between top/bottom" consistently in that local axis (north/south is +Y/-Y in bracelet offsets).
         p_rel_north = self.goal_north_pos[env_ids] - p_open
         p_rel_south = self.goal_south_pos[env_ids] - p_open
         self.north_in_open[env_ids] = quat_apply_inverse(open_quat_w, p_rel_north)
         self.south_in_open[env_ids] = quat_apply_inverse(open_quat_w, p_rel_south)
 
+        p_rel_east = self.goal_east_pos[env_ids] - p_open
+        p_rel_west = self.goal_west_pos[env_ids] - p_open
+        self.east_in_open[env_ids] = quat_apply_inverse(open_quat_w, p_rel_east)
+        self.west_in_open[env_ids] = quat_apply_inverse(open_quat_w, p_rel_west)
+
         p_rel_thumb = self.thumb_target[env_ids] - p_open
         p_rel_pinky = self.pinky_target[env_ids] - p_open
         self.thumb_in_open[env_ids] = quat_apply_inverse(open_quat_w, p_rel_thumb)
         self.pinky_in_open[env_ids] = quat_apply_inverse(open_quat_w, p_rel_pinky)
+
+        # Depth / in-opening diagnostics (rigid bracelet): after rim + wrist + digit targets in opening frame.
+        if self.cfg.object_type == "rigid" and hasattr(self, "object") and self.object is not None:
+            x = self.wrist_in_open[env_ids, 0]
+            y = self.wrist_in_open[env_ids, 1]
+            z = self.wrist_in_open[env_ids, 2]
+            rad_eps = torch.as_tensor(1e-4, device=self.device, dtype=x.dtype)
+            radius_x = 0.5 * torch.abs(self.east_in_open[env_ids, 0] - self.west_in_open[env_ids, 0]).clamp_min(rad_eps)
+            radius_y = 0.5 * torch.abs(self.north_in_open[env_ids, 1] - self.south_in_open[env_ids, 1]).clamp_min(rad_eps)
+            radial_normalized = (x / radius_x).pow(2) + (y / radius_y).pow(2)
+            outside_error = torch.clamp(radial_normalized - 1.0, min=0.0)
+            std = torch.as_tensor(self.cfg.bracelet_inside_opening_std, device=self.device, dtype=x.dtype).clamp_min(
+                torch.as_tensor(1e-6, device=self.device, dtype=x.dtype)
+            )
+            inside_opening_soft = torch.exp(-outside_error / std)
+            desired = torch.as_tensor(self.cfg.bracelet_desired_insert_depth, device=self.device, dtype=x.dtype)
+            self.depth_distance[env_ids] = torch.abs(z - desired)
+            self.wrist_radial_normalized[env_ids] = radial_normalized
+            self.inside_opening_soft[env_ids] = inside_opening_soft
+            self.insert_depth[env_ids] = z
+
+            # Live digit tips (``*_goal_pos``) in opening frame: same ellipse radii as wrist; depth along local z.
+            thumb_tip_o = quat_apply_inverse(open_quat_w, self.thumb_goal_pos[env_ids] - p_open)
+            fore_tip_o = quat_apply_inverse(open_quat_w, self.fore_goal_pos[env_ids] - p_open)
+            middle_tip_o = quat_apply_inverse(open_quat_w, self.middle_goal_pos[env_ids] - p_open)
+            ring_tip_o = quat_apply_inverse(open_quat_w, self.ring_goal_pos[env_ids] - p_open)
+            pinky_tip_o = quat_apply_inverse(open_quat_w, self.pinky_goal_pos[env_ids] - p_open)
+            self.fore_in_open[env_ids] = fore_tip_o
+            self.middle_in_open[env_ids] = middle_tip_o
+            self.ring_in_open[env_ids] = ring_tip_o
+
+            def _radial2(pt: torch.Tensor) -> torch.Tensor:
+                return (pt[:, 0] / radius_x).pow(2) + (pt[:, 1] / radius_y).pow(2)
+
+            tr = _radial2(thumb_tip_o)
+            fr = _radial2(fore_tip_o)
+            mr = _radial2(middle_tip_o)
+            rr = _radial2(ring_tip_o)
+            pr = _radial2(pinky_tip_o)
+            def _inside_soft(radial: torch.Tensor) -> torch.Tensor:
+                outside = torch.clamp(radial - 1.0, min=0.0)
+                return torch.exp(-outside / std)
+
+            thumb_inside = _inside_soft(tr)
+            fore_inside = _inside_soft(fr)
+            middle_inside = _inside_soft(mr)
+            ring_inside = _inside_soft(rr)
+            pinky_inside = _inside_soft(pr)
+
+            self.fingers_inside_opening_soft[env_ids] = (
+                0.10 * thumb_inside
+                + 0.25 * fore_inside
+                + 0.30 * middle_inside
+                + 0.25 * ring_inside
+                + 0.10 * pinky_inside
+            )
+
+            self.depth_thumb_distance[env_ids] = torch.abs(thumb_tip_o[:, 2] - desired)
+            self.depth_pinky_distance[env_ids] = torch.abs(pinky_tip_o[:, 2] - desired)
+        elif self._use_glove:
+            self.depth_distance[env_ids] = torch.abs(self.goal_cent_pos[env_ids, 0] - self.goal_wrist_pos[env_ids, 0])
+            self.depth_thumb_distance[env_ids] = torch.abs(
+                self.goal_west_pos[env_ids, 0] - self.thumb_target[env_ids, 0]
+            )
+            self.depth_pinky_distance[env_ids] = torch.abs(
+                self.goal_east_pos[env_ids, 0] - self.pinky_target[env_ids, 0]
+            )
+            self.inside_opening_soft[env_ids] = 1.0
+            self.wrist_radial_normalized[env_ids] = 0.0
+            self.insert_depth[env_ids] = 0.0
+            self.fingers_inside_opening_soft[env_ids] = 1.0
+            self.thumb_radial_normalized[env_ids] = 0.0
+            self.fore_radial_normalized[env_ids] = 0.0
+            self.middle_radial_normalized[env_ids] = 0.0
+            self.ring_radial_normalized[env_ids] = 0.0
+            self.pinky_radial_normalized[env_ids] = 0.0
+        else:
+            self.depth_distance[env_ids] = 0.0
+            self.depth_thumb_distance[env_ids] = 0.0
+            self.depth_pinky_distance[env_ids] = 0.0
+            self.inside_opening_soft[env_ids] = 0.0
+            self.wrist_radial_normalized[env_ids] = 0.0
+            self.insert_depth[env_ids] = 0.0
+            self.fingers_inside_opening_soft[env_ids] = 0.0
+            self.thumb_radial_normalized[env_ids] = 0.0
+            self.fore_radial_normalized[env_ids] = 0.0
+            self.middle_radial_normalized[env_ids] = 0.0
+            self.ring_radial_normalized[env_ids] = 0.0
+            self.pinky_radial_normalized[env_ids] = 0.0
 
 def compute_rewards(
     reaching_object_goal_scale: float,
@@ -1079,6 +1211,9 @@ def compute_rewards(
     depth_distance: torch.Tensor,
     depth_thumb_distance: torch.Tensor,
     depth_pinky_distance: torch.Tensor,
+    inside_opening_soft: torch.Tensor,
+    fingers_inside_opening_soft: torch.Tensor,
+    wrist_radial_normalized: torch.Tensor,
     wrist_height: torch.Tensor,
     top_height: torch.Tensor,
     bottom_height: torch.Tensor,
@@ -1091,8 +1226,8 @@ def compute_rewards(
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
     depth_reward_scale = 10.0
-    depth_thumb_reward_scale = 0.0
-    depth_pinky_reward_scale = 0.0
+    depth_thumb_reward_scale = 0.5
+    depth_pinky_reward_scale = 0.5
     # joint_vel_penalty_scale = -0.01
     joint_vel_penalty_scale = 0.0
 
@@ -1100,11 +1235,11 @@ def compute_rewards(
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
     # r_right_ee_thumb_distance = distance_cond_reward(garment_right_ee_euclidean_distance, right_ee_thumb_euclidean_distance, minimal_width, std=0.4) * reaching_object_goal_scale # default 0.4
     # r_left_ee_pinky_distance = distance_cond_reward(garment_left_ee_euclidean_distance, left_ee_pinky_euclidean_distance, minimal_width, std=0.2) * reaching_object_goal_scale * 0.0 # default 0.3
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.4
-    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.3
-    print(f"top_height: {top_height[0]}, wrist_height: {wrist_height[0]}, bottom_height: {bottom_height[0]}")
-    # r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.4
-    # r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.3
+    # r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.4
+    # r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.3
+    # print(f"top_height: {top_height[0]}, wrist_height: {wrist_height[0]}, bottom_height: {bottom_height[0]}")
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.3
     r_right_ee_touch_distance = distance_reward(garment_right_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     r_left_ee_touch_distance = distance_reward(garment_left_ee_euclidean_distance, std=0.01) * touching_object_goal_scale 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])
@@ -1115,9 +1250,30 @@ def compute_rewards(
     # r_garment_middle_distance = distance_reward(garment_middle_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # r_garment_ring_distance = distance_reward(garment_ring_euclidean_distance, std=0.09) * reaching_object_goal_scale
     # print(f"top_height: {top_height[0]}, wrist_height: {wrist_height[0]}, bottom_height: {bottom_height[0]}")
-    r_depth_distance = distance_reward(depth_distance, std=0.1) * (top_height > wrist_height) * (wrist_height > bottom_height) * depth_reward_scale * (ee_euclidean_distance < 0.3)
-    r_depth_thumb_distance = distance_reward(depth_thumb_distance, std=0.03) * (top_height > thumb_height) * (thumb_height < bottom_height) * depth_thumb_reward_scale
-    r_depth_pinky_distance = distance_reward(depth_pinky_distance, std=0.06) * (top_height > pinky_height) * (pinky_height < bottom_height) * depth_pinky_reward_scale
+    # Wrist ellipse (``inside_opening_soft``) and all five digit tips (``fingers_inside_opening_soft``) in opening frame.
+    r_depth_distance = (
+        distance_reward(depth_distance, std=0.1)
+        * inside_opening_soft
+        * fingers_inside_opening_soft
+        * depth_reward_scale
+        * (ee_euclidean_distance < 0.3)
+    )
+    r_depth_thumb_distance = (
+        distance_reward(depth_thumb_distance, std=0.03)
+        * fingers_inside_opening_soft
+        * (top_height > thumb_height)
+        * (thumb_height > bottom_height)
+        * depth_thumb_reward_scale
+        * (ee_euclidean_distance < 0.3)
+    )
+    r_depth_pinky_distance = (
+        distance_reward(depth_pinky_distance, std=0.06)
+        * fingers_inside_opening_soft
+        * (top_height > pinky_height)
+        * (pinky_height > bottom_height)
+        * depth_pinky_reward_scale
+        * (ee_euclidean_distance < 0.3)
+    )
 
     # FOR REACHING+INSERTING+TERMINATE
     # r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5  
@@ -1131,3 +1287,4 @@ def compute_rewards(
     rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance + r_joint_vel
 
     return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance, r_joint_vel)
+
