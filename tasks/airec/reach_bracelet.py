@@ -1239,7 +1239,7 @@ def compute_rewards(
     wrist_xy_center_distance: torch.Tensor,
     wrist_center_distance: torch.Tensor,
 ):
-    rotation_object_goal_scale = 0.3 # 10.0
+    rotation_object_goal_scale = 0.4 # 10.0
     reaching_object_goal_scale = 1.0    
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
@@ -1248,7 +1248,7 @@ def compute_rewards(
     depth_pinky_reward_scale = 0.5
     # joint_vel_penalty_scale = -0.01
     joint_vel_penalty_scale = 0.0
-    max_angle_penalty = 1.2 # 69 degree is the maximum angle for the thumb and pinky
+    max_angle_penalty = 0.8 # 45 degree is the maximum angle for the thumb and pinky
     angle_penalty_scale = -0.1
     wrist_center_alignment_scale = 0.5
     wrist_center_3d_alignment_scale = 10.0
