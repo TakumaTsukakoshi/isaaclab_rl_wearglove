@@ -1863,3 +1863,7 @@ def wrist_distance_reward(wrist_ee_distance:torch.Tensor, wrist_pos: torch.Tenso
     r_reach = 1 - torch.tanh(wrist_ee_distance_success / std)
 
     return r_reach
+
+@torch.jit.script
+def smooth_gate(x: torch.Tensor, threshold: float, sharpness: float = 20.0):
+    return torch.sigmoid(sharpness * (x - threshold))

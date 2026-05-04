@@ -37,6 +37,7 @@ from tasks.airec.airec2_finger import (
     distance_reward,
     joint_vel_penalty,
     rotation_distance,
+    smooth_gate,
 )
 from tasks.airec.mdp.rewards import geometryrl_b7_cloth_hanging_reward
 from isaaclab.sensors import (
@@ -700,7 +701,6 @@ class ReachBraceletEnv(AIRECEnv):
 
             (
                 rewards,
-                r_stretch,
                 r_right_ee_thumb_distance,
                 r_left_ee_pinky_distance,
                 r_depth_distance,
@@ -713,6 +713,8 @@ class ReachBraceletEnv(AIRECEnv):
                 r_joint_vel,
                 r_wrist_center_alignment,
                 r_wrist_center_3d_alignment,
+                r_right_angle_penalty,
+                r_left_angle_penalty,
             ) = compute_rewards(
                 self.reaching_object_goal_scale,
                 self.reaching_ee_object_scale,
@@ -749,7 +751,6 @@ class ReachBraceletEnv(AIRECEnv):
                 )
 
             self.extras["log"] = {
-                "r_stretch": r_stretch,
                 "reach_reward_right": r_right_ee_thumb_distance,
                 "reach_reward_left": r_left_ee_pinky_distance,
                 "depth_reward": r_depth_distance,
@@ -757,6 +758,8 @@ class ReachBraceletEnv(AIRECEnv):
                 "depth_pinky_reward": r_depth_pinky_distance,
                 "wrist_center_alignment_reward": r_wrist_center_alignment,
                 "wrist_center_3d_alignment_reward": r_wrist_center_3d_alignment,
+                "right_angle_penalty": r_right_angle_penalty,
+                "left_angle_penalty": r_left_angle_penalty,
                 "angular_reward_right": r_angular_right_ee_thumb,
                 "angular_reward_left": r_angular_left_ee_pinky,
                 "touch_reward_right": r_right_ee_touch_distance,
@@ -1236,7 +1239,7 @@ def compute_rewards(
     wrist_xy_center_distance: torch.Tensor,
     wrist_center_distance: torch.Tensor,
 ):
-    rotation_object_goal_scale = 0.0 # 10.0
+    rotation_object_goal_scale = 0.3 # 10.0
     reaching_object_goal_scale = 1.0    
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
@@ -1245,6 +1248,8 @@ def compute_rewards(
     depth_pinky_reward_scale = 0.5
     # joint_vel_penalty_scale = -0.01
     joint_vel_penalty_scale = 0.0
+    max_angle_penalty = 1.2 # 69 degree is the maximum angle for the thumb and pinky
+    angle_penalty_scale = -0.1
     wrist_center_alignment_scale = 0.5
     wrist_center_3d_alignment_scale = 10.0
 
@@ -1307,14 +1312,23 @@ def compute_rewards(
 
     # FOR REACHING+INSERTING+TERMINATE
     # r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5  
-    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * rotation_object_goal_scale 
-    r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.2) * rotation_object_goal_scale 
+
+    right_reach_phase_weight = smooth_gate(right_ee_thumb_euclidean_distance, threshold=0.08, sharpness=30.0)
+    left_reach_phase_weight = smooth_gate(left_ee_pinky_euclidean_distance, threshold=0.08, sharpness=30.0)
+    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * rotation_object_goal_scale * right_reach_phase_weight
+    r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.2) * rotation_object_goal_scale * left_reach_phase_weight
+    # right_insert_phase_weight = fingers_inside_opening_soft * inside_opening_soft * (ee_euclidean_distance < 0.3)
+    # left_insert_phase_weight = fingers_inside_opening_soft * inside_opening_soft * (ee_euclidean_distance < 0.3)
+    right_insert_phase_weight = 1.0 - right_reach_phase_weight
+    left_insert_phase_weight = 1.0 - left_reach_phase_weight
+    r_right_angle_penalty = torch.relu(right_ee_thumb_angular_distance-max_angle_penalty) * angle_penalty_scale * right_insert_phase_weight
+    r_left_angle_penalty = torch.relu(left_ee_pinky_angular_distance-max_angle_penalty) * angle_penalty_scale * left_insert_phase_weight
     r_joint_vel = joint_vel_penalty(robot_joint_vel) * joint_vel_penalty_scale
 
     # minillion bonus reward
     # r_object_goal = object_goal_reward(right_ee_thumb_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale
     # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
-    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance + r_joint_vel + r_wrist_center_alignment + r_wrist_center_3d_alignment
+    rewards = r_right_ee_thumb_distance * right_reach_phase_weight + r_left_ee_pinky_distance * left_reach_phase_weight + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance + r_joint_vel + r_wrist_center_alignment + r_wrist_center_3d_alignment + r_right_angle_penalty + r_left_angle_penalty
 
-    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance, r_joint_vel, r_wrist_center_alignment, r_wrist_center_3d_alignment)
+    return (rewards, r_right_ee_thumb_distance * right_reach_phase_weight, r_left_ee_pinky_distance * left_reach_phase_weight, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance, r_joint_vel, r_wrist_center_alignment, r_wrist_center_3d_alignment, r_right_angle_penalty, r_left_angle_penalty)
 
