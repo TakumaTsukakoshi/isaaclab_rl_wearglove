@@ -528,6 +528,8 @@ class ReachBraceletEnv(AIRECEnv):
             device=self.device,
             dtype=self.hand.data.joint_pos.dtype,
         )
+        self.wrist_xy_center_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.wrist_center_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
     
     def _apply_action(self) -> None:
         super()._apply_action()
@@ -709,6 +711,8 @@ class ReachBraceletEnv(AIRECEnv):
                 r_right_ee_touch_distance,
                 r_left_ee_touch_distance,
                 r_joint_vel,
+                r_wrist_center_alignment,
+                r_wrist_center_3d_alignment,
             ) = compute_rewards(
                 self.reaching_object_goal_scale,
                 self.reaching_ee_object_scale,
@@ -740,6 +744,8 @@ class ReachBraceletEnv(AIRECEnv):
                 self.thumb_in_open[:, 1],
                 self.pinky_in_open[:, 1],
                 self.cfg.minimal_width,
+                self.wrist_xy_center_distance,
+                self.wrist_center_distance,
                 )
 
             self.extras["log"] = {
@@ -749,6 +755,8 @@ class ReachBraceletEnv(AIRECEnv):
                 "depth_reward": r_depth_distance,
                 "depth_thumb_reward": r_depth_thumb_distance,
                 "depth_pinky_reward": r_depth_pinky_distance,
+                "wrist_center_alignment_reward": r_wrist_center_alignment,
+                "wrist_center_3d_alignment_reward": r_wrist_center_3d_alignment,
                 "angular_reward_right": r_angular_right_ee_thumb,
                 "angular_reward_left": r_angular_left_ee_pinky,
                 "touch_reward_right": r_right_ee_touch_distance,
@@ -1115,11 +1123,16 @@ class ReachBraceletEnv(AIRECEnv):
                 torch.as_tensor(1e-6, device=self.device, dtype=x.dtype)
             )
             inside_opening_soft = torch.exp(-outside_error / std)
+            self.wrist_xy_center_distance[env_ids] = torch.norm(
+                    self.wrist_in_open[env_ids, 0:2],
+                    dim=-1,
+                )
             desired = torch.as_tensor(self.cfg.bracelet_desired_insert_depth, device=self.device, dtype=x.dtype)
             self.depth_distance[env_ids] = torch.abs(z - desired)
             self.wrist_radial_normalized[env_ids] = radial_normalized
             self.inside_opening_soft[env_ids] = inside_opening_soft
             self.insert_depth[env_ids] = z
+            self.wrist_center_distance[env_ids] = torch.norm(torch.stack([x,y,z - desired],dim=-1,),dim=-1,)
 
             # Live digit tips (``*_goal_pos``) in opening frame: same ellipse radii as wrist; depth along local z.
             thumb_tip_o = quat_apply_inverse(open_quat_w, self.thumb_goal_pos[env_ids] - p_open)
@@ -1150,7 +1163,7 @@ class ReachBraceletEnv(AIRECEnv):
             pinky_inside = _inside_soft(pr)
 
             self.fingers_inside_opening_soft[env_ids] = (
-                0.10 * thumb_inside
+                0.2 * thumb_inside
                 + 0.25 * fore_inside
                 + 0.30 * middle_inside
                 + 0.25 * ring_inside
@@ -1220,16 +1233,20 @@ def compute_rewards(
     thumb_height: torch.Tensor,
     pinky_height: torch.Tensor,
     minimal_width: float,
+    wrist_xy_center_distance: torch.Tensor,
+    wrist_center_distance: torch.Tensor,
 ):
     rotation_object_goal_scale = 0.0 # 10.0
     reaching_object_goal_scale = 1.0    
     stretch_object_scale = 0.0
     touching_object_goal_scale = 0.0
-    depth_reward_scale = 10.0
+    depth_reward_scale = 5.0
     depth_thumb_reward_scale = 0.5
     depth_pinky_reward_scale = 0.5
     # joint_vel_penalty_scale = -0.01
     joint_vel_penalty_scale = 0.0
+    wrist_center_alignment_scale = 0.5
+    wrist_center_3d_alignment_scale = 10.0
 
     # FOR REACHING (include condition))
     r_stretch = distance_reward(goal_stretch_euclidean_distance, std=0.05) * stretch_object_scale # 0.03
@@ -1274,6 +1291,19 @@ def compute_rewards(
         * depth_pinky_reward_scale
         * (ee_euclidean_distance < 0.3)
     )
+    r_wrist_center_alignment = (
+        distance_reward(wrist_xy_center_distance, std=0.04)
+        * wrist_center_alignment_scale
+        * fingers_inside_opening_soft
+        * (ee_euclidean_distance < 0.3)
+    )
+    r_wrist_center_3d_alignment = (
+        distance_reward(wrist_center_distance, std=0.16)
+        * wrist_center_3d_alignment_scale
+        * fingers_inside_opening_soft
+        * (ee_euclidean_distance < 0.3)
+    )
+    # print(f"wrist_xy_center_distance: {wrist_xy_center_distance[0]}, wrist_center_distance: {wrist_center_distance[0]}")
 
     # FOR REACHING+INSERTING+TERMINATE
     # r_wrist_goal = wrist_distance_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, std=0.2) * reaching_object_goal_scale * 2.5  
@@ -1284,7 +1314,7 @@ def compute_rewards(
     # minillion bonus reward
     # r_object_goal = object_goal_reward(right_ee_thumb_euclidean_distance, r_right_insert, std=0.3) * object_goal_tracking_scale
     # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
-    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance + r_joint_vel
+    rewards = r_stretch  + r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_right_ee_touch_distance + r_left_ee_touch_distance + r_joint_vel + r_wrist_center_alignment + r_wrist_center_3d_alignment
 
-    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance, r_joint_vel)
+    return (rewards, r_stretch,  r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_right_ee_touch_distance, r_left_ee_touch_distance, r_joint_vel, r_wrist_center_alignment, r_wrist_center_3d_alignment)
 
