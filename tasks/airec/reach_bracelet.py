@@ -640,18 +640,22 @@ class ReachBraceletEnv(AIRECEnv):
                 # xyz diffs (3,)
                 self.depth_distance.unsqueeze(1),
                 # # xyz diffs (3,)
-                # self.depth_thumb_distance.unsqueeze(1),
+                self.depth_thumb_distance.unsqueeze(1),
                 # # xyz diffs (3,)
-                # self.depth_pinky_distance.unsqueeze(1),
-
+                self.depth_pinky_distance.unsqueeze(1),
+                # xyz diffs (3,)
+                self.wrist_center_distance
                 # # xyz diffs (3,)
-                self.goal_wrist_pos,
-                # # xyz diffs (3,)
-                self.goal_cent_pos,
-                # # xyz diffs (3,)
-                self.goal_north_pos,
-                # # xyz diffs (3,)
-                self.goal_south_pos,
+                self.wrist_in_open,
+                # xyz diffs (3,)
+                self.north_in_open,
+                # xyz diffs (3,)
+                self.south_in_open,
+                # xyz diffs (3,)
+                self.thumb_in_open,
+                # xyz diffs (3,)
+                self.pinky_in_open,
+          
             ),
             dim=-1,
         )
@@ -1254,9 +1258,9 @@ def compute_rewards(
     wrist_xy_center_distance: torch.Tensor,
     wrist_center_distance: torch.Tensor,
 ):
-    rotation_object_goal_scale = 0.1 # 10.0
+    rotation_object_goal_scale = 0.0# 10.0
     reaching_object_goal_scale = 1.0    
-    depth_reward_scale = 5.0
+    depth_reward_scale = 0.0
     depth_thumb_reward_scale = 0.5
     depth_pinky_reward_scale = 0.5
     max_angle_penalty = 0.8  # radians (~45.8°) threshold for thumb/pinky angular penalty
