@@ -758,8 +758,8 @@ class ReachBraceletEnv(AIRECEnv):
                 "wrist_center_3d_alignment_reward": r_wrist_center_3d_alignment,
                 # "right_angle_penalty": r_right_angle_penalty,
                 # "left_angle_penalty": r_left_angle_penalty,
-                # "angular_reward_right": r_angular_right_ee_thumb,
-                # "angular_reward_left": r_angular_left_ee_pinky,
+                "angular_reward_right": r_angular_right_ee_thumb,
+                "angular_reward_left": r_angular_left_ee_pinky,
                 # "joint_vel_reward": r_joint_vel,
                 "inside_opening_soft": self.inside_opening_soft,
                 "wrist_radial_normalized": self.wrist_radial_normalized,
@@ -1254,7 +1254,7 @@ def compute_rewards(
     wrist_xy_center_distance: torch.Tensor,
     wrist_center_distance: torch.Tensor,
 ):
-    rotation_object_goal_scale = 0.0 # 10.0
+    rotation_object_goal_scale = 0.1 # 10.0
     reaching_object_goal_scale = 1.0    
     depth_reward_scale = 5.0
     depth_thumb_reward_scale = 0.5
@@ -1287,28 +1287,31 @@ def compute_rewards(
     # print(f"top_height: {top_height[0]}, wrist_height: {wrist_height[0]}, bottom_height: {bottom_height[0]}")
     # Wrist ellipse (``inside_opening_soft``) and all five digit tips (``fingers_inside_opening_soft``) in opening frame.
     r_depth_distance = (
-        distance_reward(depth_distance, std=0.1)
+        distance_reward(depth_distance, std=0.15)
         * inside_opening_soft
         * fingers_inside_opening_soft
         * depth_reward_scale
         * (ee_euclidean_distance < ee_distance_threshold)
     )
     r_depth_thumb_distance = (
-        distance_reward(depth_thumb_distance, std=0.03)
-        * fingers_inside_opening_soft
+        distance_reward(depth_thumb_distance, std=0.1)
+        # * fingers_inside_opening_soft
         * (top_height > thumb_height)
         * (thumb_height > bottom_height)
         * depth_thumb_reward_scale
         * (ee_euclidean_distance < ee_distance_threshold)
     )
     r_depth_pinky_distance = (
-        distance_reward(depth_pinky_distance, std=0.06)
-        * fingers_inside_opening_soft
+        distance_reward(depth_pinky_distance, std=0.08)
+        # * fingers_inside_opening_soft
         * (top_height > pinky_height)
         * (pinky_height > bottom_height)
         * depth_pinky_reward_scale
         * (ee_euclidean_distance < ee_distance_threshold)
     )
+    # print(f"depth_distance: {depth_distance[0]}, depth_thumb_distance: {depth_thumb_distance[0]}, depth_pinky_distance: {depth_pinky_distance[0]}")
+    # print(f"top_height: {top_height[0]}, wrist_height: {wrist_height[0]}, bottom_height: {bottom_height[0]}")
+    # print(f"thumb_height: {thumb_height[0]}, pinky_height: {pinky_height[0]}")
     r_wrist_center_alignment = (
         distance_reward(wrist_xy_center_distance, std=0.04)
         * wrist_center_alignment_scale
@@ -1320,6 +1323,8 @@ def compute_rewards(
         * wrist_center_3d_alignment_scale
         * fingers_inside_opening_soft
         * (ee_euclidean_distance < ee_distance_threshold)
+        * (top_height > wrist_height)
+        * (wrist_height > bottom_height)
     )
     # print(f"wrist_xy_center_distance: {wrist_xy_center_distance[0]}, wrist_center_distance: {wrist_center_distance[0]}")
 
@@ -1329,8 +1334,10 @@ def compute_rewards(
     right_reach_phase_weight = smooth_gate(right_ee_thumb_euclidean_distance, threshold=0.08, sharpness=30.0)
     left_reach_phase_weight = smooth_gate(left_ee_pinky_euclidean_distance, threshold=0.08, sharpness=30.0)
 
-    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * 1.5 * rotation_object_goal_scale * right_reach_phase_weight
-    r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.15) * rotation_object_goal_scale * left_reach_phase_weight
+    # r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * 1.5 * rotation_object_goal_scale * right_reach_phase_weight
+    # r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.15) * rotation_object_goal_scale * left_reach_phase_weight
+    r_angular_right_ee_thumb = angular_distance_reward(right_ee_thumb_angular_distance, std=0.2) * 1.5 * rotation_object_goal_scale  *(ee_euclidean_distance < ee_distance_threshold)
+    r_angular_left_ee_pinky = angular_distance_reward(left_ee_pinky_angular_distance, std=0.15) * rotation_object_goal_scale  *(ee_euclidean_distance < ee_distance_threshold)
     # right_insert_phase_weight = fingers_inside_opening_soft * inside_opening_soft * (ee_euclidean_distance < 0.3)
     # left_insert_phase_weight = fingers_inside_opening_soft * inside_opening_soft * (ee_euclidean_distance < 0.3)
     right_insert_phase_weight = 1.0 - right_reach_phase_weight
