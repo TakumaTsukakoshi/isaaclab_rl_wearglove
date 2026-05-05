@@ -880,7 +880,7 @@ class ReachBraceletEnv(AIRECEnv):
         self.wrist_origin[env_ids] = wrist_origin
         self.wrist_lateral_axis[env_ids] = wrist_lateral_axis
 
-    def _reset_goal_aperture(self, env_ids, thumb_offset=0.03, pinky_offset=0.02):
+    def _reset_goal_aperture(self, env_ids, thumb_offset=0.03, pinky_offset=0.01):
         """Reset-time hook: same as per-step aperture update (expects fresh fingertip frames if called after compute)."""
         self._update_goal_aperture_targets(env_ids, thumb_offset=thumb_offset, pinky_offset=pinky_offset)
 
