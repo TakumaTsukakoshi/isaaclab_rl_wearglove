@@ -618,14 +618,6 @@ class ReachBraceletEnv(AIRECEnv):
                 # euclidean distance (1,)
                 self.ee_euclidean_distance.unsqueeze(1),
                 # xyz diffs (3,)
-                self.garment_right_ee_distance,
-                # euclidean distance (1,)
-                self.garment_right_ee_euclidean_distance.unsqueeze(1),
-                # xyz diffs (3,)
-                self.garment_left_ee_distance,
-                # euclidean distance (1,)
-                self.garment_left_ee_euclidean_distance.unsqueeze(1),
-                # xyz diffs (3,)
                 self.right_ee_thumb_distance,
                 # euclidean distance (1,)
                 self.right_ee_thumb_euclidean_distance.unsqueeze(1),
@@ -644,7 +636,7 @@ class ReachBraceletEnv(AIRECEnv):
                 # # xyz diffs (3,)
                 self.depth_pinky_distance.unsqueeze(1),
                 # xyz diffs (3,)
-                self.wrist_center_distance
+                self.wrist_center_distance.unsqueeze(1),
                 # # xyz diffs (3,)
                 self.wrist_in_open,
                 # xyz diffs (3,)
