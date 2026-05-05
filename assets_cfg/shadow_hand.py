@@ -24,7 +24,6 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 ##
 # Configuration
 ##
-
 STIFFNESS_SCALE = 100.0
 DAMPING_SCALE = 10.0
 
@@ -54,8 +53,9 @@ SHADOW_HAND_CFG = ArticulationCfg(
        
         # pos=(0.95, 0.0, 0.90),
         #    pos=(0.95, 0.0, 0.95),
-            # pos=(0.85, 0.0, 0.80), # default
-             pos=(0.83, 0.0, 0.75),
+            pos=(0.85, 0.0, 0.75), # default
+            #  pos=(0.83, 0.0, 0.75), # rigid bracelet
+            # pos=(0.90, 0.0, 0.75), # deformable bracelet
         # rot=(0.0, 0.7071, 0.7071, 0.0),# imitation
         rot=(0.5, 0.5, -0.5, -0.5),
         joint_pos={

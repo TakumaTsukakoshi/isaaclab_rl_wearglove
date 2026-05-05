@@ -100,8 +100,8 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: Tune offsets to match ``bracelet.usd`` (opening normal / lateral axes).
     bracelet_rim_offset_north: tuple[float, float, float] = (0.0, 0.03, 0.0)
     bracelet_rim_offset_south: tuple[float, float, float] = (0.0, -0.03, 0.0)
-    bracelet_rim_offset_east: tuple[float, float, float] = (0.10, 0.0, 0.0)
-    bracelet_rim_offset_west: tuple[float, float, float] = (-0.10, 0.0, 0.0)
+    bracelet_rim_offset_east: tuple[float, float, float] = (-0.10, 0.0, 0.0)
+    bracelet_rim_offset_west: tuple[float, float, float] = (0.10, 0.0, 0.0)
     #: Opening-frame Z target for the wrist (m) in depth reward ``abs(z - desired)``.
     bracelet_desired_insert_depth: float = 0.0
     #: Soft in-opening gate ``exp(-max(0, radial^2-1)/std)``; larger = more lenient outside the ellipse.
@@ -754,16 +754,15 @@ class ReachBraceletEnv(AIRECEnv):
                 "depth_reward": r_depth_distance,
                 "depth_thumb_reward": r_depth_thumb_distance,
                 "depth_pinky_reward": r_depth_pinky_distance,
-                "wrist_center_alignment_reward": r_wrist_center_alignment,
+                # "wrist_center_alignment_reward": r_wrist_center_alignment,
                 "wrist_center_3d_alignment_reward": r_wrist_center_3d_alignment,
-                "right_angle_penalty": r_right_angle_penalty,
-                "left_angle_penalty": r_left_angle_penalty,
-                "angular_reward_right": r_angular_right_ee_thumb,
-                "angular_reward_left": r_angular_left_ee_pinky,
-                "joint_vel_reward": r_joint_vel,
+                # "right_angle_penalty": r_right_angle_penalty,
+                # "left_angle_penalty": r_left_angle_penalty,
+                # "angular_reward_right": r_angular_right_ee_thumb,
+                # "angular_reward_left": r_angular_left_ee_pinky,
+                # "joint_vel_reward": r_joint_vel,
                 "inside_opening_soft": self.inside_opening_soft,
                 "wrist_radial_normalized": self.wrist_radial_normalized,
-                "insert_depth": self.insert_depth,
                 "depth_distance": self.depth_distance,
                 "fingers_inside_opening_soft": self.fingers_inside_opening_soft,
                 "thumb_radial_normalized": self.thumb_radial_normalized,
@@ -1132,6 +1131,21 @@ class ReachBraceletEnv(AIRECEnv):
             self.inside_opening_soft[env_ids] = inside_opening_soft
             self.insert_depth[env_ids] = z
             self.wrist_center_distance[env_ids] = torch.norm(torch.stack([x,y,z - desired],dim=-1,),dim=-1,)
+            # print(f"goal_cent_pos: {self.goal_cent_pos[0]}")
+            # print(f"goal_wrist_pos: {self.goal_wrist_pos[0]}")
+            # print(f"thumb_target: {self.thumb_target[0]}")
+            # print(f"pinky_target: {self.pinky_target[0]}")
+            # print(f"thumb_in_open: {self.thumb_in_open[0]}")
+            # print(f"pinky_in_open: {self.pinky_in_open[0]}")
+            # # print(f"wrist_center_distance: {self.wrist_center_distance[0]}")
+            # # print(f"wrist_xy_center_distance: {self.wrist_xy_center_distance[0]}")
+            # print(f"wrist_radial_normalized: {self.wrist_radial_normalized[0]}")
+            # print(f"inside_opening_soft: {self.inside_opening_soft[0]}")
+            # print(f"x: {x[0]}, y: {y[0]}, z: {z[0]}")
+            # print(f"radial_normalized: {radial_normalized[0]}")
+            # print(f"outside_error: {outside_error[0]}")
+            # print(f"wrist_in_open: {self.wrist_in_open[0]}")
+            # print(f"p_open: {p_open[0]}")
 
             # Live digit tips (``*_goal_pos``) in opening frame: same ellipse radii as wrist; depth along local z.
             thumb_tip_o = quat_apply_inverse(open_quat_w, self.thumb_goal_pos[env_ids] - p_open)
@@ -1162,7 +1176,7 @@ class ReachBraceletEnv(AIRECEnv):
             pinky_inside = _inside_soft(pr)
 
             self.fingers_inside_opening_soft[env_ids] = (
-                0.2 * thumb_inside
+                0.10 * thumb_inside
                 + 0.25 * fore_inside
                 + 0.30 * middle_inside
                 + 0.25 * ring_inside
@@ -1171,6 +1185,11 @@ class ReachBraceletEnv(AIRECEnv):
 
             self.depth_thumb_distance[env_ids] = torch.abs(thumb_tip_o[:, 2] - desired)
             self.depth_pinky_distance[env_ids] = torch.abs(pinky_tip_o[:, 2] - desired)
+            self.thumb_radial_normalized[env_ids] = tr
+            self.fore_radial_normalized[env_ids] = fr
+            self.middle_radial_normalized[env_ids] = mr
+            self.ring_radial_normalized[env_ids] = rr
+            self.pinky_radial_normalized[env_ids] = pr
         elif self._use_glove:
             self.depth_distance[env_ids] = torch.abs(self.goal_cent_pos[env_ids, 0] - self.goal_wrist_pos[env_ids, 0])
             self.depth_thumb_distance[env_ids] = torch.abs(
@@ -1235,15 +1254,16 @@ def compute_rewards(
     wrist_xy_center_distance: torch.Tensor,
     wrist_center_distance: torch.Tensor,
 ):
-    rotation_object_goal_scale = 0.3 # 10.0
+    rotation_object_goal_scale = 0.0 # 10.0
     reaching_object_goal_scale = 1.0    
     depth_reward_scale = 5.0
     depth_thumb_reward_scale = 0.5
     depth_pinky_reward_scale = 0.5
     max_angle_penalty = 0.8  # radians (~45.8°) threshold for thumb/pinky angular penalty
-    angle_penalty_scale = -0.1
-    wrist_center_alignment_scale = 0.5
+    angle_penalty_scale = -0.0
+    wrist_center_alignment_scale = 0.0
     wrist_center_3d_alignment_scale = 10.0
+    ee_distance_threshold = 0.3 # default 0.3
     # joint_vel_penalty_scale = -0.01
     joint_vel_penalty_scale = 0.0
     stretch_object_scale = 0.0
@@ -1254,8 +1274,8 @@ def compute_rewards(
     # r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.4) * 1.5 * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.4
     # r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.3) * reaching_object_goal_scale * (top_height > wrist_height) * (wrist_height > bottom_height) *(ee_euclidean_distance < 0.3) # default 0.3
     # print(f"top_height: {top_height[0]}, wrist_height: {wrist_height[0]}, bottom_height: {bottom_height[0]}")
-    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.15) * 1.5 * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.4
-    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.10) * reaching_object_goal_scale *(ee_euclidean_distance < 0.3) # default 0.3
+    r_right_ee_thumb_distance = distance_reward(right_ee_thumb_euclidean_distance, std=0.15) * 1.5 * reaching_object_goal_scale *(ee_euclidean_distance < ee_distance_threshold) # default 0.4
+    r_left_ee_pinky_distance = distance_reward(left_ee_pinky_euclidean_distance, std=0.10) * reaching_object_goal_scale *(ee_euclidean_distance < ee_distance_threshold) # default 0.3
 
     # print(garment_right_ee_euclidean_distance[0], garment_left_ee_euclidean_distance[0])
     # FOR REACHING+INSERTING
@@ -1271,7 +1291,7 @@ def compute_rewards(
         * inside_opening_soft
         * fingers_inside_opening_soft
         * depth_reward_scale
-        * (ee_euclidean_distance < 0.3)
+        * (ee_euclidean_distance < ee_distance_threshold)
     )
     r_depth_thumb_distance = (
         distance_reward(depth_thumb_distance, std=0.03)
@@ -1279,7 +1299,7 @@ def compute_rewards(
         * (top_height > thumb_height)
         * (thumb_height > bottom_height)
         * depth_thumb_reward_scale
-        * (ee_euclidean_distance < 0.3)
+        * (ee_euclidean_distance < ee_distance_threshold)
     )
     r_depth_pinky_distance = (
         distance_reward(depth_pinky_distance, std=0.06)
@@ -1287,19 +1307,19 @@ def compute_rewards(
         * (top_height > pinky_height)
         * (pinky_height > bottom_height)
         * depth_pinky_reward_scale
-        * (ee_euclidean_distance < 0.3)
+        * (ee_euclidean_distance < ee_distance_threshold)
     )
     r_wrist_center_alignment = (
         distance_reward(wrist_xy_center_distance, std=0.04)
         * wrist_center_alignment_scale
         * fingers_inside_opening_soft
-        * (ee_euclidean_distance < 0.3)
+        * (ee_euclidean_distance < ee_distance_threshold)
     )
     r_wrist_center_3d_alignment = (
         distance_reward(wrist_center_distance, std=0.16)
         * wrist_center_3d_alignment_scale
         * fingers_inside_opening_soft
-        * (ee_euclidean_distance < 0.3)
+        * (ee_euclidean_distance < ee_distance_threshold)
     )
     # print(f"wrist_xy_center_distance: {wrist_xy_center_distance[0]}, wrist_center_distance: {wrist_center_distance[0]}")
 
