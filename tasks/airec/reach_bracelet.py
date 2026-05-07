@@ -531,7 +531,7 @@ class ReachBraceletEnv(AIRECEnv):
             dtype=self.hand.data.joint_pos.dtype,
         )
         self.wrist_xy_center_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
-        # Scalar center distance (m) from opening center to wrist.
+        # Env-local vector from opening center to wrist (``torch.norm(..., dim=1)`` → ``wrist_center_euclidean_distance``).
         self.wrist_center_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         # Backward-compatible alias (same scalar).
         self.wrist_center_euclidean_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
@@ -1080,8 +1080,11 @@ class ReachBraceletEnv(AIRECEnv):
             (self.goal_north_pos[:, 2].unsqueeze(-1) > finger_heights) &
             (finger_heights > self.goal_south_pos[:, 2].unsqueeze(-1))
         )
-        num_fingers_inside = between_height_condition.sum(dim=-1)
-        self.fingers_inside_soft_gate[env_ids] = num_fingers_inside.float() / finger_heights.shape[-1]
+        num_fingers_inside = between_height_condition.sum(dim=-1)  # (num_envs,)
+        # ``_compute_intermediate_values`` may run on a subset of envs; only write the matching slice.
+        self.fingers_inside_soft_gate[env_ids] = (
+            num_fingers_inside[env_ids].float() / float(finger_heights.shape[-1])
+        )
 
 def compute_rewards(
     reaching_object_goal_scale: float,
@@ -1119,7 +1122,7 @@ def compute_rewards(
     depth_pinky_reward_scale = 0.0
     # rewards thresholds
     ee_distance_threshold = 0.3 # default 0.3
-    right_ee_thumb_angular_threshold = 1.5
+    right_ee_thumb_angular_threshold = 1.4
     left_ee_pinky_angular_threshold = 0.8
     ######## conditions for rewards ########
     ee_near_condition = (ee_euclidean_distance < ee_distance_threshold) #& (right_ee_thumb_angular_distance < ee_angular_thretholds["right_ee_thumb"])
@@ -1132,8 +1135,8 @@ def compute_rewards(
     ######## rewards for reaching ########
     reaching_right_ee_thumb_scale = 2.0
     reaching_left_ee_pinky_scale = 1.0
-    right_ee_thumb_condition = (ee_near_condition) & thumb_between_height_condition & right_ee_thumb_angular_condition
-    left_ee_pinky_condition = (ee_near_condition) & pinky_between_height_condition & left_ee_pinky_angular_condition
+    right_ee_thumb_condition = (ee_near_condition) & thumb_between_height_condition
+    left_ee_pinky_condition = (ee_near_condition) & pinky_between_height_condition 
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")
     r_right_ee_thumb_distance = (
         distance_reward(right_ee_thumb_euclidean_distance, std=0.10) 
@@ -1159,8 +1162,8 @@ def compute_rewards(
         * fingers_inside_soft_gate
     )
     ######### rewards for angular #########
-    rotation_right_ee_thumb_scale = 0.20
-    rotation_left_ee_pinky_scale = 0.10
+    rotation_right_ee_thumb_scale = 0.0
+    rotation_left_ee_pinky_scale = 0.0
     right_ee_thumb_rotation_condition = (ee_near_condition) & thumb_between_height_condition
     left_ee_pinky_rotation_condition = (ee_near_condition) & pinky_between_height_condition
     # print(f"right_ee_thumb_angular_distance: {right_ee_thumb_angular_distance[0]}, left_ee_pinky_angular_distance: {left_ee_pinky_angular_distance[0]}")
