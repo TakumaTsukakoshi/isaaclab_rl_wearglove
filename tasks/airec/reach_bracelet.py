@@ -107,6 +107,13 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: Soft in-opening gate ``exp(-max(0, radial^2-1)/std)``; larger = more lenient outside the ellipse.
     bracelet_inside_opening_std: float = 0.15
 
+    # Sparse "task success" signal: bracelet root within ``bracelet_success_threshold`` (m) of the wrist
+    # goal position (env-local). Used both as an episode-termination condition (when
+    # ``terminate_on_task_success`` is True) and as a one-shot bonus added in ``_get_rewards``.
+    terminate_on_task_success: bool = False
+    bracelet_success_threshold: float = 0.01  # 1 cm
+    task_success_bonus: float = 10000.0
+
     object_usd = os.path.join(
         _REPO_ROOT, "assets", "Bracelet", "bracelet_b.usd"
     )
@@ -522,6 +529,10 @@ class ReachBraceletEnv(AIRECEnv):
         self.ring_insert_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.ring_insert_dwell = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
 
+        # Sparse task-success buffer (bracelet within ``cfg.bracelet_success_threshold`` of wrist goal).
+        # Populated each step in ``_get_dones`` and consumed in ``_get_rewards`` for the +bonus term.
+        self.task_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+
         # debugging
         self.goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
@@ -677,6 +688,27 @@ class ReachBraceletEnv(AIRECEnv):
             self._compute_intermediate_values(env_ids=e)
             self._reset_goal_aperture(e)
 
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        # Parent calls ``_compute_intermediate_values()`` and writes ``self._term_log`` for wandb.
+        termination, time_out = super()._get_dones()
+
+        # Bracelet root vs. ShadowHand wrist goal, both env-local (see ``_compute_intermediate_values``).
+        self.task_success[:] = (
+            self.wrist_center_euclidean_distance < self.cfg.bracelet_success_threshold
+        )
+
+        # Surface to wandb via the same ``_term_log`` dict that ``AIRECEnv._get_dones`` populates.
+        if not hasattr(self, "_term_log") or self._term_log is None:
+            self._term_log = {}
+        self._term_log["task_success"] = self.task_success.float()
+        self._term_log["wrist_center_distance"] = self.wrist_center_euclidean_distance
+
+        if self.cfg.terminate_on_task_success:
+            termination = termination | self.task_success
+            self._term_log["term_any"] = termination.float()
+
+        return termination, time_out
+
     def _get_rewards(self) -> torch.Tensor:
         if self.cfg.use_geometryrl_b7_reward:
             rewards, b7_log = geometryrl_b7_cloth_hanging_reward(self)
@@ -757,7 +789,15 @@ class ReachBraceletEnv(AIRECEnv):
                     "normalised_forces_right_x": self.normalised_forces[:, 1],
                 }
             )
-        
+
+        # Sparse task-success bonus: bracelet within ``bracelet_success_threshold`` (m) of wrist goal.
+        # ``_get_dones`` runs before ``_get_rewards`` each control step, so ``self.task_success`` is current.
+        success_bonus = self.task_success.float() * float(self.cfg.task_success_bonus)
+        rewards = rewards + success_bonus
+        self.extras["log"]["task_success_bonus"] = success_bonus
+        self.extras["log"]["task_success"] = self.task_success.float()
+        self.extras["log"]["wrist_center_distance"] = self.wrist_center_euclidean_distance
+
         # Termination flags from ``AIRECEnv._get_dones`` (same control step; merged here because
         # ``_get_rewards`` overwrites ``extras["log"]`` after ``_get_dones`` runs).
         term_log = getattr(self, "_term_log", None)
@@ -772,55 +812,89 @@ class ReachBraceletEnv(AIRECEnv):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
+    # def _reset_target_pose(self, env_ids):
+    #     # Make sure this is already on the right device once
+    #     default_state = self.hand.data.default_root_state.clone()[env_ids]
+
+    #     pos_noise = sample_uniform(-0.02, 0.02, (len(env_ids), 3), device=self.device)
+
+    #     init_pos = default_state[0, 0:3].unsqueeze(0).repeat(len(env_ids), 1)
+      
+        # default_state[:, 0:3] = (
+        #     init_pos
+        #     + pos_noise * self.cfg.reset_goal_position_noise
+        #     + self.scene.env_origins[env_ids]
+        # )
+
+        # init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
+
+        # # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
+        # B = int(len(env_ids))
+        # pitch_rad = sample_uniform(
+        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+        #     (B,),
+        #     device=self.device,
+        # )
+        # yaw_rad = sample_uniform(
+        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+        #     (B,),
+        #     device=self.device,
+        # )
+        # zero = torch.zeros_like(pitch_rad)
+        # q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
+        # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
+        # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
+        # default_state[:, 3:7] = quat_mul(q_yaw_pitch, init_rot)
+
+        # default_state[:, 7:] = 0.0
+
+        # joint_pos = self.hand.data.default_joint_pos[env_ids]
+        # joint_vel = torch.zeros_like(joint_pos)
+
+        # self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
+        # self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+        # self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+        # # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
+        # self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
+        # self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
+        # self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+    
     def _reset_target_pose(self, env_ids):
-        # Make sure this is already on the right device once
+        # Default root state for selected envs
         default_state = self.hand.data.default_root_state.clone()[env_ids]
 
-        pos_noise = sample_uniform(-0.02, 0.02, (len(env_ids), 3), device=self.device)
-
-        init_pos = default_state[0, 0:3].unsqueeze(0).repeat(len(env_ids), 1)
-      
+        # No randomization for position
         default_state[:, 0:3] = (
-            init_pos
-            + pos_noise * self.cfg.reset_goal_position_noise
+            self.hand.data.default_root_state[env_ids, 0:3]
             + self.scene.env_origins[env_ids]
         )
 
-        init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
+        # No randomization for rotation
+        default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
 
-        # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
-        B = int(len(env_ids))
-        pitch_rad = sample_uniform(
-            torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-            torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-            (B,),
-            device=self.device,
-        )
-        yaw_rad = sample_uniform(
-            torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-            torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-            (B,),
-            device=self.device,
-        )
-        zero = torch.zeros_like(pitch_rad)
-        q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
-        q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
-        q_yaw_pitch = quat_mul(q_yaw, q_pitch)
-        default_state[:, 3:7] = quat_mul(q_yaw_pitch, init_rot)
-
+        # Reset root velocity
         default_state[:, 7:] = 0.0
 
+        # Reset joints
         joint_pos = self.hand.data.default_joint_pos[env_ids]
         joint_vel = torch.zeros_like(joint_pos)
 
         self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
         self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-        # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
-        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
-        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
-        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
 
+        # Cache root pose actually written
+        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
+            dtype=self.goal_hand_root_pos.dtype
+        )
+        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
+            dtype=self.goal_hand_root_quat.dtype
+        )
+
+        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+    
     def _update_goal_aperture_targets(self, env_ids, thumb_offset=0.03, pinky_offset=0.02) -> None:
         """Recompute outward reach targets and stretch scalars from **current** ShadowHand geometry.
 
@@ -1085,6 +1159,8 @@ class ReachBraceletEnv(AIRECEnv):
         self.fingers_inside_soft_gate[env_ids] = (
             num_fingers_inside[env_ids].float() / float(finger_heights.shape[-1])
         )
+        # print(f"fingers_inside_soft_gate: {self.fingers_inside_soft_gate[0]}")
+        # print(f"wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
 
 def compute_rewards(
     reaching_object_goal_scale: float,
@@ -1153,7 +1229,7 @@ def compute_rewards(
 
     ######## rewards for insert ########
     reaching_wrist_center_scale = 10.0
-    wrist_center_condition = ee_near_condition
+    wrist_center_condition = ee_near_condition 
     
     r_wrist_center_distance = (
         distance_reward(wrist_center_euclidean_distance, std=0.16)
