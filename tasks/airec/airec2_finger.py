@@ -55,7 +55,7 @@ from assets_cfg.airec_finger import AIREC_CFG
 from assets_cfg.shadow_hand import SHADOW_HAND_CFG
 from pxr import Sdf, Usd, UsdPhysics, Sdf
 from isaaclab.sim import SimulationContext
-import re
+from tasks.airec.physics import BRACELET_PHYSICS_DT, BRACELET_DECIMATION, bracelet_sim_cfg
 
 def ensure_xform_prim(prim_path: str) -> bool:
     sim = SimulationContext.instance()
@@ -70,6 +70,10 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
+    # physics_dt = 1 / 500 # 0.002 #1 / 500 # 120 # 500 Hz
+
+    # # number of physics step per control step
+    # decimation = 5  # 10 # # 50 Hz
     physics_dt = 1 / 500 # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
@@ -142,13 +146,29 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         # ),
             
         physx=PhysxCfg(
+            solver_type=1,
+            enable_ccd=True,
+            enable_enhanced_determinism=True, 
+
+            friction_offset_threshold=0.01,
+            friction_correlation_distance=0.005,
             bounce_threshold_velocity=0.2,
-            gpu_max_rigid_contact_count=2**20, # default 2**23
-            gpu_max_rigid_patch_count=2**18, #23, default 5 * 2 ** 15. # change 2**20 to default 1119
+
+            min_position_iteration_count=8,
+            max_position_iteration_count=64,
+            max_velocity_iteration_count=32,
+
+            ### GPU Buffer Management: 
+            gpu_total_aggregate_pairs_capacity=2**25,
+            gpu_found_lost_aggregate_pairs_capacity=2**25,
+            gpu_found_lost_pairs_capacity=2**27,
+            gpu_max_rigid_contact_count=2**23, # default 2**23
+            gpu_max_rigid_patch_count=2**23, #23, default 5 * 2 ** 15. # change 2**20 to default 1119
             gpu_temp_buffer_capacity=2**20, # default 2**20
             gpu_max_soft_body_contacts= 2**24, # default 2**20
-            # Narrow-phase stack; PhysX can demand >2**30 bytes when contact count spikes (e.g. dense meshes).
             gpu_collision_stack_size=2**30,
+            gpu_heap_capacity=2**26,
+            # gpu_max_num_partitions=1,
             # gpu_temp_buffer_capacity=2**18, # default 2**20
             # gpu_max_soft_body_contacts= 2**18, # default 2**20 
             # gpu_collision_stack_size=2**26, # default 2**26
@@ -159,9 +179,9 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     )
 
     # temp
-    replicate_physics = False
+    replicate_physics = True
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=8, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=4096, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
@@ -273,7 +293,27 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
 
 
+    # fixed_rhand_joints = [
+    #     "right_hand_second_finger_joint_1",
+    #     "right_hand_third_finger_joint_1",
+    #     "right_hand_second_finger_joint_2",
+    #     "right_hand_third_finger_joint_2",
+    # ]
+
+    # fixed_lhand_joints = [
+    #     "left_hand_second_finger_joint_1",
+    #     "left_hand_third_finger_joint_1",
+    #     "left_hand_second_finger_joint_2",
+    #     "left_hand_third_finger_joint_2",
+    # ]
+
     fixed_rhand_joints = [
+        "right_hand_ee_joint_1",
+        "right_hand_thumb_joint_1",
+        "right_hand_thumb_joint_2",
+        "right_hand_thumb_joint_3",
+        "right_hand_ee_joint_2",
+        "right_hand_thumb_joint_4",
         "right_hand_second_finger_joint_1",
         "right_hand_third_finger_joint_1",
         "right_hand_second_finger_joint_2",
@@ -281,6 +321,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
 
     fixed_lhand_joints = [
+        "left_hand_ee_joint_1",
+        "left_hand_thumb_joint_1",
+        "left_hand_thumb_joint_2",
+        "left_hand_thumb_joint_3",
+        "left_hand_ee_joint_2",
+        "left_hand_thumb_joint_4",
         "left_hand_second_finger_joint_1",
         "left_hand_third_finger_joint_1",
         "left_hand_second_finger_joint_2",

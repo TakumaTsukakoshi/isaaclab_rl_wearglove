@@ -27,6 +27,10 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 STIFFNESS_SCALE = 100.0
 DAMPING_SCALE = 10.0
 
+# Match reach_bracelet rigid object / tasks.airec.physics: huge hand-only values let the solver
+# push the hand through thin ring colliders; keep depenetration in the same ballpark as the bracelet.
+_SHADOW_HAND_MAX_DEPENETRATION_VELOCITY = 5.0
+
 SHADOW_HAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
         usd_path=f"{ISAAC_NUCLEUS_DIR}/Robots/ShadowRobot/ShadowHand/shadow_hand_instanceable.usd",
@@ -34,18 +38,29 @@ SHADOW_HAND_CFG = ArticulationCfg(
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,
             retain_accelerations=True,
-            max_depenetration_velocity=1000.0,
+            max_depenetration_velocity=_SHADOW_HAND_MAX_DEPENETRATION_VELOCITY, # default 1000.0
         ),
         scale=(1.0, 1.0, 1.0),
         # scale=(0.7, 0.7, 0.7),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,
-            solver_position_iteration_count=8,
-            solver_velocity_iteration_count=0,
+            # More iterations help stable contact with the rigid bracelet (object_cfg uses 64).
+            # solver_position_iteration_count=8,
+            # solver_velocity_iteration_count=0,
+            solver_position_iteration_count=24,
+            solver_velocity_iteration_count=1,
             sleep_threshold=0.005,
             stabilization_threshold=0.0005,
         ),
-        # collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
+        # Widen contact generation similarly to bracelet_b.usd spawn in reach_bracelet.
+        collision_props=sim_utils.CollisionPropertiesCfg(
+            collision_enabled=True,
+            # Slightly generous vs thin manipulated objects (bracelet strip); pairs with larger object contact_offset.
+            contact_offset=0.006,
+            rest_offset=0.003,
+            # contact_offset=0.015,
+            # rest_offset=0.005,
+        ),
         joint_drive_props=sim_utils.JointDrivePropertiesCfg(drive_type="force"),
         fixed_tendons_props=sim_utils.FixedTendonPropertiesCfg(limit_stiffness=30.0, damping=0.1),
     ),
