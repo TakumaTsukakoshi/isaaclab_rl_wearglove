@@ -33,6 +33,15 @@ parser.add_argument(
 )
 parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the agent configuration.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
+parser.add_argument(
+    "--print-eval-episode-returns",
+    action="store_true",
+    default=False,
+    help=(
+        "Print mean_returns (and per-eval-env returns) each time an eval env finishes an episode "
+        "(terminated/truncated). Off by default to avoid log spam."
+    ),
+)
 # Rendering options (useful for RTX5090 and similar GPUs)
 parser.add_argument(
     "--renderer", type=str, default="PathTracing", choices=["RayTracedLighting", "PathTracing"], help="Renderer to use."
@@ -72,7 +81,15 @@ def main() -> None:
     writer = Writer(agent_cfg)
     env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
     env = make_env(agent_cfg, env_cfg, writer, args_cli)
-    train_one_seed(args_cli, env, agent_cfg=agent_cfg, env_cfg=env_cfg, writer=writer, seed=seed)
+    train_one_seed(
+        args_cli,
+        env,
+        agent_cfg=agent_cfg,
+        env_cfg=env_cfg,
+        writer=writer,
+        seed=seed,
+        print_eval_episode_returns=args_cli.print_eval_episode_returns,
+    )
 
 
 if __name__ == "__main__":

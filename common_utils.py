@@ -217,7 +217,7 @@ def make_memory(env, env_cfg, size, num_envs):
     return memory
 
 
-def make_trainer(env, agent, agent_cfg, ssl_task=None, writer=None):
+def make_trainer(env, agent, agent_cfg, ssl_task=None, writer=None, print_eval_episode_returns: bool = False):
     """Create the high-level Trainer wrapper.
 
     Args:
@@ -240,6 +240,7 @@ def make_trainer(env, agent, agent_cfg, ssl_task=None, writer=None):
         num_eval_envs=num_eval_envs,
         ssl_task=ssl_task,
         writer=writer,
+        print_eval_episode_returns=print_eval_episode_returns,
     )
     return trainer
 
@@ -279,7 +280,15 @@ def set_seed(seed: int = 42) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def train_one_seed(args_cli, env, agent_cfg=None, env_cfg=None, writer=None, seed=None):
+def train_one_seed(
+    args_cli,
+    env,
+    agent_cfg=None,
+    env_cfg=None,
+    writer=None,
+    seed=None,
+    print_eval_episode_returns: bool = False,
+):
     """Train the PPO agent for a single seed configuration.
 
     Args:
@@ -329,6 +338,6 @@ def train_one_seed(args_cli, env, agent_cfg=None, env_cfg=None, writer=None, see
     )
 
     # Start training
-    trainer = make_trainer(env, agent, agent_cfg, ssl_task, writer)
+    trainer = make_trainer(env, agent, agent_cfg, ssl_task, writer, print_eval_episode_returns=print_eval_episode_returns)
     trainer.train()
     print("Training complete!")

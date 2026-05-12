@@ -29,6 +29,15 @@ parser.add_argument("--video_dir", type=str, default=None, help="Directory to sa
 parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the agent configuration.")
 
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
+parser.add_argument(
+    "--print-eval-episode-returns",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help=(
+        "Print mean and per-env returns when an eval env finishes (terminated/truncated). "
+        "On by default for play; pass --no-print-eval-episode-returns to silence."
+    ),
+)
 # Rendering options (useful for RTX5090 and similar GPUs)
 parser.add_argument(
     "--renderer", type=str, default="PathTracing", choices=["RayTracedLighting", "PathTracing"], help="Renderer to use."
@@ -129,6 +138,10 @@ def main():
     returns = torch.zeros(size=(env.num_envs, 1), device=env.device)
     mask = torch.Tensor([[1] for _ in range(env.num_envs)]).to(env.device)
 
+    num_eval_envs = int(agent_cfg["trainer"]["num_eval_envs"])
+    episode_return_sum = torch.zeros((num_eval_envs, 1), device=env.device)
+    print_eval_episode_returns = bool(args_cli.print_eval_episode_returns)
+
     states, infos = env.reset(hard=True)
 
     # Simulate environment
@@ -148,6 +161,22 @@ def main():
             returns += rewards * mask
             mask *= mask_update
 
+            # Per-episode returns for the eval env slice (same indices as training)
+            r_ev = rewards[:num_eval_envs]
+            done_ev = torch.logical_or(terminated[:num_eval_envs], truncated[:num_eval_envs])
+            episode_return_sum += r_ev
+            done_flat = done_ev.squeeze(-1)
+            if print_eval_episode_returns and done_flat.any():
+                idx = done_flat.nonzero(as_tuple=False).view(-1)
+                mean_episode_return = episode_return_sum[idx].mean().item()
+                print(
+                    f"[play eval episode end] timestep={timestep} "
+                    f"mean_returns (over {idx.numel()} completed eval env(s))={mean_episode_return:.4f}"
+                )
+                for j in idx.tolist():
+                    print(f"  eval_env_id={j} return={episode_return_sum[j, 0].item():.4f}")
+            episode_return_sum *= (1.0 - done_ev.float())
+
             # Manually reset eval episodes every ep_length
             if timestep % ep_length == 0:
                 mean_eval_return = returns.mean().item()
@@ -155,6 +184,7 @@ def main():
 
                 returns = torch.zeros(size=(env.num_envs, 1), device=env.device)
                 mask = torch.Tensor([[1] for _ in range(env.num_envs)]).to(env.device)
+                episode_return_sum.zero_()
 
         if args_cli.video:
             # Exit the play loop after recording one video
