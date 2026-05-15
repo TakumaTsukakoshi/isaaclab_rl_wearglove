@@ -74,17 +74,17 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # # number of physics step per control step
     # decimation = 5  # 10 # # 50 Hz
-    physics_dt = 1 / 500 # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 300 # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
-    decimation = 5  # 10 # # 50 Hz
+    decimation = 10  # 10 # # 50 Hz
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
     episode_length_s = 5.0  # 5 * 120 / 2 = 300 timesteps
 
     num_observations = 0
-    num_actions = 28
+    num_actions = 26
     num_states = 0
 
     # isaac 4.5 stuff
@@ -104,7 +104,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     minimal_distance = 0.02
     maximum_width = 0.148 ########## need changed from measurements
 
-    act_moving_average = 0.001
+    act_moving_average = 0.1
     minimal_angular = 10.0 # degree
     minimal_dense = 0.02 # added for dense reward 10/20
     reaching_object_goal_scale = 10.0
@@ -156,7 +156,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
             min_position_iteration_count=8,
             max_position_iteration_count=64,
-            max_velocity_iteration_count=32,
+            max_velocity_iteration_count=1,
 
             ### GPU Buffer Management: 
             gpu_total_aggregate_pairs_capacity=2**25,
@@ -293,27 +293,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
 
 
-    # fixed_rhand_joints = [
-    #     "right_hand_second_finger_joint_1",
-    #     "right_hand_third_finger_joint_1",
-    #     "right_hand_second_finger_joint_2",
-    #     "right_hand_third_finger_joint_2",
-    # ]
-
-    # fixed_lhand_joints = [
-    #     "left_hand_second_finger_joint_1",
-    #     "left_hand_third_finger_joint_1",
-    #     "left_hand_second_finger_joint_2",
-    #     "left_hand_third_finger_joint_2",
-    # ]
-
     fixed_rhand_joints = [
-        "right_hand_ee_joint_1",
-        "right_hand_thumb_joint_1",
-        "right_hand_thumb_joint_2",
-        "right_hand_thumb_joint_3",
-        "right_hand_ee_joint_2",
-        "right_hand_thumb_joint_4",
         "right_hand_second_finger_joint_1",
         "right_hand_third_finger_joint_1",
         "right_hand_second_finger_joint_2",
@@ -321,17 +301,37 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
 
     fixed_lhand_joints = [
-        "left_hand_ee_joint_1",
-        "left_hand_thumb_joint_1",
-        "left_hand_thumb_joint_2",
-        "left_hand_thumb_joint_3",
-        "left_hand_ee_joint_2",
-        "left_hand_thumb_joint_4",
         "left_hand_second_finger_joint_1",
         "left_hand_third_finger_joint_1",
         "left_hand_second_finger_joint_2",
         "left_hand_third_finger_joint_2",
     ]
+
+    # fixed_rhand_joints = [
+    #     "right_hand_ee_joint_1",
+    #     "right_hand_thumb_joint_1",
+    #     "right_hand_thumb_joint_2",
+    #     "right_hand_thumb_joint_3",
+    #     "right_hand_ee_joint_2",
+    #     "right_hand_thumb_joint_4",
+    #     "right_hand_second_finger_joint_1",
+    #     "right_hand_third_finger_joint_1",
+    #     "right_hand_second_finger_joint_2",
+    #     "right_hand_third_finger_joint_2",
+    # ]
+
+    # fixed_lhand_joints = [
+    #     "left_hand_ee_joint_1",
+    #     "left_hand_thumb_joint_1",
+    #     "left_hand_thumb_joint_2",
+    #     "left_hand_thumb_joint_3",
+    #     "left_hand_ee_joint_2",
+    #     "left_hand_thumb_joint_4",
+    #     "left_hand_second_finger_joint_1",
+    #     "left_hand_third_finger_joint_1",
+    #     "left_hand_second_finger_joint_2",
+    #     "left_hand_third_finger_joint_2",
+    # ]
 
     base_wheels=[
         "base_front_left_wheel_joint",
@@ -1738,6 +1738,8 @@ class AIRECEnv(DirectRLEnv):
         too_far = self.ee_euclidean_distance > 1.0 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
         termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
+        # if termination.any():
+        #     print(f"termination (env0): {termination[0].item()}")
         # termination = too_far | out_of_reach
         # termination = too_far | is_grasp_right | is_grasp_left
        
@@ -1752,6 +1754,8 @@ class AIRECEnv(DirectRLEnv):
         }
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+        # if time_out.any():
+        #     print(f"time_out (env0): {time_out[0].item()}")
 
         return termination, time_out
     

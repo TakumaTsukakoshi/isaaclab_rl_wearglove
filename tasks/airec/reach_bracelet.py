@@ -550,6 +550,7 @@ class ReachBraceletEnv(AIRECEnv):
         self.pinky_inside_ellipse = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.wrist_inside_ellipse = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.fingers_inside_soft_gate = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.per_finger_soft_inside = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
     
 
     def _apply_action(self) -> None:
@@ -646,23 +647,21 @@ class ReachBraceletEnv(AIRECEnv):
                 # euclidean distances (1,)
                 self.left_ee_pinky_euclidean_distance.unsqueeze(1),
                 # angular distances (1,)
-                self.right_ee_thumb_angular_distance.unsqueeze(1),
+                # self.right_ee_thumb_angular_distance.unsqueeze(1),
                 # angular distances (1,)
-                self.left_ee_pinky_angular_distance.unsqueeze(1),
+                # self.left_ee_pinky_angular_distance.unsqueeze(1),
                 # xyz diffs (3,)
-                self.depth_distance.unsqueeze(1),
-                # # xyz diffs (3,)
-                self.depth_thumb_distance.unsqueeze(1),
-                # # xyz diffs (3,)
-                self.depth_pinky_distance.unsqueeze(1),
+                # self.depth_distance.unsqueeze(1),
+                # # # xyz diffs (3,)
+                # self.depth_thumb_distance.unsqueeze(1),
+                # # # xyz diffs (3,)
+                # self.depth_pinky_distance.unsqueeze(1),
                 # xyz diffs (3,)
                 self.wrist_center_distance,
                 # euclidean distance (1,)
                 self.wrist_center_euclidean_distance.unsqueeze(1),
-                # xyz diffs (3,)
-                self.thumb_target,
-                # xyz diffs (3,)
-                self.pinky_target
+                # per finger soft inside (5,)
+                self.per_finger_soft_inside,
             ),
             dim=-1,
         )
@@ -1150,15 +1149,22 @@ class ReachBraceletEnv(AIRECEnv):
             self.ring_goal_pos[:, 2],
             self.pinky_target[:, 2],
         ], dim=-1)
-        between_height_condition = (
-            (self.goal_north_pos[:, 2].unsqueeze(-1) > finger_heights) &
-            (finger_heights > self.goal_south_pos[:, 2].unsqueeze(-1))
-        )
-        num_fingers_inside = between_height_condition.sum(dim=-1)  # (num_envs,)
-        # ``_compute_intermediate_values`` may run on a subset of envs; only write the matching slice.
-        self.fingers_inside_soft_gate[env_ids] = (
-            num_fingers_inside[env_ids].float() / float(finger_heights.shape[-1])
-        )
+        dist_from_south_pos = finger_heights - self.goal_south_pos[:, 2].unsqueeze(-1)
+        dist_from_north_pos = self.goal_north_pos[:, 2].unsqueeze(-1) - finger_heights
+        margin = torch.minimum(dist_from_south_pos, dist_from_north_pos)
+        temperature = 0.02
+        self.per_finger_soft_inside[env_ids] = torch.sigmoid(margin[env_ids] / temperature)
+        # print(f"per_finger_soft_inside: {self.per_finger_soft_inside[0]}")
+        # between_height_condition = (
+        #     (self.goal_north_pos[:, 2].unsqueeze(-1) > finger_heights) &
+        #     (finger_heights > self.goal_south_pos[:, 2].unsqueeze(-1))
+        # )
+        # num_fingers_inside = between_height_condition.sum(dim=-1)  # (num_envs,)
+        # # ``_compute_intermediate_values`` may run on a subset of envs; only write the matching slice.
+        # self.fingers_inside_soft_gate[env_ids] = (
+        #     num_fingers_inside[env_ids].float() / float(finger_heights.shape[-1])
+        # )
+        self.fingers_inside_soft_gate[env_ids] = self.per_finger_soft_inside[env_ids].mean(dim=-1)
         # print(f"fingers_inside_soft_gate: {self.fingers_inside_soft_gate[0]}")
         # print(f"wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
 
@@ -1228,11 +1234,11 @@ def compute_rewards(
     )
 
     ######## rewards for insert ########
-    reaching_wrist_center_scale = 10.0
+    reaching_wrist_center_scale = 20.0
     wrist_center_condition = ee_near_condition 
     
     r_wrist_center_distance = (
-        distance_reward(wrist_center_euclidean_distance, std=0.16)
+        distance_reward(wrist_center_euclidean_distance, std=0.14)
         * reaching_wrist_center_scale 
         * wrist_center_condition
         * fingers_inside_soft_gate

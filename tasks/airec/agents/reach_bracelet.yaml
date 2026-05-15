@@ -43,8 +43,8 @@ agent:
   mini_batches: 16
   discount_factor: 0.99
   lambda: 0.95
-  # learning_rate: 1.0595873261695062e-05
-  learning_rate: 5.0e-06
+  learning_rate: 1.0595873261695062e-05
+  # learning_rate: 5.0e-06
   random_timesteps: 0
   learning_starts: 0
   grad_norm_clip: 1.0
@@ -58,7 +58,7 @@ agent:
   augment: False
 
 trainer:
-  num_eval_envs: 10
+  num_eval_envs: 100
   max_global_timesteps_M: 200
 
 # logging and checkpoints
