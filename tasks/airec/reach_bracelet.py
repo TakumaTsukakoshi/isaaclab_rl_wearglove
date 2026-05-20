@@ -110,7 +110,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     # Sparse "task success" signal: bracelet root within ``bracelet_success_threshold`` (m) of the wrist
     # goal position (env-local). Used both as an episode-termination condition (when
     # ``terminate_on_task_success`` is True) and as a one-shot bonus added in ``_get_rewards``.
-    terminate_on_task_success: bool = False
+    terminate_on_task_success: bool = True
     bracelet_success_threshold: float = 0.01  # 1 cm
     task_success_bonus: float = 10000.0
 
@@ -130,6 +130,8 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
             # scale=(1.0, 1.5, 1.4),
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
+                # contact_offset=0.006, # default 0.005
+                # rest_offset=0.003, # default 0.003
                 contact_offset=0.006, # default 0.005
                 rest_offset=0.003, # default 0.003
             ),
@@ -139,8 +141,8 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
-                solver_position_iteration_count=64,
-                solver_velocity_iteration_count=32,
+                solver_position_iteration_count=32,
+                solver_velocity_iteration_count=1,
                 max_depenetration_velocity=0.5,
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(
@@ -321,38 +323,78 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
         }
     )
 
-    # Visualization for thumb and pinky targets (in local robot coordinates)
+    # Finger / wrist reach-target debug spheres (env-local). Saturated, distinct; no pure red or green.
     thumb_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/thumb_target_marker",
         markers={
-            "sphere":
-            sim_utils.SphereCfg(
+            "sphere": sim_utils.SphereCfg(
                 radius=0.01,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.5, 0.0)),  # Orange
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.25, 0.0)),
             ),
-        }
+        },
     )
-
     fore_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/fore_target_marker",
         markers={
-            "sphere":
-            sim_utils.SphereCfg(
+            "sphere": sim_utils.SphereCfg(
                 radius=0.01,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 0.0)),  # Green
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.55, 1.0)),
             ),
-        }
+        },
     )
-
+    middle_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/middle_target_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.01,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
+            ),
+        },
+    )
+    ring_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/ring_target_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.01,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 1.0)),
+            ),
+        },
+    )
     pinky_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/pinky_target_marker",
         markers={
-            "sphere":
-            sim_utils.SphereCfg(
+            "sphere": sim_utils.SphereCfg(
                 radius=0.01,
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 1.0, 1.0)),  # Cyan
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.3, 0.5, 1.0)),
             ),
-        }
+        },
+    )
+    wrist_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/wrist_target_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.01,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 1.0)),
+            ),
+        },
+    )
+    right_ee_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/right_ee_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.01,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.75, 0.0)),
+            ),
+        },
+    )
+    left_ee_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/left_ee_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.01,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.25, 1.0)),
+            ),
+        },
     )
 
     finger_joint_names = [
@@ -434,6 +476,7 @@ class ReachBraceletEnv(AIRECEnv):
         # Dynamic outward-biased reach targets (**env-local**), updated each step from live ShadowHand fingertips.
         self.thumb_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.pinky_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+        self.wrist_target = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         # Identity rotations for thumb and pinky target visualization
         self.identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], dtype=torch.float, device=self.device).unsqueeze(0).expand(self.num_envs, -1)
 
@@ -534,7 +577,6 @@ class ReachBraceletEnv(AIRECEnv):
         self.task_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
         # debugging
-        self.goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
         self._shadow_hand_finger_hold = torch.zeros(
             (self.num_envs, len(self.finger_joint_ids)),
@@ -588,20 +630,26 @@ class ReachBraceletEnv(AIRECEnv):
         # Initialize visualization markers for thumb and pinky targets
         self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
         self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
+        self.fore_target_markers = VisualizationMarkers(self.cfg.fore_target_marker)
+        self.middle_target_markers = VisualizationMarkers(self.cfg.middle_target_marker)
+        self.ring_target_markers = VisualizationMarkers(self.cfg.ring_target_marker)
+        self.wrist_target_markers = VisualizationMarkers(self.cfg.wrist_target_marker)
+        self.right_ee_markers = VisualizationMarkers(self.cfg.right_ee_marker)
+        self.left_ee_markers = VisualizationMarkers(self.cfg.left_ee_marker)
         
 
         self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
-        self.thumb_goal_frame.set_debug_vis(True)
+        self.thumb_goal_frame.set_debug_vis(False)
         self.pinky_goal_frame = FrameTransformer(self.cfg.pinky_goal_config)
-        self.pinky_goal_frame.set_debug_vis(True)
+        self.pinky_goal_frame.set_debug_vis(False)
         self.fore_goal_frame = FrameTransformer(self.cfg.fore_goal_config)
-        self.fore_goal_frame.set_debug_vis(True)
+        self.fore_goal_frame.set_debug_vis(False)
         self.middle_goal_frame = FrameTransformer(self.cfg.middle_goal_config)
-        self.middle_goal_frame.set_debug_vis(True)
+        self.middle_goal_frame.set_debug_vis(False)
         self.ring_goal_frame = FrameTransformer(self.cfg.ring_goal_config)
-        self.ring_goal_frame.set_debug_vis(True)
+        self.ring_goal_frame.set_debug_vis(False)
         self.wrist_goal_frame = FrameTransformer(self.cfg.wrist_goal_config)
-        self.wrist_goal_frame.set_debug_vis(True)
+        self.wrist_goal_frame.set_debug_vis(False)
 
         self.scene.sensors["pinky_goal_frame"] = self.pinky_goal_frame
         self.scene.sensors["thumb_goal_frame"] = self.thumb_goal_frame
@@ -1060,30 +1108,54 @@ class ReachBraceletEnv(AIRECEnv):
         self._update_goal_aperture_targets(env_ids)
 
         # Visualize thumb and pinky targets (must index by env_ids: subset reset has |env_ids| < num_envs)
-        self.thumb_target_markers.visualize(
-            self.thumb_target[env_ids] + self.scene.env_origins[env_ids],
-            self.identity_quat[env_ids],
-        )
-        self.pinky_target_markers.visualize(
-            self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
-            self.identity_quat[env_ids],
-        )
-        if self.goal_east_markers is not None:
-            self.goal_east_markers.visualize(
-                self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-            )
-            self.goal_west_markers.visualize(
-                self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-            )
-            self.goal_north_markers.visualize(
-                self.goal_north_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-            )
-            self.goal_south_markers.visualize(
-                self.goal_south_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-            )
-            self.goal_cent_markers.visualize(
-                self.goal_cent_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-            )
+        # self.thumb_target_markers.visualize(
+        #     self.thumb_target[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # self.pinky_target_markers.visualize(
+        #     self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # self.fore_target_markers.visualize(
+        #     self.fore_goal_pos[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # self.middle_target_markers.visualize(
+        #     self.middle_goal_pos[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # self.ring_target_markers.visualize(
+        #     self.ring_goal_pos[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # self.wrist_target_markers.visualize(
+        #     self.goal_wrist_pos[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # self.right_ee_markers.visualize(
+        #     self.right_upper_ee_pos[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # self.left_ee_markers.visualize(
+        #     self.left_upper_ee_pos[env_ids] + self.scene.env_origins[env_ids],
+        #     self.identity_quat[env_ids],
+        # )
+        # if self.goal_east_markers is not None:
+        #     self.goal_east_markers.visualize(
+        #         self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+        #     )
+        #     self.goal_west_markers.visualize(
+        #         self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+        #     )
+        #     self.goal_north_markers.visualize(
+        #         self.goal_north_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+        #     )
+        #     self.goal_south_markers.visualize(
+        #         self.goal_south_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+        #     )
+        #     self.goal_cent_markers.visualize(
+        #         self.goal_cent_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+        #     )
             # print(f"goal_north_pos: {self.goal_north_pos[0]}, goal_south_pos: {self.goal_south_pos[0]}, goal_east_pos: {self.goal_east_pos[0]}, goal_west_pos: {self.goal_west_pos[0]}, goal_cent_pos: {self.goal_cent_pos[0]}")
 
         if self._use_glove or self.cfg.object_type == "rigid":
@@ -1154,6 +1226,8 @@ class ReachBraceletEnv(AIRECEnv):
         margin = torch.minimum(dist_from_south_pos, dist_from_north_pos)
         temperature = 0.02
         self.per_finger_soft_inside[env_ids] = torch.sigmoid(margin[env_ids] / temperature)
+        # print(f"ee_euclidean_distance: {self.ee_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}")
+        # print(f"per_finger_soft_inside: {self.per_finger_soft_inside[0]}")
         # print(f"per_finger_soft_inside: {self.per_finger_soft_inside[0]}")
         # between_height_condition = (
         #     (self.goal_north_pos[:, 2].unsqueeze(-1) > finger_heights) &
@@ -1165,6 +1239,7 @@ class ReachBraceletEnv(AIRECEnv):
         #     num_fingers_inside[env_ids].float() / float(finger_heights.shape[-1])
         # )
         self.fingers_inside_soft_gate[env_ids] = self.per_finger_soft_inside[env_ids].mean(dim=-1)
+        # print(f"per_finger_soft_inside: {self.per_finger_soft_inside[0]}")
         # print(f"fingers_inside_soft_gate: {self.fingers_inside_soft_gate[0]}")
         # print(f"wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
 

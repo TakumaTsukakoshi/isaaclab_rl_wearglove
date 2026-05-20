@@ -168,7 +168,7 @@ base_rear_right_wheel_link_outer_barrel_center
 """
 
 
-OVERRIDE_SCALE = 0.10
+OVERRIDE_SCALE = 0.1
 PARENT_DIR = os.getcwd()
 
 ACTUATED_TORSO_JOINTS = ["torso_joint_1", "torso_joint_2", "torso_joint_3"]
@@ -462,7 +462,7 @@ AIREC_CFG = ArticulationCfg(
         },
     ),
     ###########################################################################
-    # # NOTE: for reach deformable bracelet task
+    # NOTE: for reach deformable bracelet task
     # init_state=ArticulationCfg.InitialStateCfg(
     #     pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
     #     joint_pos={

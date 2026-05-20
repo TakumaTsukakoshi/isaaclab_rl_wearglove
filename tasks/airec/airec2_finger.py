@@ -77,14 +77,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     physics_dt = 1 / 300 # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
-    decimation = 10  # 10 # # 50 Hz
+    decimation = 30  # 10 # # 50 Hz
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
     episode_length_s = 5.0  # 5 * 120 / 2 = 300 timesteps
 
     num_observations = 0
-    num_actions = 26
+    num_actions = 14
     num_states = 0
 
     # isaac 4.5 stuff
@@ -96,13 +96,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     obs_stack = 1
 
     # reset config
-    reset_object_position_noise = 0.01
+    reset_object_position_noise = 0.0
     #: If False, rigid / articulated task objects keep ``default_root_state`` orientation on reset (no ``randomize_rotation``).
-    randomize_object_rotation: bool = True
+    randomize_object_rotation: bool = False
     # lift stuff
     minimal_width = 0.02
     minimal_distance = 0.02
-    maximum_width = 0.148 ########## need changed from measurements
 
     act_moving_average = 0.1
     minimal_angular = 10.0 # degree
@@ -187,6 +186,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
     eye = (3, -1.5, 3)
     lookat = (0, 0, 1)
+    # eye = (0, 0, 2)
+    # lookat = (0, 0, 0)
 
     viewer: ViewerCfg = ViewerCfg(eye=eye, lookat=lookat, resolution=(1920, 1080))
 
@@ -275,45 +276,25 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     #     "right_hand_thumb_joint_4",
     # ]
     actuated_lhand_joints=[
-        "left_hand_ee_joint_1",
+        "left_hand_first_finger_joint_1",
+        "left_hand_first_finger_joint_2",
         "left_hand_thumb_joint_1",
         "left_hand_thumb_joint_2",
         "left_hand_thumb_joint_3",
-        "left_hand_ee_joint_2",
         "left_hand_thumb_joint_4",
     ]
 
     actuated_rhand_joints=[
-        "right_hand_ee_joint_1",
+        "right_hand_first_finger_joint_1",
+        "right_hand_first_finger_joint_2",
         "right_hand_thumb_joint_1",
         "right_hand_thumb_joint_2",
         "right_hand_thumb_joint_3",
-        "right_hand_ee_joint_2",
         "right_hand_thumb_joint_4",
     ]
 
 
-    fixed_rhand_joints = [
-        "right_hand_second_finger_joint_1",
-        "right_hand_third_finger_joint_1",
-        "right_hand_second_finger_joint_2",
-        "right_hand_third_finger_joint_2",
-    ]
-
-    fixed_lhand_joints = [
-        "left_hand_second_finger_joint_1",
-        "left_hand_third_finger_joint_1",
-        "left_hand_second_finger_joint_2",
-        "left_hand_third_finger_joint_2",
-    ]
-
     # fixed_rhand_joints = [
-    #     "right_hand_ee_joint_1",
-    #     "right_hand_thumb_joint_1",
-    #     "right_hand_thumb_joint_2",
-    #     "right_hand_thumb_joint_3",
-    #     "right_hand_ee_joint_2",
-    #     "right_hand_thumb_joint_4",
     #     "right_hand_second_finger_joint_1",
     #     "right_hand_third_finger_joint_1",
     #     "right_hand_second_finger_joint_2",
@@ -321,17 +302,37 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # ]
 
     # fixed_lhand_joints = [
-    #     "left_hand_ee_joint_1",
-    #     "left_hand_thumb_joint_1",
-    #     "left_hand_thumb_joint_2",
-    #     "left_hand_thumb_joint_3",
-    #     "left_hand_ee_joint_2",
-    #     "left_hand_thumb_joint_4",
     #     "left_hand_second_finger_joint_1",
     #     "left_hand_third_finger_joint_1",
     #     "left_hand_second_finger_joint_2",
     #     "left_hand_third_finger_joint_2",
     # ]
+
+    fixed_rhand_joints = [
+        "right_hand_first_finger_joint_1",
+        "right_hand_thumb_joint_1",
+        "right_hand_thumb_joint_2",
+        "right_hand_thumb_joint_3",
+        "right_hand_first_finger_joint_2",
+        "right_hand_thumb_joint_4",
+        "right_hand_second_finger_joint_1",
+        "right_hand_third_finger_joint_1",
+        "right_hand_second_finger_joint_2",
+        "right_hand_third_finger_joint_2",
+    ]
+
+    fixed_lhand_joints = [
+        "left_hand_first_finger_joint_1",
+        "left_hand_thumb_joint_1",
+        "left_hand_thumb_joint_2",
+        "left_hand_thumb_joint_3",
+        "left_hand_first_finger_joint_2",
+        "left_hand_thumb_joint_4",
+        "left_hand_second_finger_joint_1",
+        "left_hand_third_finger_joint_1",
+        "left_hand_second_finger_joint_2",
+        "left_hand_third_finger_joint_2",
+    ]
 
     base_wheels=[
         "base_front_left_wheel_joint",
@@ -349,7 +350,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # currently 28
     # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints #+ actuated_lhand_joints + actuated_rhand_joints
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -377,7 +378,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     left_upper_ee_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/world",
-        debug_vis=True,
+        debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
@@ -409,7 +410,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     right_upper_ee_config: FrameTransformerCfg = FrameTransformerCfg(
         prim_path="/World/envs/env_.*/Robot/world",
-        debug_vis=True,
+        debug_vis=False,
         visualizer_cfg=marker_cfg,
         target_frames=[
             FrameTransformerCfg.FrameCfg(
@@ -548,8 +549,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
 
     img_dim = 84
-    # eye = [1.2, -0.3, 0.5]
-    # target = [0, 3.0, 0]
+    eye = [1.2, -0.3, 0.5]
+    target = [0, 3.0, 0]
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
         offset=TiledCameraCfg.OffsetCfg(pos=(0.0, -0.0, 0.0), rot=(1, 0, 0, 0), convention="world"),
@@ -819,9 +820,9 @@ class AIRECEnv(DirectRLEnv):
         self.right_ee_frame = FrameTransformer(self.cfg.right_ee_config)
         self.right_ee_frame.set_debug_vis(False)
         self.left_upper_ee_frame = FrameTransformer(self.cfg.left_upper_ee_config)
-        self.left_upper_ee_frame.set_debug_vis(True)
+        self.left_upper_ee_frame.set_debug_vis(False)
         self.right_upper_ee_frame = FrameTransformer(self.cfg.right_upper_ee_config)
-        self.right_upper_ee_frame.set_debug_vis(True)
+        self.right_upper_ee_frame.set_debug_vis(False)
         self.left_thumb_frame = FrameTransformer(self.cfg.left_thumb_config)
         self.left_thumb_frame.set_debug_vis(False)
         self.right_thumb_frame = FrameTransformer(self.cfg.right_thumb_config)

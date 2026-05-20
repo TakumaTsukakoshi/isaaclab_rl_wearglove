@@ -140,57 +140,14 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     )
 
 
-    object_cfg: DeformableObjectCfg = DeformableObjectCfg(
-        prim_path="/World/envs/env_.*/Object",
-        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos_glove, rot=[1.0, 0.0, 0.0, 0.0]),
-        spawn=UsdFileCfg(
-            usd_path=object_usd_glove,
-            copy_from_source=True,
-            visible=True,
-            scale=(1.0, 1.4, 1.3),
-            # scale=(1.0, 1.5, 1.4),
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                collision_enabled=True,
-                # contact_offset/rest_offset are mainly controlled by deformable_props below for deformables.
-            ),
-            deformable_props=DeformableBodyPropertiesCfg(
-                deformable_enabled=True,
-                kinematic_enabled=False,
-                self_collision=False,
-                # Keep resolutions modest; increase if you need finer deformation.
-                # simulation_hexahedral_resolution=16,
-                # collision_simplification=True,
-                # collision_simplification_remeshing=True,
-                # collision_simplification_remeshing_resolution=8,
-                # collision_simplification_target_triangle_count=0,
-                # collision_simplification_force_conforming=True,
-                # solver_position_iteration_count=16,
-                simulation_hexahedral_resolution=16,
-                collision_simplification=True,
-                collision_simplification_remeshing=True,
-                collision_simplification_remeshing_resolution=4,
-                collision_simplification_target_triangle_count=0,
-                collision_simplification_force_conforming=True,
-                solver_position_iteration_count=4,
-                contact_offset=0.006,
-                rest_offset=0.003,
-            ),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-            diffuse_color=(0.8, 0.2, 0.2),
-            opacity=1.0,             
-        ),   
-        ),
-        debug_vis=False,
-    )
-
     # object_cfg: DeformableObjectCfg = DeformableObjectCfg(
     #     prim_path="/World/envs/env_.*/Object",
-    #     init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.5, 0.5, -0.5, -0.5]),
+    #     init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos_glove, rot=[1.0, 0.0, 0.0, 0.0]),
     #     spawn=UsdFileCfg(
-    #         usd_path=object_usd,
+    #         usd_path=object_usd_glove,
     #         copy_from_source=True,
     #         visible=True,
-    #         scale=(1.0, 1.0, 1.0),
+    #         scale=(1.0, 1.4, 1.3),
     #         # scale=(1.0, 1.5, 1.4),
     #         collision_props=sim_utils.CollisionPropertiesCfg(
     #             collision_enabled=True,
@@ -208,7 +165,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #             # collision_simplification_target_triangle_count=0,
     #             # collision_simplification_force_conforming=True,
     #             # solver_position_iteration_count=16,
-    #             simulation_hexahedral_resolution=4,
+    #             simulation_hexahedral_resolution=16,
     #             collision_simplification=True,
     #             collision_simplification_remeshing=True,
     #             collision_simplification_remeshing_resolution=4,
@@ -225,6 +182,49 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #     ),
     #     debug_vis=False,
     # )
+
+    object_cfg: DeformableObjectCfg = DeformableObjectCfg(
+        prim_path="/World/envs/env_.*/Object",
+        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.5, 0.5, -0.5, -0.5]),
+        spawn=UsdFileCfg(
+            usd_path=object_usd,
+            copy_from_source=True,
+            visible=True,
+            scale=(1.0, 1.0, 1.0),
+            # scale=(1.0, 1.5, 1.4),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,
+                # contact_offset/rest_offset are mainly controlled by deformable_props below for deformables.
+            ),
+            deformable_props=DeformableBodyPropertiesCfg(
+                deformable_enabled=True,
+                kinematic_enabled=False,
+                self_collision=False,
+                # Keep resolutions modest; increase if you need finer deformation.
+                # simulation_hexahedral_resolution=16,
+                # collision_simplification=True,
+                # collision_simplification_remeshing=True,
+                # collision_simplification_remeshing_resolution=8,
+                # collision_simplification_target_triangle_count=0,
+                # collision_simplification_force_conforming=True,
+                # solver_position_iteration_count=16,
+                simulation_hexahedral_resolution=4,
+                collision_simplification=True,
+                collision_simplification_remeshing=True,
+                collision_simplification_remeshing_resolution=4,
+                collision_simplification_target_triangle_count=0,
+                collision_simplification_force_conforming=True,
+                solver_position_iteration_count=4,
+                contact_offset=0.006,
+                rest_offset=0.003,
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+            diffuse_color=(0.8, 0.2, 0.2),
+            opacity=1.0,             
+        ),   
+        ),
+        debug_vis=False,
+    )
     # Listens to the required transforms
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
