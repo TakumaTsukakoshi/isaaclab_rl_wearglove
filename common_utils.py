@@ -185,6 +185,7 @@ def make_models(env, env_cfg, agent_cfg, dtype):
     )
 
     value_preprocessor = RunningStandardScaler(size=1, device=env.device, dtype=dtype, debug=env_cfg.debug)
+    value.value_preprocessor = value_preprocessor
 
     print("*****Encoder*****")
     print(encoder)
@@ -325,7 +326,6 @@ def train_one_seed(
         encoder,
         policy,
         value,
-        value_preprocessor,
         memory=rl_memory,
         cfg=ppo_agent_cfg,
         observation_space=env.observation_space,

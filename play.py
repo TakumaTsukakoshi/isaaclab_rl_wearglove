@@ -106,11 +106,11 @@ def main():
     # Configure and instantiate PPO agent
     ppo_agent_cfg = PPO_DEFAULT_CONFIG.copy()
     ppo_agent_cfg.update(agent_cfg["agent"])
+    value.value_preprocessor = value_preprocessor
     agent = PPO(
         encoder,
         policy,
         value,
-        value_preprocessor,
         memory=None,
         cfg=ppo_agent_cfg,
         observation_space=env.observation_space,

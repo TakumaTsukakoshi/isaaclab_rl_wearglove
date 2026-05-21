@@ -77,14 +77,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     physics_dt = 1 / 300 # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
-    decimation = 30  # 10 # # 50 Hz
+    decimation = 15  # 10 # # 50 Hz
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
     episode_length_s = 5.0  # 5 * 120 / 2 = 300 timesteps
 
     num_observations = 0
-    num_actions = 14
+    num_actions = 26
     num_states = 0
 
     # isaac 4.5 stuff
@@ -309,12 +309,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # ]
 
     fixed_rhand_joints = [
-        "right_hand_first_finger_joint_1",
-        "right_hand_thumb_joint_1",
-        "right_hand_thumb_joint_2",
-        "right_hand_thumb_joint_3",
-        "right_hand_first_finger_joint_2",
-        "right_hand_thumb_joint_4",
+        # "right_hand_first_finger_joint_1",
+        # "right_hand_thumb_joint_1",
+        # "right_hand_thumb_joint_2",
+        # "right_hand_thumb_joint_3",
+        # "right_hand_first_finger_joint_2",
+        # "right_hand_thumb_joint_4",
         "right_hand_second_finger_joint_1",
         "right_hand_third_finger_joint_1",
         "right_hand_second_finger_joint_2",
@@ -322,12 +322,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
 
     fixed_lhand_joints = [
-        "left_hand_first_finger_joint_1",
-        "left_hand_thumb_joint_1",
-        "left_hand_thumb_joint_2",
-        "left_hand_thumb_joint_3",
-        "left_hand_first_finger_joint_2",
-        "left_hand_thumb_joint_4",
+        # "left_hand_first_finger_joint_1",
+        # "left_hand_thumb_joint_1",
+        # "left_hand_thumb_joint_2",
+        # "left_hand_thumb_joint_3",
+        # "left_hand_first_finger_joint_2",
+        # "left_hand_thumb_joint_4",
         "left_hand_second_finger_joint_1",
         "left_hand_third_finger_joint_1",
         "left_hand_second_finger_joint_2",
@@ -350,7 +350,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # currently 28
     # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints #+ actuated_lhand_joints + actuated_rhand_joints
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -716,12 +716,6 @@ class AIRECEnv(DirectRLEnv):
         self.left_ee_object_angular_distance = torch.zeros((self.num_envs,), device=self.device)
         self.left_ee_object_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
 
-        # for validation of aperture
-        self.right_ee_distance = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
-        self.left_ee_distance = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
-
         self.ee_angular_distance = torch.zeros((self.num_envs,), device=self.device)
         self.ee_distance = torch.zeros((self.num_envs, 3), device=self.device)
         self.ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
@@ -1058,14 +1052,14 @@ class AIRECEnv(DirectRLEnv):
                 self.normalised_joint_pos,
                 self.normalised_joint_vel,
                 self.joint_pos_error,
-                self.right_ee_pos,
-                self.right_ee_rot,
-                # self.right_upper_ee_pos,
-                # self.right_upper_ee_rot,
-                self.left_ee_pos,
-                self.left_ee_rot,
-                # self.left_upper_ee_pos,
-                # self.left_upper_ee_rot,
+                # self.right_ee_pos,
+                # self.right_ee_rot,
+                self.right_upper_ee_pos,
+                self.right_upper_ee_rot,
+                # self.left_ee_pos,
+                # self.left_ee_rot,
+                self.left_upper_ee_pos,
+                self.left_upper_ee_rot,
                 # self.right_thumb_pos,
                 # self.right_thumb_rot,
                 # self.left_thumb_pos,
@@ -1648,16 +1642,6 @@ class AIRECEnv(DirectRLEnv):
         self.left_thumb_pos[env_ids] = self.left_thumb_frame.data.target_pos_source[..., 0, :][env_ids]
         self.left_thumb_rot[env_ids] = self.left_thumb_frame.data.target_quat_source[..., 0, :][env_ids]  
         # self.right_ee_distance[env_ids] = ((self.right_ee_pos[env_ids] + self.right_upper_ee_pos[env_ids])/2) - self.right_thumb_pos[env_ids]
-        self.right_ee_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.right_thumb_pos[env_ids]
-        self.right_ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_distance[env_ids], dim=1)
-        self.left_ee_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.left_thumb_pos[env_ids]
-        self.left_ee_euclidean_distance[env_ids] = torch.norm(self.left_ee_distance[env_ids], dim=1)
-        # print(f"right_upper_ee_pos: {self.right_upper_ee_pos[0]}, left_upper_ee_pos: {self.left_upper_ee_pos[0]}")
-        # left_closed  = self.left_ee_euclidean_distance[env_ids] < self._grasp_min_distance
-        # right_closed = self.right_ee_euclidean_distance[env_ids]< self._grasp_min_distance
-        # print(f"left_ee_euclidean_distance: {self.left_ee_euclidean_distance[0]}, right_ee_euclidean_distance: {self.right_ee_euclidean_distance[0]}")
-        # print(f"left_closed: {left_closed}, right_closed: {right_closed}")
-        # self._grasp = left_closed & right_closed
         ######################################################################
 
         # joint vel roughly between -2.5, 2.5, so dividing by 3.
@@ -1732,15 +1716,13 @@ class AIRECEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # no termination at the moment
-        # is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
-        # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
         is_grasp_right = self.garment_right_ee_euclidean_distance > 0.50 # check
         is_grasp_left = self.garment_left_ee_euclidean_distance > 0.50   # check
         too_far = self.ee_euclidean_distance > 1.0 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
         termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
         # if termination.any():
-        #     print(f"termination (env0): {termination[0].item()}")
+        #     print(f"termination (env0): {termination[0]}")
         # termination = too_far | out_of_reach
         # termination = too_far | is_grasp_right | is_grasp_left
        
@@ -1756,7 +1738,7 @@ class AIRECEnv(DirectRLEnv):
 
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         # if time_out.any():
-        #     print(f"time_out (env0): {time_out[0].item()}")
+        #     print(f"time_out (env0): {time_out[0]}")
 
         return termination, time_out
     

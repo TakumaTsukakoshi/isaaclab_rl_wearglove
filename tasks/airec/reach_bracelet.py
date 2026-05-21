@@ -107,6 +107,16 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: Soft in-opening gate ``exp(-max(0, radial^2-1)/std)``; larger = more lenient outside the ellipse.
     bracelet_inside_opening_std: float = 0.15
 
+    #: Thumb deep-inside gate (Y–Z ``ev`` from ``thumb_target``): peaks when ``ev << 1`` (center), zero at rim/outside.
+    #: ``sigmoid(sharpness * (margin - ev))`` with ``margin < 1`` avoids rewarding ``ev ≈ 1`` (on edge).
+    thumb_ellipse_inside_margin: float = 0.85
+    thumb_ellipse_inside_sharpness: float = 8.0
+    #: Upper-arm EE must be near ``thumb_target`` (3D, m) for the reach gate to turn on.
+    thumb_upper_ee_proximity_std: float = 0.10
+    #: After wrist reaches the opening (``wrist_center_euclidean_distance < bracelet_success_threshold``),
+    #: thumb reach gate is zero (post-insert / success phase does not need a high gate).
+    thumb_gate_active_before_wrist_success: bool = False
+
     # Sparse "task success" signal: bracelet root within ``bracelet_success_threshold`` (m) of the wrist
     # goal position (env-local). Used both as an episode-termination condition (when
     # ``terminate_on_task_success`` is True) and as a one-shot bonus added in ``_get_rewards``.
@@ -589,6 +599,11 @@ class ReachBraceletEnv(AIRECEnv):
         # Backward-compatible alias (same scalar).
         self.wrist_center_euclidean_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.thumb_inside_ellipse = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.thumb_target_upper_ee_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.thumb_upper_ee_proximity = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        # Normalized Y–Z ellipse value for ``thumb_target`` (or blended gate position); ``< 1`` = inside opening.
+        self.thumb_ellipse_value = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.thumb_reach_gate_active = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.pinky_inside_ellipse = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.wrist_inside_ellipse = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.fingers_inside_soft_gate = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
@@ -609,8 +624,8 @@ class ReachBraceletEnv(AIRECEnv):
     def _setup_scene(self):
         super()._setup_scene()
         # Parent enables upper-fingertip frame debug by default; it draws extra axes near the workspace.
-        self.left_upper_ee_frame.set_debug_vis(False)
-        self.right_upper_ee_frame.set_debug_vis(False)
+        self.left_upper_ee_frame.set_debug_vis(True)
+        self.right_upper_ee_frame.set_debug_vis(True)
         # Rigid / deformable task object (bracelet) is added whenever ``object_type != "none"``.
         if self.cfg.object_type != "none":
             self._add_object_to_scene()
@@ -753,6 +768,9 @@ class ReachBraceletEnv(AIRECEnv):
         if self.cfg.terminate_on_task_success:
             termination = termination | self.task_success
             self._term_log["term_any"] = termination.float()
+        
+        # if termination.any():
+        #     print(f"termination (env0): {termination[0]}")
 
         return termination, time_out
 
@@ -824,9 +842,9 @@ class ReachBraceletEnv(AIRECEnv):
                 "reach_reward_right": r_right_ee_thumb_distance,
                 "reach_reward_left": r_left_ee_pinky_distance,
                 "wrist_center_distance_reward": r_wrist_center_distance,
-                "angular_reward_right": r_angular_right_ee_thumb,
-                "angular_reward_left": r_angular_left_ee_pinky,
                 "fingers_inside_soft_gate": self.fingers_inside_soft_gate,
+                "thumb_upper_ee_proximity": self.thumb_upper_ee_proximity,
+                "thumb_ellipse_value": self.thumb_ellipse_value,
             }
 
         if "tactile" in self.cfg.obs_list:
@@ -867,46 +885,46 @@ class ReachBraceletEnv(AIRECEnv):
 
     #     init_pos = default_state[0, 0:3].unsqueeze(0).repeat(len(env_ids), 1)
       
-        # default_state[:, 0:3] = (
-        #     init_pos
-        #     + pos_noise * self.cfg.reset_goal_position_noise
-        #     + self.scene.env_origins[env_ids]
-        # )
+    #     default_state[:, 0:3] = (
+    #         init_pos
+    #         + pos_noise * self.cfg.reset_goal_position_noise
+    #         + self.scene.env_origins[env_ids]
+    #     )
 
-        # init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
+    #     init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
 
-        # # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
-        # B = int(len(env_ids))
-        # pitch_rad = sample_uniform(
-        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-        #     (B,),
-        #     device=self.device,
-        # )
-        # yaw_rad = sample_uniform(
-        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-        #     (B,),
-        #     device=self.device,
-        # )
-        # zero = torch.zeros_like(pitch_rad)
-        # q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
-        # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
-        # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
-        # default_state[:, 3:7] = quat_mul(q_yaw_pitch, init_rot)
+    #     # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
+    #     B = int(len(env_ids))
+    #     # pitch_rad = sample_uniform(
+    #     #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+    #     #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+    #     #     (B,),
+    #     #     device=self.device,
+    #     # )
+    #     yaw_rad = sample_uniform(
+    #         torch.deg2rad(torch.tensor(-10.0, device=self.device, dtype=torch.float32)),
+    #         torch.deg2rad(torch.tensor(10.0, device=self.device, dtype=torch.float32)),
+    #         (B,),
+    #         device=self.device,
+    #     )
+    #     zero = torch.zeros_like(yaw_rad)
+    #     q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
+    #     # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
+    #     # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
+    #     default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
 
-        # default_state[:, 7:] = 0.0
+    #     default_state[:, 7:] = 0.0
 
-        # joint_pos = self.hand.data.default_joint_pos[env_ids]
-        # joint_vel = torch.zeros_like(joint_pos)
+    #     joint_pos = self.hand.data.default_joint_pos[env_ids]
+    #     joint_vel = torch.zeros_like(joint_pos)
 
-        # self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
-        # self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-        # self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-        # # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
-        # self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
-        # self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
-        # self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+    #     self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
+    #     self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    #     self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+    #     # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
+    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
+    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
+    #     self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
     
     def _reset_target_pose(self, env_ids):
         # Default root state for selected envs
@@ -1017,7 +1035,49 @@ class ReachBraceletEnv(AIRECEnv):
             root_p + quat_apply(root_q, _expand_off(self.cfg.bracelet_rim_offset_west)) - origins
         )
         self.goal_cent_pos[env_ids] = (self.goal_north_pos[env_ids] + self.goal_south_pos[env_ids]) / 2.0
-    
+
+    def _thumb_upper_ee_proximity(
+        self,
+        env_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gaussian proximity in [0, 1] between ``thumb_target`` and ``right_upper_ee_pos`` (env-local)."""
+        dist = torch.norm(self.thumb_target[env_ids] - self.right_upper_ee_pos[env_ids], dim=-1)
+        std = float(self.cfg.thumb_upper_ee_proximity_std)
+        prox = torch.exp(-0.5 * (dist / std) ** 2)
+        return prox, dist
+
+    def _thumb_deep_inside_gate(
+        self,
+        ellipse_value: torch.Tensor,
+    ) -> torch.Tensor:
+        """Inside opening (``ev < 1``), peaked toward the center (``ev`` small), not on the rim (``ev ≈ 1``)."""
+        margin = float(self.cfg.thumb_ellipse_inside_margin)
+        sharpness = float(self.cfg.thumb_ellipse_inside_sharpness)
+        inside = torch.sigmoid(30.0 * (1.0 - ellipse_value))
+        core = torch.sigmoid(sharpness * (margin - ellipse_value))
+        return inside * core
+
+    def _thumb_reach_phase_mask(self, env_ids: torch.Tensor) -> torch.Tensor:
+        """1 during approach; 0 after wrist success (post-through), when configured."""
+        if not self.cfg.thumb_gate_active_before_wrist_success:
+            return torch.ones(env_ids.shape[0], device=self.device, dtype=torch.float32)
+        return (
+            self.wrist_center_euclidean_distance[env_ids] > self.cfg.bracelet_success_threshold
+        ).float()
+
+    def _ellipse_value_zy(
+        self,
+        env_ids: torch.Tensor,
+        pos: torch.Tensor,
+    ) -> torch.Tensor:
+        """Normalized squared radius in opening Y–Z: ``1`` on rim, ``< 1`` inside."""
+        eps = torch.as_tensor(1e-6, device=self.device, dtype=pos.dtype)
+        radius_z = 0.5 * torch.abs(self.goal_north_pos[env_ids, 2] - self.goal_south_pos[env_ids, 2]).clamp_min(eps)
+        radius_y = 0.5 * torch.abs(self.goal_east_pos[env_ids, 1] - self.goal_west_pos[env_ids, 1]).clamp_min(eps)
+        return ((pos[:, 2] - self.goal_cent_pos[env_ids, 2]) / (radius_z + eps)) ** 2 + (
+            (pos[:, 1] - self.goal_cent_pos[env_ids, 1]) / (radius_y + eps)
+        ) ** 2
+
     def _ellipse_inner_ring_gate_zy(
         self,
         env_ids: torch.Tensor,
@@ -1051,14 +1111,10 @@ class ReachBraceletEnv(AIRECEnv):
         self,
         env_ids: torch.Tensor,
         pos: torch.Tensor,
-        sharpness: float = 10.0,
+        sharpness: float = 5.0,
     ):
-        eps = torch.as_tensor(1e-6, device=self.device, dtype=pos.dtype)
-        radius_z = 0.5 * torch.abs(self.goal_north_pos[env_ids, 2] - self.goal_south_pos[env_ids, 2]).clamp_min(eps)
-        radius_y = 0.5 * torch.abs(self.goal_east_pos[env_ids, 1] - self.goal_west_pos[env_ids, 1]).clamp_min(eps)
-        ellipse_value = ((pos[env_ids, 2] - self.goal_cent_pos[env_ids, 2])/ (radius_z + eps)) ** 2 + ((pos[env_ids, 1] - self.goal_cent_pos[env_ids, 1])/ (radius_y + eps)) ** 2
-
-
+        pos_ev = pos[env_ids] if pos.shape[0] == self.num_envs else pos
+        ellipse_value = self._ellipse_value_zy(env_ids, pos_ev)
         return torch.sigmoid(sharpness * (1.0 - ellipse_value))
     
     def _compute_intermediate_values(self, reset=False, env_ids: torch.Tensor | None = None):
@@ -1159,11 +1215,11 @@ class ReachBraceletEnv(AIRECEnv):
             # print(f"goal_north_pos: {self.goal_north_pos[0]}, goal_south_pos: {self.goal_south_pos[0]}, goal_east_pos: {self.goal_east_pos[0]}, goal_west_pos: {self.goal_west_pos[0]}, goal_cent_pos: {self.goal_cent_pos[0]}")
 
         if self._use_glove or self.cfg.object_type == "rigid":
-            self.garment_right_ee_distance[env_ids] = self.right_ee_pos[env_ids] - self.goal_west_pos[env_ids]
+            self.garment_right_ee_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.goal_west_pos[env_ids]
             self.garment_right_ee_euclidean_distance[env_ids] = torch.norm(
                 self.garment_right_ee_distance[env_ids], dim=1
             )
-            self.garment_left_ee_distance[env_ids] = self.left_ee_pos[env_ids] - self.goal_east_pos[env_ids]
+            self.garment_left_ee_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.goal_east_pos[env_ids]
             self.garment_left_ee_euclidean_distance[env_ids] = torch.norm(
                 self.garment_left_ee_distance[env_ids], dim=1
             )
@@ -1198,13 +1254,27 @@ class ReachBraceletEnv(AIRECEnv):
         self.wrist_center_distance[env_ids] = self.goal_wrist_pos[env_ids] - self.goal_cent_pos[env_ids]  # (B, 3)
         self.wrist_center_euclidean_distance[env_ids] = torch.norm(self.wrist_center_distance[env_ids], dim=1)  # (B,)
 
-        # Soft gates are float in [0, 1]; store boolean versions for bitwise '&' conditions in rewards.
-        _thumb_inside_ellipse = self._ellipse_inner_ring_gate_zy(env_ids, self.thumb_target)
-        _thumb_side_gate = self._soft_side_gate_y(env_ids, self.thumb_target, 1.0)
-        self.thumb_inside_ellipse[env_ids] = (_thumb_inside_ellipse * _thumb_side_gate)
+        # Reach-phase thumb gate: max when upper EE is near ``thumb_target`` AND thumb is deep inside the opening.
+        thumb_prox, thumb_upper_dist = self._thumb_upper_ee_proximity(env_ids)
+        self.thumb_target_upper_ee_distance[env_ids] = thumb_upper_dist
+        self.thumb_upper_ee_proximity[env_ids] = thumb_prox
+        self.thumb_ellipse_value[env_ids] = self._ellipse_value_zy(env_ids, self.thumb_target[env_ids])
+        reach_active = self._thumb_reach_phase_mask(env_ids)
+        self.thumb_reach_gate_active[env_ids] = reach_active
+        deep_inside = self._thumb_deep_inside_gate(self.thumb_ellipse_value[env_ids])
+        _thumb_side_gate = self._soft_side_gate_y(env_ids, self.thumb_target, -1.0)
+        self.thumb_inside_ellipse[env_ids] = (
+            deep_inside * _thumb_side_gate * thumb_prox * reach_active
+        )
+        # print(f"thumb_upper_distance: {thumb_upper_dist[0]}")
+        # print(f"thumb_upper_ee_proximity: {thumb_prox[0]}")
+        # print(f"thumb_ellipse_value: {self.thumb_ellipse_value[0]}")
+        # print(f"deep_inside: {deep_inside[0]}")
+        # print(f"thumb_side_gate: {_thumb_side_gate[0]}")
+        # print(f"thumb_inside_ellipse: {self.thumb_inside_ellipse[0]}")
 
         _pinky_inside_ellipse = self._ellipse_inner_ring_gate_zy(env_ids, self.pinky_target)
-        _pinky_side_gate = self._soft_side_gate_y(env_ids, self.pinky_target, -1.0)
+        _pinky_side_gate = self._soft_side_gate_y(env_ids, self.pinky_target, 1.0)
         self.pinky_inside_ellipse[env_ids] = (_pinky_inside_ellipse * _pinky_side_gate)
 
         _wrist_inside_ellipse = self._ellipse_soft_gate_zy(env_ids, self.goal_wrist_pos)
@@ -1299,7 +1369,7 @@ def compute_rewards(
         distance_reward(right_ee_thumb_euclidean_distance, std=0.10) 
         * reaching_right_ee_thumb_scale 
         * (right_ee_thumb_condition) 
-        # * thumb_inside_ellipse # default 0.15
+        * thumb_inside_ellipse # default 0.15
     )
     r_left_ee_pinky_distance = (
         distance_reward(left_ee_pinky_euclidean_distance, std=0.05) 
