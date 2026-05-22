@@ -302,13 +302,13 @@ AIREC_CFG = ArticulationCfg(
     ###########################################################################
     # Where and how to load the AIREC USD
     ###########################################################################
-    # Pin the articulation root so PhysX does not bind a nested subtree (e.g. right arm only), which
-    # would yield joint_names like right_arm_joint_* only and break actuators / IK that expect both arms.
-    # Must start with ``/`` so Isaac joins ``…/Robot`` + ``/base_link`` → ``…/Robot/base_link`` (not ``Robotbase_link``).
+    # Planar-move URDF→USD (``enable_planar_move``) exposes ``world`` + ``base_link_trans_*`` at the
+    # Robot prim; ``base_link`` is not a top-level rigid body in the converted stage (see Isaac Stage).
+    # Use ``/world`` (fixed base with ``--fix-base``). For old dry-airec2 USD without ``world``, use ``/base_link``.
     articulation_root_prim_path="/world",
     spawn=sim_utils.UsdFileCfg(
         # usd_path=os.path.join(PARENT_DIR, "assets/airec/dry-airec_collision_filtered-new.usd"),
-        usd_path=os.path.join(PARENT_DIR, "assets/airec2_finger_v3/airec2_finger.usd"),
+        usd_path=os.path.join(PARENT_DIR, "assets/airec2_finger_v4/airec2_finger_new.usd"),
         activate_contact_sensors=False,
         #to fix self collision, look up collision filtering in isaac sim docs
         articulation_props=robot_articulation_settings,

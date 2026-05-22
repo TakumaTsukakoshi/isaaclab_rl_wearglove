@@ -1369,7 +1369,7 @@ def compute_rewards(
         distance_reward(right_ee_thumb_euclidean_distance, std=0.10) 
         * reaching_right_ee_thumb_scale 
         * (right_ee_thumb_condition) 
-        * thumb_inside_ellipse # default 0.15
+        # * thumb_inside_ellipse # default 0.15
     )
     r_left_ee_pinky_distance = (
         distance_reward(left_ee_pinky_euclidean_distance, std=0.05) 

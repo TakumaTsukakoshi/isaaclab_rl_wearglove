@@ -77,7 +77,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     physics_dt = 1 / 300 # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
-    decimation = 15  # 10 # # 50 Hz
+    decimation = 30  # 10 # # 50 Hz
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -553,7 +553,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     target = [0, 3.0, 0]
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
-        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, -0.0, 0.0), rot=(1, 0, 0, 0), convention="world"),
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, -0.0, 0.0), rot=(1, 0, 0, 0), convention="base_link"),
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.01, 3.2)
