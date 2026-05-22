@@ -74,10 +74,10 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # # number of physics step per control step
     # decimation = 5  # 10 # # 50 Hz
-    physics_dt = 1 / 300 # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 250 # 0.002 #1 / 500 # 120 # 500 Hz
 
     # number of physics step per control step
-    decimation = 30  # 10 # # 50 Hz
+    decimation = 25  # 10 # # 50 Hz
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -152,7 +152,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             bounce_threshold_velocity=0.2,
 
             min_position_iteration_count=8,
-            max_position_iteration_count=64,
+            max_position_iteration_count=32,
             max_velocity_iteration_count=1,
 
             ### GPU Buffer Management: 
@@ -165,7 +165,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             gpu_max_soft_body_contacts= 2**24, # default 2**20
             gpu_collision_stack_size=2**30,
             gpu_heap_capacity=2**26,
-            # gpu_max_num_partitions=1,
+            gpu_max_num_partitions=1,
             # gpu_temp_buffer_capacity=2**18, # default 2**20
             # gpu_max_soft_body_contacts= 2**18, # default 2**20 
             # gpu_collision_stack_size=2**26, # default 2**26
@@ -178,7 +178,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = True
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=6144, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=4096, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
