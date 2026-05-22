@@ -133,7 +133,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     bracelet_rim_offset_west: tuple[float, float, float] = (0.10, 0.0, 0.0)
 
     object_usd = os.path.join(
-        _REPO_ROOT, "assets", "Bracelet", "deformable_bracelet.usd"
+        _REPO_ROOT, "assets", "Bracelet", "deformable_bracelet_new.usd"
     )
     object_usd_glove = os.path.join(
         _REPO_ROOT, "assets", "Glove", "GL_Gloves068", "GL_Gloves068_obj_revise.usd"
@@ -147,7 +147,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #         usd_path=object_usd_glove,
     #         copy_from_source=True,
     #         visible=True,
-    #         scale=(1.0, 1.4, 1.3),
+    #         scale=(1.0, 1.3, 1.2),
     #         # scale=(1.0, 1.5, 1.4),
     #         collision_props=sim_utils.CollisionPropertiesCfg(
     #             collision_enabled=True,
@@ -176,7 +176,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #             rest_offset=0.003,
     #         ),
     #         visual_material=sim_utils.PreviewSurfaceCfg(
-    #         diffuse_color=(0.8, 0.2, 0.2),
+    #         diffuse_color=(0.0, 0.5, 0.3),
     #         opacity=1.0,             
     #     ),   
     #     ),
@@ -219,7 +219,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
                 rest_offset=0.003,
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(
-            diffuse_color=(0.8, 0.2, 0.2),
+            diffuse_color=(0.3, 0.3, 0.0),
             opacity=1.0,             
         ),   
         ),

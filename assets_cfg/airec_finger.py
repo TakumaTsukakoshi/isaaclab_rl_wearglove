@@ -333,7 +333,7 @@ AIREC_CFG = ArticulationCfg(
     #     "left_arm_joint_1": radians(20),
     #     # "left_arm_joint_2": radians(-14),
     #     # "left_arm_joint_2": radians(-20), default
-    #     "left_arm_joint_2": radians(-10),
+    #     "left_arm_joint_2": radians(-8),
     #     "left_arm_joint_3": radians(-14),
     #     # "left_arm_joint_4": radians(100),
     #     "left_arm_joint_4": radians(105),
@@ -345,7 +345,7 @@ AIREC_CFG = ArticulationCfg(
     #     "right_arm_joint_1": radians(20),
     #     # "right_arm_joint_2": radians(-14),
     #     # "right_arm_joint_2": radians(-20),default
-    #     "right_arm_joint_2": radians(-10),
+    #     "right_arm_joint_2": radians(-8),
     #     "right_arm_joint_3": radians(-14),
     #     # "right_arm_joint_4": radians(100),
     #     "right_arm_joint_4": radians(105),
@@ -401,8 +401,7 @@ AIREC_CFG = ArticulationCfg(
         "head_joint_3": radians(0),
         "left_arm_joint_1": radians(20),
         # "left_arm_joint_2": radians(-14),
-        # "left_arm_joint_2": radians(-20), default
-        "left_arm_joint_2": radians(-18),
+        # "left_arm_joint_2": radians(-18), default
         "left_arm_joint_2": radians(-18),
         "left_arm_joint_3": radians(-14),
         # "left_arm_joint_4": radians(100),
@@ -415,8 +414,7 @@ AIREC_CFG = ArticulationCfg(
         # "right_arm_joint_1": radians(33),
         "right_arm_joint_1": radians(20),
         # "right_arm_joint_2": radians(-14),
-        # "right_arm_joint_2": radians(-20),default
-        "right_arm_joint_2": radians(-18),
+        # "right_arm_joint_2": radians(-18),default
         "right_arm_joint_2": radians(-18),
         "right_arm_joint_3": radians(-14),
         # "right_arm_joint_4": radians(100),

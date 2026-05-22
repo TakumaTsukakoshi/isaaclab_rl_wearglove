@@ -88,8 +88,9 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     # default_object_pos = [0.27, 0.00, 1.07] # 0.13 # 1.07　default maybe for airec1
     # default_object_pos = [0.27, 0.00, 1.07] # airec1
     # default_object_pos = [0.26, 0.00, 0.85] # airec2 default
-    # default_object_pos = [0.18, 0.00, 0.83] # airec2
-    default_object_pos = [0.24, 0.00, 0.85] # airec2
+    default_object_pos = [0.24, 0.00, 0.85] # airec2 rigid bracelet
+    # default_object_pos = [0.24, 0.00, 0.90] # airec2
+
 
     object_goal_tracking_scale = 16.0
     object_goal_tracking_finegrained_scale = 5.0
@@ -125,7 +126,8 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     task_success_bonus: float = 10000.0
 
     object_usd = os.path.join(
-        _REPO_ROOT, "assets", "Bracelet", "bracelet_b.usd"
+        # _REPO_ROOT, "assets", "Bracelet", "bracelet_b.usd"
+        _REPO_ROOT, "assets", "Bracelet", "bracelet_b_new.usd"
     )
 
     object_cfg: RigidObjectCfg = RigidObjectCfg(
@@ -624,8 +626,8 @@ class ReachBraceletEnv(AIRECEnv):
     def _setup_scene(self):
         super()._setup_scene()
         # Parent enables upper-fingertip frame debug by default; it draws extra axes near the workspace.
-        self.left_upper_ee_frame.set_debug_vis(True)
-        self.right_upper_ee_frame.set_debug_vis(True)
+        self.left_upper_ee_frame.set_debug_vis(False)
+        self.right_upper_ee_frame.set_debug_vis(False)
         # Rigid / deformable task object (bracelet) is added whenever ``object_type != "none"``.
         if self.cfg.object_type != "none":
             self._add_object_to_scene()
@@ -842,9 +844,9 @@ class ReachBraceletEnv(AIRECEnv):
                 "reach_reward_right": r_right_ee_thumb_distance,
                 "reach_reward_left": r_left_ee_pinky_distance,
                 "wrist_center_distance_reward": r_wrist_center_distance,
-                "fingers_inside_soft_gate": self.fingers_inside_soft_gate,
-                "thumb_upper_ee_proximity": self.thumb_upper_ee_proximity,
-                "thumb_ellipse_value": self.thumb_ellipse_value,
+                # "fingers_inside_soft_gate": self.fingers_inside_soft_gate,
+                # "thumb_upper_ee_proximity": self.thumb_upper_ee_proximity,
+                # "thumb_ellipse_value": self.thumb_ellipse_value,
             }
 
         if "tactile" in self.cfg.obs_list:

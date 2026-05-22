@@ -84,11 +84,9 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     episode_length_s = 5.0  # 5 * 120 / 2 = 300 timesteps
 
     num_observations = 0
-    num_actions = 26
     num_states = 0
 
     # isaac 4.5 stuff
-    action_space = num_actions
     observation_space = num_observations
     state_space = num_states
 
@@ -180,7 +178,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = True
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=6144, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
@@ -354,6 +352,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
+    action_space = num_actions
     # Listens to the required transforms
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)

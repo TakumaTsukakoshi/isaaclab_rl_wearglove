@@ -111,6 +111,7 @@ def main():
         encoder,
         policy,
         value,
+        value_preprocessor,
         memory=None,
         cfg=ppo_agent_cfg,
         observation_space=env.observation_space,

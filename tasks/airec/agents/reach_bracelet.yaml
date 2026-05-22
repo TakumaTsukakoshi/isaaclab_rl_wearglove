@@ -9,19 +9,19 @@ observations:
     normalise_prop: True
     binary_tactile: True
 
-# encoder:
-#   method: "early"
-#   hiddens: [512, 256]
-#   activations: ["elu", "elu"]
-#   layernorm: True
-#   state_preprocessor: None
 encoder:
   method: "early"
-  hiddens: []
-  activations: []
-  layernorm: False
-  state_preprocessor: True
-  latent_state_dim: 512
+  hiddens: [512, 256]
+  activations: ["elu", "elu"]
+  layernorm: True
+  state_preprocessor: None
+# encoder:
+#   method: "early"
+#   hiddens: []
+#   activations: []
+#   layernorm: False
+#   state_preprocessor: True
+#   latent_state_dim: 512
 
 policy:
   clip_log_std: True
@@ -65,7 +65,7 @@ agent:
   augment: False
 
 trainer:
-  num_eval_envs: 4
+  num_eval_envs: 150
   max_global_timesteps_M: 200
 
 # logging and checkpoints

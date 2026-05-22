@@ -326,6 +326,7 @@ def train_one_seed(
         encoder,
         policy,
         value,
+        value_preprocessor,
         memory=rl_memory,
         cfg=ppo_agent_cfg,
         observation_space=env.observation_space,
