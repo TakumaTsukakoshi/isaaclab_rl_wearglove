@@ -74,10 +74,10 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # # number of physics step per control step
     # decimation = 5  # 10 # # 50 Hz
-    physics_dt = 1 / 250 # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 300  # coarse PhysX step (Hz = 300); upgraded at runtime by reach_bracelet curriculum
 
-    # number of physics step per control step
-    decimation = 25  # 10 # # 50 Hz
+    # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
+    decimation = 30
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -178,7 +178,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = True
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=6144, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
@@ -307,12 +307,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # ]
 
     fixed_rhand_joints = [
-        # "right_hand_first_finger_joint_1",
-        # "right_hand_thumb_joint_1",
-        # "right_hand_thumb_joint_2",
-        # "right_hand_thumb_joint_3",
-        # "right_hand_first_finger_joint_2",
-        # "right_hand_thumb_joint_4",
+        "right_hand_first_finger_joint_1",
+        "right_hand_thumb_joint_1",
+        "right_hand_thumb_joint_2",
+        "right_hand_thumb_joint_3",
+        "right_hand_first_finger_joint_2",
+        "right_hand_thumb_joint_4",
         "right_hand_second_finger_joint_1",
         "right_hand_third_finger_joint_1",
         "right_hand_second_finger_joint_2",
@@ -320,12 +320,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
 
     fixed_lhand_joints = [
-        # "left_hand_first_finger_joint_1",
-        # "left_hand_thumb_joint_1",
-        # "left_hand_thumb_joint_2",
-        # "left_hand_thumb_joint_3",
-        # "left_hand_first_finger_joint_2",
-        # "left_hand_thumb_joint_4",
+        "left_hand_first_finger_joint_1",
+        "left_hand_thumb_joint_1",
+        "left_hand_thumb_joint_2",
+        "left_hand_thumb_joint_3",
+        "left_hand_first_finger_joint_2",
+        "left_hand_thumb_joint_4",
         "left_hand_second_finger_joint_1",
         "left_hand_third_finger_joint_1",
         "left_hand_second_finger_joint_2",
@@ -348,7 +348,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # currently 28
     # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints 
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -1154,6 +1154,15 @@ class AIRECEnv(DirectRLEnv):
             camera_data = camera_data.to(torch.uint8)
 
         return camera_data
+
+    def _apply_sim_timestep(self, physics_dt: float, decimation: int) -> None:
+        """Update PhysX dt and env decimation while keeping RL ``step_dt`` unchanged if ``physics_dt * decimation`` is constant."""
+        self.cfg.physics_dt = physics_dt
+        self.cfg.decimation = int(decimation)
+        self.cfg.sim.dt = physics_dt
+        self.cfg.sim.render_interval = int(decimation)
+        rendering_dt = physics_dt * decimation
+        self.sim.set_simulation_dt(physics_dt=physics_dt, rendering_dt=rendering_dt)
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:

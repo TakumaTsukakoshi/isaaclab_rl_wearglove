@@ -125,6 +125,15 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     bracelet_success_threshold: float = 0.01  # 1 cm
     task_success_bonus: float = 10000.0
 
+    #: When cumulative episode success rate exceeds :attr:`adaptive_physics_success_threshold`, switch from
+    #: coarse (:attr:`~tasks.airec.airec2_finger.AIRECEnvCfg.physics_dt` / :attr:`~tasks.airec.airec2_finger.AIRECEnvCfg.decimation`)
+    #: to fine PhysX (``fine_physics_dt`` / ``fine_decimation``). RL control step stays ``1/10`` s in both cases.
+    adaptive_physics_on_success: bool = True
+    adaptive_physics_success_threshold: float = 0.5
+    adaptive_physics_min_episodes: int = 20
+    fine_physics_dt: float = 1 / 2000
+    fine_decimation: int = 200
+
     object_usd = os.path.join(
         # _REPO_ROOT, "assets", "Bracelet", "bracelet_b.usd"
         _REPO_ROOT, "assets", "Bracelet", "bracelet_b_new.usd"
@@ -455,7 +464,15 @@ class ReachBraceletEnv(AIRECEnv):
             )
         if not self._use_glove and cfg.object_type != "rigid":
             cfg.object_type = "none"
+        # Keep ``cfg.sim`` aligned with coarse timestep (configclass ``sim`` is bound at class definition time).
+        cfg.sim.dt = cfg.physics_dt
+        cfg.sim.render_interval = cfg.decimation
+
         super().__init__(cfg, render_mode, **kwargs)
+
+        self._physics_timestep_upgraded = False
+        self._curriculum_episode_count = 0
+        self._curriculum_success_count = 0
 
         # Opening-edge buffers (populated from deformable nodal anchors only when ``_use_glove``).
         self.goal_north_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
@@ -736,7 +753,41 @@ class ReachBraceletEnv(AIRECEnv):
         self.prev_actions[:] = self.actions
         super()._pre_physics_step(actions)
 
+    def _maybe_upgrade_physics_timestep(self) -> None:
+        if not self.cfg.adaptive_physics_on_success or self._physics_timestep_upgraded:
+            return
+        rate = self._curriculum_success_count / max(self._curriculum_episode_count, 1)
+        if (
+            self._curriculum_episode_count >= self.cfg.adaptive_physics_min_episodes
+            and rate > self.cfg.adaptive_physics_success_threshold
+        ):
+            self._apply_sim_timestep(self.cfg.fine_physics_dt, self.cfg.fine_decimation)
+            self._physics_timestep_upgraded = True
+            print(
+                "[ReachBraceletEnv] Upgraded physics: "
+                f"physics_dt={self.cfg.fine_physics_dt:.6g}, decimation={self.cfg.fine_decimation} "
+                f"(success_rate={rate:.3f} over {self._curriculum_episode_count} episodes)"
+            )
+
+    def _update_physics_curriculum_on_reset(self, env_ids) -> None:
+        if not self.cfg.adaptive_physics_on_success or self._physics_timestep_upgraded:
+            return
+        n = int(env_ids.numel()) if hasattr(env_ids, "numel") else len(env_ids)
+        if n == 0:
+            return
+        successes = int(self.task_success[env_ids].sum().item())
+        self._curriculum_episode_count += n
+        self._curriculum_success_count += successes
+        self._maybe_upgrade_physics_timestep()
+
     def _reset_idx(self, env_ids: Sequence[int] | None = None):
+        if env_ids is None:
+            reset_ids = self.robot._ALL_INDICES
+        else:
+            reset_ids = self._normalize_env_ids(env_ids)
+        if self.cfg.adaptive_physics_on_success and not self._physics_timestep_upgraded:
+            self._update_physics_curriculum_on_reset(reset_ids)
+
         super()._reset_idx(env_ids)
         if env_ids is None:
             e = self.robot._ALL_INDICES
@@ -864,6 +915,17 @@ class ReachBraceletEnv(AIRECEnv):
         self.extras["log"]["task_success_bonus"] = success_bonus
         self.extras["log"]["task_success"] = self.task_success.float()
         self.extras["log"]["wrist_center_distance"] = self.wrist_center_euclidean_distance
+        if self.cfg.adaptive_physics_on_success:
+            rate = self._curriculum_success_count / max(self._curriculum_episode_count, 1)
+            self.extras["log"]["curriculum_success_rate"] = torch.full(
+                (self.num_envs,), rate, device=self.device, dtype=torch.float32
+            )
+            self.extras["log"]["physics_timestep_upgraded"] = torch.full(
+                (self.num_envs,),
+                float(self._physics_timestep_upgraded),
+                device=self.device,
+                dtype=torch.float32,
+            )
 
         # Termination flags from ``AIRECEnv._get_dones`` (same control step; merged here because
         # ``_get_rewards`` overwrites ``extras["log"]`` after ``_get_dones`` runs).
