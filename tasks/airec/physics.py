@@ -173,7 +173,7 @@ deformable_glove_props = sim_utils.DeformableBodyMaterialCfg(
     youngs_modulus=1.5e8,
     poissons_ratio=0.45,
     density=300.0,
-    damping_scale=1.5,
+    damping_scale=1.0,
     elasticity_damping=0.02,
     dynamic_friction=0.8,
 )
