@@ -102,6 +102,15 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     bracelet_success_threshold: float = 0.01  # 1 cm
     task_success_bonus: float = 10000.0
 
+    #: When cumulative episode success rate exceeds :attr:`adaptive_physics_success_threshold`, switch from
+    #: coarse (:attr:`~tasks.airec.airec2_finger_deformable.AIRECEnvCfg.physics_dt` / decimation) to fine PhysX.
+    #: RL control step stays ``1/10`` s in both cases.
+    adaptive_physics_on_success: bool = True
+    adaptive_physics_success_threshold: float = 0.5
+    adaptive_physics_min_episodes: int = 20
+    fine_physics_dt: float = 1 / 2000
+    fine_decimation: int = 200
+
     object_type = "deformable"
     #: Hide parent ``AIRECEnv`` red kinematic anchor cuboids on the rim (used for ``north_edge_pos`` when
     #: :attr:`deformable_bracelet_geom_rim_goals` is False; geometric mode uses ``goal_north/south`` for top/under wrist).
@@ -140,57 +149,14 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     )
 
 
-    # object_cfg: DeformableObjectCfg = DeformableObjectCfg(
-    #     prim_path="/World/envs/env_.*/Object",
-    #     init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos_glove, rot=[1.0, 0.0, 0.0, 0.0]),
-    #     spawn=UsdFileCfg(
-    #         usd_path=object_usd_glove,
-    #         copy_from_source=True,
-    #         visible=True,
-    #         scale=(1.0, 1.3, 1.2),
-    #         # scale=(1.0, 1.5, 1.4),
-    #         collision_props=sim_utils.CollisionPropertiesCfg(
-    #             collision_enabled=True,
-    #             # contact_offset/rest_offset are mainly controlled by deformable_props below for deformables.
-    #         ),
-    #         deformable_props=DeformableBodyPropertiesCfg(
-    #             deformable_enabled=True,
-    #             kinematic_enabled=False,
-    #             self_collision=False,
-    #             # Keep resolutions modest; increase if you need finer deformation.
-    #             # simulation_hexahedral_resolution=16,
-    #             # collision_simplification=True,
-    #             # collision_simplification_remeshing=True,
-    #             # collision_simplification_remeshing_resolution=8,
-    #             # collision_simplification_target_triangle_count=0,
-    #             # collision_simplification_force_conforming=True,
-    #             # solver_position_iteration_count=16,
-    #             simulation_hexahedral_resolution=16,
-    #             collision_simplification=True,
-    #             collision_simplification_remeshing=True,
-    #             collision_simplification_remeshing_resolution=4,
-    #             collision_simplification_target_triangle_count=0,
-    #             collision_simplification_force_conforming=True,
-    #             solver_position_iteration_count=4,
-    #             contact_offset=0.006,
-    #             rest_offset=0.003,
-    #         ),
-    #         visual_material=sim_utils.PreviewSurfaceCfg(
-    #         diffuse_color=(0.0, 0.5, 0.3),
-    #         opacity=1.0,             
-    #     ),   
-    #     ),
-    #     debug_vis=False,
-    # )
-
     object_cfg: DeformableObjectCfg = DeformableObjectCfg(
         prim_path="/World/envs/env_.*/Object",
-        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.5, 0.5, -0.5, -0.5]),
+        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos_glove, rot=[1.0, 0.0, 0.0, 0.0]),
         spawn=UsdFileCfg(
-            usd_path=object_usd,
+            usd_path=object_usd_glove,
             copy_from_source=True,
             visible=True,
-            scale=(1.0, 1.0, 1.0),
+            scale=(1.0, 1.3, 1.2),
             # scale=(1.0, 1.5, 1.4),
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
@@ -208,7 +174,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
                 # collision_simplification_target_triangle_count=0,
                 # collision_simplification_force_conforming=True,
                 # solver_position_iteration_count=16,
-                simulation_hexahedral_resolution=4,
+                simulation_hexahedral_resolution=16,
                 collision_simplification=True,
                 collision_simplification_remeshing=True,
                 collision_simplification_remeshing_resolution=4,
@@ -219,12 +185,55 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
                 rest_offset=0.003,
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(
-            diffuse_color=(0.3, 0.3, 0.0),
+            diffuse_color=(0.0, 0.5, 0.3),
             opacity=1.0,             
         ),   
         ),
         debug_vis=False,
     )
+
+    # object_cfg: DeformableObjectCfg = DeformableObjectCfg(
+    #     prim_path="/World/envs/env_.*/Object",
+    #     init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.5, 0.5, -0.5, -0.5]),
+    #     spawn=UsdFileCfg(
+    #         usd_path=object_usd,
+    #         copy_from_source=True,
+    #         visible=True,
+    #         scale=(1.0, 1.0, 1.0),
+    #         # scale=(1.0, 1.5, 1.4),
+    #         collision_props=sim_utils.CollisionPropertiesCfg(
+    #             collision_enabled=True,
+    #             # contact_offset/rest_offset are mainly controlled by deformable_props below for deformables.
+    #         ),
+    #         deformable_props=DeformableBodyPropertiesCfg(
+    #             deformable_enabled=True,
+    #             kinematic_enabled=False,
+    #             self_collision=False,
+    #             # Keep resolutions modest; increase if you need finer deformation.
+    #             # simulation_hexahedral_resolution=16,
+    #             # collision_simplification=True,
+    #             # collision_simplification_remeshing=True,
+    #             # collision_simplification_remeshing_resolution=8,
+    #             # collision_simplification_target_triangle_count=0,
+    #             # collision_simplification_force_conforming=True,
+    #             # solver_position_iteration_count=16,
+    #             simulation_hexahedral_resolution=4,
+    #             collision_simplification=True,
+    #             collision_simplification_remeshing=True,
+    #             collision_simplification_remeshing_resolution=4,
+    #             collision_simplification_target_triangle_count=0,
+    #             collision_simplification_force_conforming=True,
+    #             solver_position_iteration_count=4,
+    #             contact_offset=0.006,
+    #             rest_offset=0.003,
+    #         ),
+    #         visual_material=sim_utils.PreviewSurfaceCfg(
+    #         diffuse_color=(0.3, 0.3, 0.0),
+    #         opacity=1.0,             
+    #     ),   
+    #     ),
+    #     debug_vis=False,
+    # )
     # Listens to the required transforms
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
@@ -470,7 +479,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self._use_glove = bool(getattr(cfg, "use_glove", True))
         if not self._use_glove:
             raise ValueError("ReachDeformableBraceletEnv expects use_glove=True (nodal rim features).")
+        cfg.sim.dt = cfg.physics_dt
+        cfg.sim.render_interval = cfg.decimation
+
         super().__init__(cfg, render_mode, **kwargs)
+
+        self._physics_timestep_upgraded = False
+        self._curriculum_episode_count = 0
+        self._curriculum_success_count = 0
 
         # Opening-edge buffers (populated from deformable nodal anchors only when ``_use_glove``).
         self.goal_north_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
@@ -723,7 +739,41 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.prev_actions[:] = self.actions
         super()._pre_physics_step(actions)
 
+    def _maybe_upgrade_physics_timestep(self) -> None:
+        if not self.cfg.adaptive_physics_on_success or self._physics_timestep_upgraded:
+            return
+        rate = self._curriculum_success_count / max(self._curriculum_episode_count, 1)
+        if (
+            self._curriculum_episode_count >= self.cfg.adaptive_physics_min_episodes
+            and rate > self.cfg.adaptive_physics_success_threshold
+        ):
+            self._apply_sim_timestep(self.cfg.fine_physics_dt, self.cfg.fine_decimation)
+            self._physics_timestep_upgraded = True
+            print(
+                "[ReachDeformableBraceletEnv] Upgraded physics: "
+                f"physics_dt={self.cfg.fine_physics_dt:.6g}, decimation={self.cfg.fine_decimation} "
+                f"(success_rate={rate:.3f} over {self._curriculum_episode_count} episodes)"
+            )
+
+    def _update_physics_curriculum_on_reset(self, env_ids) -> None:
+        if not self.cfg.adaptive_physics_on_success or self._physics_timestep_upgraded:
+            return
+        n = int(env_ids.numel()) if hasattr(env_ids, "numel") else len(env_ids)
+        if n == 0:
+            return
+        successes = int(self.task_success[env_ids].sum().item())
+        self._curriculum_episode_count += n
+        self._curriculum_success_count += successes
+        self._maybe_upgrade_physics_timestep()
+
     def _reset_idx(self, env_ids: Sequence[int] | None = None):
+        if env_ids is None:
+            reset_ids = self.robot._ALL_INDICES
+        else:
+            reset_ids = self._normalize_env_ids(env_ids)
+        if self.cfg.adaptive_physics_on_success and not self._physics_timestep_upgraded:
+            self._update_physics_curriculum_on_reset(reset_ids)
+
         super()._reset_idx(env_ids)
         if env_ids is None:
             e = self.robot._ALL_INDICES
@@ -848,7 +898,18 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.extras["log"]["task_success_bonus"] = success_bonus
         self.extras["log"]["task_success"] = self.task_success.float()
         self.extras["log"]["wrist_center_distance"] = self.wrist_center_euclidean_distance
-        
+        if self.cfg.adaptive_physics_on_success:
+            rate = self._curriculum_success_count / max(self._curriculum_episode_count, 1)
+            self.extras["log"]["curriculum_success_rate"] = torch.full(
+                (self.num_envs,), rate, device=self.device, dtype=torch.float32
+            )
+            self.extras["log"]["physics_timestep_upgraded"] = torch.full(
+                (self.num_envs,),
+                float(self._physics_timestep_upgraded),
+                device=self.device,
+                dtype=torch.float32,
+            )
+
         # Termination flags from ``AIRECEnv._get_dones`` (same control step; merged here because
         # ``_get_rewards`` overwrites ``extras["log"]`` after ``_get_dones`` runs).
         term_log = getattr(self, "_term_log", None)

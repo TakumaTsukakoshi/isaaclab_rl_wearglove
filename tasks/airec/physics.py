@@ -160,6 +160,24 @@ object_rigid_props = sim_utils.RigidBodyPropertiesCfg(
     max_angular_velocity=MAX_ANGULAR_VELOCITY,
 )
 
+deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
+    youngs_modulus=1.0e6,     #  8e7
+    poissons_ratio=0.47,      #  0.48
+    density=500.0,            #  300 kg/m^3
+    damping_scale=1.0,
+    elasticity_damping=0.04, #  0.012
+    dynamic_friction=0.9,     #  0.6
+)
+
+deformable_glove_props = sim_utils.DeformableBodyMaterialCfg(
+    youngs_modulus=1.5e8,
+    poissons_ratio=0.45,
+    density=300.0,
+    damping_scale=1.5,
+    elasticity_damping=0.02,
+    dynamic_friction=0.8,
+)
+
 robot_rigid_props = sim_utils.RigidBodyPropertiesCfg(
     kinematic_enabled=False,
     disable_gravity=False,

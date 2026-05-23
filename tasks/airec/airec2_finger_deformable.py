@@ -56,6 +56,7 @@ from assets_cfg.shadow_hand import SHADOW_HAND_CFG
 from pxr import Sdf, Usd, UsdPhysics, Sdf
 from isaaclab.sim import SimulationContext
 import re
+from tasks.airec.physics import deformable_bracelet_props, deformable_glove_props
 
 def ensure_xform_prim(prim_path: str) -> bool:
     sim = SimulationContext.instance()
@@ -70,21 +71,19 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 2000 # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 300  # coarse PhysX step (Hz = 300); upgraded at runtime by reach_* bracelet curriculum
 
-    # number of physics step per control step
-    decimation = 100  # 10 # # 50 Hz
+    # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
+    decimation = 30
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
     episode_length_s = 5.0  # 5 * 120 / 2 = 300 timesteps
 
     num_observations = 0
-    num_actions = 14
     num_states = 0
 
     # isaac 4.5 stuff
-    action_space = num_actions
     observation_space = num_observations
     state_space = num_states
 
@@ -132,14 +131,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         #     static_friction=1.0,
         #     dynamic_friction=1.0,
         # ),
-        physics_material=DeformableBodyMaterialCfg(
-            youngs_modulus=1.0e6,     #  8e7
-            poissons_ratio=0.47,      #  0.48
-            density=500.0,            #  300 kg/m^3
-            damping_scale=1.0,
-            elasticity_damping=0.04, #  0.012
-            dynamic_friction=0.9,     #  0.6
-        ),
+        physics_material=deformable_glove_props,
             
         physx=PhysxCfg(
             solver_type=1,
@@ -151,7 +143,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             bounce_threshold_velocity=0.2,
 
             min_position_iteration_count=4,
-            max_position_iteration_count=8,
+            max_position_iteration_count=32,
             max_velocity_iteration_count=1,
 
             ### GPU Buffer Management: 
@@ -290,6 +282,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
 
     fixed_rhand_joints = [
+        "right_hand_first_finger_joint_1",
+        "right_hand_thumb_joint_1",
+        "right_hand_thumb_joint_2",
+        "right_hand_thumb_joint_3",
+        "right_hand_first_finger_joint_2",
+        "right_hand_thumb_joint_4",
         "right_hand_second_finger_joint_1",
         "right_hand_third_finger_joint_1",
         "right_hand_second_finger_joint_2",
@@ -297,6 +295,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     ]
 
     fixed_lhand_joints = [
+        "left_hand_first_finger_joint_1",
+        "left_hand_thumb_joint_1",
+        "left_hand_thumb_joint_2",
+        "left_hand_thumb_joint_3",
+        "left_hand_first_finger_joint_2",
+        "left_hand_thumb_joint_4",
         "left_hand_second_finger_joint_1",
         "left_hand_third_finger_joint_1",
         "left_hand_second_finger_joint_2",
@@ -323,6 +327,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
+    action_space = num_actions
     # Listens to the required transforms
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
@@ -1169,6 +1174,15 @@ class AIRECEnv(DirectRLEnv):
             camera_data = camera_data.to(torch.uint8)
 
         return camera_data
+
+    def _apply_sim_timestep(self, physics_dt: float, decimation: int) -> None:
+        """Update PhysX dt and env decimation while keeping RL ``step_dt`` unchanged if ``physics_dt * decimation`` is constant."""
+        self.cfg.physics_dt = physics_dt
+        self.cfg.decimation = int(decimation)
+        self.cfg.sim.dt = physics_dt
+        self.cfg.sim.render_interval = int(decimation)
+        rendering_dt = physics_dt * decimation
+        self.sim.set_simulation_dt(physics_dt=physics_dt, rendering_dt=rendering_dt)
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
