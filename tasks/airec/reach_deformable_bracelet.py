@@ -80,21 +80,11 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     deformable_bracelet_rim_band_quantile: float = 0.55
     #: If the rim mask has fewer vertices than this, fall back to **all** mesh vertices for stability.
     deformable_bracelet_rim_min_vertices: int = 32
-    #: If True (with :attr:`deformable_bracelet_geom_rim_goals`), N/S/E/W use **fixed nodal indices** chosen once
-    #: from the rest mesh. Each step only the **positions** of those vertices update with deformation.
-    #: If False, recompute extrema and opening PCA every step (previous behaviour).
     deformable_bracelet_geom_freeze_nsew_at_init: bool = True
-    #: If True (with freeze), N/S/E/W labels use **env-local world axes** (+Z north / −Z south, min Y east / max Y west).
-    #: If False, labels use the legacy **rim PCA** extrema (same as old ``_freeze_geom_rim_nsew_labels_from_rest``).
-    #: Insert / ellipse gates use **base env-local** offsets from ``goal_cent`` (no rim PCA rotation).
     deformable_bracelet_freeze_nsew_use_world_axes: bool = True
-    #: For world-axis rim labels: take the top this many extreme rim vertices (per axis), centroid them, then pick the
-    #: rim vertex **closest to that centroid** (stable vs single argmax noise). Capped by rim vertex count.
     deformable_bracelet_rim_world_axis_extreme_k: int = 8
 
-    #: Target wrist **env-local X** offset from ``goal_cent_pos`` for depth reward ``abs(Δx - desired)``.
     bracelet_desired_insert_depth: float = 0.0
-    #: Soft gate on wrist radial error in **base Y–Z** (ellipse radii from N/S and E/W rim goals in env-local).
     bracelet_inside_opening_std: float = 0.15
 
     # Sparse task-success: wrist goal within ``bracelet_success_threshold`` (env-local, m).
@@ -118,7 +108,6 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     object_type = "deformable"
     #: Hide parent ``AIRECEnv`` red kinematic anchor cuboids on the rim (used for ``north_edge_pos`` when
     #: :attr:`deformable_bracelet_geom_rim_goals` is False; geometric mode uses ``goal_north/south`` for top/under wrist).
-    show_anchor_rim_cuboids: bool = False
 
     # reset config
     reset_object_position_noise = 0.00
@@ -375,6 +364,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
             ),
         }
     )
+
     bracelet_east: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/goal_east_marker",
         markers={
@@ -857,6 +847,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 r_angular_right_ee_thumb,
                 r_angular_left_ee_pinky,
                 r_wrist_center_distance,
+                r_stretch_distance,
             ) = compute_rewards(
                 self.reaching_object_goal_scale,
                 self.reaching_ee_object_scale,
@@ -893,8 +884,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 "reach_reward_right": r_right_ee_thumb_distance,
                 "reach_reward_left": r_left_ee_pinky_distance,
                 "wrist_center_distance_reward": r_wrist_center_distance,
-                "angular_reward_right": r_angular_right_ee_thumb,
-                "angular_reward_left": r_angular_left_ee_pinky,
+                "stretch_distance_reward": r_stretch_distance,
                 "fingers_inside_soft_gate": self.fingers_inside_soft_gate,
             }
 
@@ -1595,7 +1585,7 @@ def compute_rewards(
     thumb_inside_ellipse: torch.Tensor,
     pinky_inside_ellipse: torch.Tensor,
     wrist_inside_ellipse: torch.Tensor,
-    fingers_inside_soft_gate: torch.Tensor,
+    fingers_inside_soft_gate: torch.Tensor
 ):
     # reward weights
     depth_reward_scale = 0.0
@@ -1677,8 +1667,19 @@ def compute_rewards(
         * depth_pinky_reward_scale
         * ee_near_condition
     )
-    # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
-    rewards = r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_wrist_center_distance
 
-    return (rewards, r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_wrist_center_distance)
+    ######## rewards for stretch ########
+    stretch_reward_scale = 0.5
+    stretch_condition = (ee_near_condition)
+    r_stretch_distance = (
+        distance_reward(goal_stretch_euclidean_distance, std=0.05)
+        * stretch_reward_scale
+        * stretch_condition
+        * thumb_between_height_condition
+        * pinky_between_height_condition
+    )
+    # r_successed = success_reward(wrist_ee_distance, wrist_pos, top_pos, under_pos, minimal_distance)
+    rewards = r_right_ee_thumb_distance + r_left_ee_pinky_distance + r_depth_distance + r_depth_thumb_distance + r_depth_pinky_distance + r_angular_right_ee_thumb + r_angular_left_ee_pinky + r_wrist_center_distance + r_stretch_distance
+
+    return (rewards, r_right_ee_thumb_distance, r_left_ee_pinky_distance, r_depth_distance, r_depth_thumb_distance, r_depth_pinky_distance, r_angular_right_ee_thumb, r_angular_left_ee_pinky, r_wrist_center_distance, r_stretch_distance)
 
