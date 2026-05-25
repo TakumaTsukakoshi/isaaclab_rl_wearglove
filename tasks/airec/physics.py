@@ -161,12 +161,12 @@ object_rigid_props = sim_utils.RigidBodyPropertiesCfg(
 )
 
 deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
-    youngs_modulus=1.0e6,     #  8e7
-    poissons_ratio=0.47,      #  0.48
-    density=500.0,            #  300 kg/m^3
+    youngs_modulus=1.0e10,     #  8e7
+    poissons_ratio=0.42,      #  0.48
+    density=1000.0,            #  300 kg/m^3
     damping_scale=1.0,
-    elasticity_damping=0.04, #  0.012
-    dynamic_friction=0.9,     #  0.6
+    elasticity_damping=0.018, #  0.012
+    dynamic_friction=1.0,     #  0.6
 )
 
 deformable_glove_props = sim_utils.DeformableBodyMaterialCfg(

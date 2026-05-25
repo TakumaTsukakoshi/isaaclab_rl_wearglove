@@ -74,7 +74,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     physics_dt = 1 / 300  # coarse PhysX step; upgraded at runtime by reach_* bracelet curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
-    decimation = 30
+    decimation = 10
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2

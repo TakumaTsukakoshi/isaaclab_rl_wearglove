@@ -227,7 +227,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
                 collision_simplification_remeshing_resolution=12,
                 collision_simplification_target_triangle_count=0,
                 collision_simplification_force_conforming=True,
-                solver_position_iteration_count=19,
+                solver_position_iteration_count=24,
                 contact_offset=0.006,
                 rest_offset=0.003,
             ),
@@ -1481,6 +1481,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         # print(f"ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
         # print(f"goal_stretch_euclidean_distance: {self.goal_stretch_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}, ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
         # print(f"garment_right_ee_euclidean_distance: {self.garment_right_ee_euclidean_distance[0]}, garment_left_ee_euclidean_distance: {self.garment_left_ee_euclidean_distance[0]}, right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}, left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]}")
+        # print(f"wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
 
         # ------------------------------------------------------------------
@@ -1544,7 +1545,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             dist_from_south = finger_heights - self.goal_south_pos[env_ids, 2].unsqueeze(-1)
             dist_from_north = self.goal_north_pos[env_ids, 2].unsqueeze(-1) - finger_heights
             margin = torch.minimum(dist_from_south, dist_from_north)
-            self.per_finger_soft_inside[env_ids] = torch.sigmoid(margin / 0.02)
+            self.per_finger_soft_inside[env_ids] = torch.sigmoid(margin / 0.01)
             self.fingers_inside_soft_gate[env_ids] = self.per_finger_soft_inside[env_ids].mean(dim=-1)
         else:
             self.depth_distance[env_ids] = 0.0
@@ -1619,13 +1620,13 @@ def compute_rewards(
     left_ee_pinky_condition = (ee_near_condition) & pinky_between_height_condition 
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")
     r_right_ee_thumb_distance = (
-        distance_reward(right_ee_thumb_euclidean_distance, std=0.10) 
+        distance_reward(right_ee_thumb_euclidean_distance, std=0.15) 
         * reaching_right_ee_thumb_scale 
         * (right_ee_thumb_condition) 
         # * thumb_inside_ellipse # default 0.15
     )
     r_left_ee_pinky_distance = (
-        distance_reward(left_ee_pinky_euclidean_distance, std=0.05) 
+        distance_reward(left_ee_pinky_euclidean_distance, std=0.10) 
         * reaching_left_ee_pinky_scale 
         * (left_ee_pinky_condition) 
         # * pinky_inside_ellipse # default 0.10
@@ -1636,7 +1637,7 @@ def compute_rewards(
     wrist_center_condition = ee_near_condition 
     
     r_wrist_center_distance = (
-        distance_reward(wrist_center_euclidean_distance, std=0.14)
+        distance_reward(wrist_center_euclidean_distance, std=0.20)
         * reaching_wrist_center_scale 
         * wrist_center_condition
         * fingers_inside_soft_gate
