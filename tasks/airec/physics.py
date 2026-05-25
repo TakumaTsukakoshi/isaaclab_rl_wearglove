@@ -170,12 +170,12 @@ deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
 )
 
 deformable_glove_props = sim_utils.DeformableBodyMaterialCfg(
-    youngs_modulus=1.5e8,
-    poissons_ratio=0.45,
-    density=300.0,
+    youngs_modulus=5.0e7,
+    poissons_ratio=0.42,
+    density=1000.0,
     damping_scale=1.0,
-    elasticity_damping=0.02,
-    dynamic_friction=0.8,
+    elasticity_damping=0.05,
+    dynamic_friction=1.0,
 )
 
 robot_rigid_props = sim_utils.RigidBodyPropertiesCfg(
@@ -250,3 +250,33 @@ bracelet_sim_cfg = SimulationCfg(
     physics_material=robot_material,
     physx=physx_fast
 )
+
+
+def tune_physx_gpu_buffers_for_vec_env(physx: PhysxCfg, num_envs: int) -> None:
+    """Clamp PhysX GPU pool preallocation for large vectorized env counts.
+
+    CUDA error code 2 (out of memory) during ``getArticulationData`` / ``getRigidDynamicData``
+    often comes from oversized *global* PhysX buffers (e.g. ``gpu_collision_stack_size=2**30``)
+    combined with many deformable FEM instances — not from RL tensors alone.
+    """
+    if num_envs <= 512:
+        return
+
+    def _clamp(attr: str, cap: int) -> None:
+        if hasattr(physx, attr):
+            setattr(physx, attr, min(getattr(physx, attr), cap))
+
+    _clamp("gpu_found_lost_pairs_capacity", 2**22)
+    _clamp("gpu_found_lost_aggregate_pairs_capacity", 2**22)
+    _clamp("gpu_total_aggregate_pairs_capacity", 2**22)
+    _clamp("gpu_max_rigid_contact_count", 2**22)
+    _clamp("gpu_max_rigid_patch_count", 5 * 2**15)
+    _clamp("gpu_max_soft_body_contacts", 2**21)
+    _clamp("gpu_temp_buffer_capacity", 2**22)
+    _clamp("gpu_heap_capacity", 2**25)
+    _clamp("gpu_collision_stack_size", 2**26)
+
+    if num_envs > 1024:
+        _clamp("gpu_heap_capacity", 2**24)
+        _clamp("gpu_collision_stack_size", 2**25)
+        _clamp("gpu_max_soft_body_contacts", 2**20)

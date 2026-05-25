@@ -71,7 +71,7 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 300  # coarse PhysX step (Hz = 300); upgraded at runtime by reach_* bracelet curriculum
+    physics_dt = 1 / 300  # coarse PhysX step; upgraded at runtime by reach_* bracelet curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
     decimation = 30
@@ -131,7 +131,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         #     static_friction=1.0,
         #     dynamic_friction=1.0,
         # ),
-        physics_material=deformable_glove_props,
+        physics_material=deformable_bracelet_props,
             
         physx=PhysxCfg(
             solver_type=1,
@@ -169,7 +169,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = False
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=12, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=1024, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
@@ -1071,14 +1071,14 @@ class AIRECEnv(DirectRLEnv):
                 self.normalised_joint_pos,
                 self.normalised_joint_vel,
                 self.joint_pos_error,
-                self.right_ee_pos,
-                self.right_ee_rot,
-                # self.right_upper_ee_pos,
-                # self.right_upper_ee_rot,
-                self.left_ee_pos,
-                self.left_ee_rot,
-                # self.left_upper_ee_pos,
-                # self.left_upper_ee_rot,
+                # self.right_ee_pos,
+                # self.right_ee_rot,
+                self.right_upper_ee_pos,
+                self.right_upper_ee_rot,
+                # self.left_ee_pos,
+                # self.left_ee_rot,
+                self.left_upper_ee_pos,
+                self.left_upper_ee_rot,
                 # self.right_thumb_pos,
                 # self.right_thumb_rot,
                 # self.left_thumb_pos,

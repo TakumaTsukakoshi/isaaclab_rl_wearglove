@@ -98,18 +98,22 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     bracelet_inside_opening_std: float = 0.15
 
     # Sparse task-success: wrist goal within ``bracelet_success_threshold`` (env-local, m).
-    terminate_on_task_success: bool = False
+    terminate_on_task_success: bool = True
     bracelet_success_threshold: float = 0.01  # 1 cm
     task_success_bonus: float = 10000.0
 
     #: When cumulative episode success rate exceeds :attr:`adaptive_physics_success_threshold`, switch from
     #: coarse (:attr:`~tasks.airec.airec2_finger_deformable.AIRECEnvCfg.physics_dt` / decimation) to fine PhysX.
     #: RL control step stays ``1/10`` s in both cases.
-    adaptive_physics_on_success: bool = True
+    adaptive_physics_on_success: bool = False
     adaptive_physics_success_threshold: float = 0.5
     adaptive_physics_min_episodes: int = 20
     fine_physics_dt: float = 1 / 2000
     fine_decimation: int = 200
+
+    #: Rim / fingertip ``VisualizationMarkers`` (global ``/Visuals/*`` instancers). Off by default for
+    #: headless training: with many envs, ``visualize()`` drives Fabric point instancers and can OOM GPU.
+    show_task_markers: bool = False
 
     object_type = "deformable"
     #: Hide parent ``AIRECEnv`` red kinematic anchor cuboids on the rim (used for ``north_edge_pos`` when
@@ -149,57 +153,14 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     )
 
 
-    object_cfg: DeformableObjectCfg = DeformableObjectCfg(
-        prim_path="/World/envs/env_.*/Object",
-        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos_glove, rot=[1.0, 0.0, 0.0, 0.0]),
-        spawn=UsdFileCfg(
-            usd_path=object_usd_glove,
-            copy_from_source=True,
-            visible=True,
-            scale=(1.0, 1.3, 1.2),
-            # scale=(1.0, 1.5, 1.4),
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                collision_enabled=True,
-                # contact_offset/rest_offset are mainly controlled by deformable_props below for deformables.
-            ),
-            deformable_props=DeformableBodyPropertiesCfg(
-                deformable_enabled=True,
-                kinematic_enabled=False,
-                self_collision=False,
-                # Keep resolutions modest; increase if you need finer deformation.
-                # simulation_hexahedral_resolution=16,
-                # collision_simplification=True,
-                # collision_simplification_remeshing=True,
-                # collision_simplification_remeshing_resolution=8,
-                # collision_simplification_target_triangle_count=0,
-                # collision_simplification_force_conforming=True,
-                # solver_position_iteration_count=16,
-                simulation_hexahedral_resolution=16,
-                collision_simplification=True,
-                collision_simplification_remeshing=True,
-                collision_simplification_remeshing_resolution=4,
-                collision_simplification_target_triangle_count=0,
-                collision_simplification_force_conforming=True,
-                solver_position_iteration_count=4,
-                contact_offset=0.006,
-                rest_offset=0.003,
-            ),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-            diffuse_color=(0.0, 0.5, 0.3),
-            opacity=1.0,             
-        ),   
-        ),
-        debug_vis=False,
-    )
-
     # object_cfg: DeformableObjectCfg = DeformableObjectCfg(
     #     prim_path="/World/envs/env_.*/Object",
-    #     init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.5, 0.5, -0.5, -0.5]),
+    #     init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos_glove, rot=[1.0, 0.0, 0.0, 0.0]),
     #     spawn=UsdFileCfg(
-    #         usd_path=object_usd,
+    #         usd_path=object_usd_glove,
     #         copy_from_source=True,
     #         visible=True,
-    #         scale=(1.0, 1.0, 1.0),
+    #         scale=(1.0, 1.3, 1.2),
     #         # scale=(1.0, 1.5, 1.4),
     #         collision_props=sim_utils.CollisionPropertiesCfg(
     #             collision_enabled=True,
@@ -217,23 +178,66 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #             # collision_simplification_target_triangle_count=0,
     #             # collision_simplification_force_conforming=True,
     #             # solver_position_iteration_count=16,
-    #             simulation_hexahedral_resolution=4,
+    #             simulation_hexahedral_resolution=24,
     #             collision_simplification=True,
     #             collision_simplification_remeshing=True,
-    #             collision_simplification_remeshing_resolution=4,
+    #             collision_simplification_remeshing_resolution=12,
     #             collision_simplification_target_triangle_count=0,
     #             collision_simplification_force_conforming=True,
-    #             solver_position_iteration_count=4,
-    #             contact_offset=0.006,
-    #             rest_offset=0.003,
+    #             solver_position_iteration_count=16,
+    #             contact_offset=0.010,
+    #             rest_offset=0.004,
     #         ),
     #         visual_material=sim_utils.PreviewSurfaceCfg(
-    #         diffuse_color=(0.3, 0.3, 0.0),
+    #         diffuse_color=(0.0, 0.5, 0.3),
     #         opacity=1.0,             
     #     ),   
     #     ),
     #     debug_vis=False,
     # )
+
+    object_cfg: DeformableObjectCfg = DeformableObjectCfg(
+        prim_path="/World/envs/env_.*/Object",
+        init_state=DeformableObjectCfg.InitialStateCfg(pos=default_object_pos, rot=[0.5, 0.5, -0.5, -0.5]),
+        spawn=UsdFileCfg(
+            usd_path=object_usd,
+            copy_from_source=True,
+            visible=True,
+            scale=(1.0, 1.0, 1.0),
+            # scale=(1.0, 1.5, 1.4),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,
+                # contact_offset/rest_offset are mainly controlled by deformable_props below for deformables.
+            ),
+            deformable_props=DeformableBodyPropertiesCfg(
+                deformable_enabled=True,
+                kinematic_enabled=False,
+                self_collision=False,
+                # Keep resolutions modest; increase if you need finer deformation.
+                # simulation_hexahedral_resolution=16,
+                # collision_simplification=True,
+                # collision_simplification_remeshing=True,
+                # collision_simplification_remeshing_resolution=8,
+                # collision_simplification_target_triangle_count=0,
+                # collision_simplification_force_conforming=True,
+                # solver_position_iteration_count=16,
+                simulation_hexahedral_resolution=32,
+                collision_simplification=True,
+                collision_simplification_remeshing=True,
+                collision_simplification_remeshing_resolution=12,
+                collision_simplification_target_triangle_count=0,
+                collision_simplification_force_conforming=True,
+                solver_position_iteration_count=19,
+                contact_offset=0.006,
+                rest_offset=0.003,
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+            diffuse_color=(0.3, 0.3, 0.0),
+            opacity=1.0,             
+        ),   
+        ),
+        debug_vis=False,
+    )
     # Listens to the required transforms
     marker_cfg = FRAME_MARKER_CFG.copy()
     marker_cfg.markers["frame"].scale = (0.03, 0.03, 0.03)
@@ -481,6 +485,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             raise ValueError("ReachDeformableBraceletEnv expects use_glove=True (nodal rim features).")
         cfg.sim.dt = cfg.physics_dt
         cfg.sim.render_interval = cfg.decimation
+        # Headless / large vec-env: skip marker instancers (Fabric OOM on first visualize).
+        use_markers = bool(cfg.show_task_markers) and render_mode is not None and cfg.scene.num_envs <= 256
+        if bool(cfg.show_task_markers) and not use_markers:
+            print(
+                f"[ReachDeformableBraceletEnv] Disabling task markers "
+                f"(headless={render_mode is None}, num_envs={cfg.scene.num_envs})"
+            )
+        cfg.show_task_markers = use_markers
 
         super().__init__(cfg, render_mode, **kwargs)
 
@@ -650,7 +662,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         if self.cfg.object_type != "none":
             self._add_object_to_scene()
         # N/S/E/W/C markers: deformable glove uses nodal rim; rigid bracelet uses root pose + cfg offsets.
-        if self._use_glove or self.cfg.object_type == "rigid":
+        if self.cfg.show_task_markers and (self._use_glove or self.cfg.object_type == "rigid"):
             self.goal_north_markers = VisualizationMarkers(self.cfg.bracelet_north)
             self.goal_south_markers = VisualizationMarkers(self.cfg.bracelet_south)
             self.goal_east_markers = VisualizationMarkers(self.cfg.bracelet_east)
@@ -662,9 +674,12 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             self.goal_east_markers = None
             self.goal_west_markers = None
             self.goal_cent_markers = None
-        # Initialize visualization markers for thumb and pinky targets
-        self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
-        self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
+        if self.cfg.show_task_markers:
+            self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
+            self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
+        else:
+            self.thumb_target_markers = None
+            self.pinky_target_markers = None
         
 
         self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
@@ -1173,19 +1188,20 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             p, y, idx, largest=True, k_extreme=k_ext
         )
 
-        print("[World-axis NSEW rim labels (extreme-band → centroid → nearest vertex)]")
-        labels = (
-            ("N", self._frozen_geom_north_idx, north_local),
-            ("S", self._frozen_geom_south_idx, south_local),
-            ("E", self._frozen_geom_east_idx, east_local),
-            ("W", self._frozen_geom_west_idx, west_local),
-        )
-        for name, gidx, li in labels:
-            pos_w = p_w[li].detach().cpu().tolist()
-            pos_env = p[li].detach().cpu().tolist()
-            print(
-                f"  {name}: global_idx={gidx}, rim_local={li}, env_local={pos_env}, world={pos_w} (K={min(k_ext, int(idx.numel()))})"
+        if self.cfg.show_task_markers:
+            print("[World-axis NSEW rim labels (extreme-band → centroid → nearest vertex)]")
+            labels = (
+                ("N", self._frozen_geom_north_idx, north_local),
+                ("S", self._frozen_geom_south_idx, south_local),
+                ("E", self._frozen_geom_east_idx, east_local),
+                ("W", self._frozen_geom_west_idx, west_local),
             )
+            for name, gidx, li in labels:
+                pos_w = p_w[li].detach().cpu().tolist()
+                pos_env = p[li].detach().cpu().tolist()
+                print(
+                    f"  {name}: global_idx={gidx}, rim_local={li}, env_local={pos_env}, world={pos_w} (K={min(k_ext, int(idx.numel()))})"
+                )
 
     def _freeze_geom_rim_nsew_labels_from_rest(self) -> None:
         """Legacy: N/S/E/W from rim PCA extrema on the rest mesh (evaluated once at init)."""
@@ -1206,11 +1222,12 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self._frozen_geom_north_idx = int(idx[inorth].item())
         self._frozen_geom_south_idx = int(idx[isouth].item())
 
-        print("[PCA-axis NSEW rim labels]")
-        p_w = self.object.data.default_nodal_state_w[0, idx, :3].to(device=self.device, dtype=torch.float32)
-        for name, li in (("N", inorth), ("S", isouth), ("E", ie), ("W", iw)):
-            gidx = int(idx[li].item())
-            print(f"  {name}: global_idx={gidx}, rim_local={li}, world={p_w[li].detach().cpu().tolist()}")
+        if self.cfg.show_task_markers:
+            print("[PCA-axis NSEW rim labels]")
+            p_w = self.object.data.default_nodal_state_w[0, idx, :3].to(device=self.device, dtype=torch.float32)
+            for name, li in (("N", inorth), ("S", isouth), ("E", ie), ("W", iw)):
+                gidx = int(idx[li].item())
+                print(f"  {name}: global_idx={gidx}, rim_local={li}, world={p_w[li].detach().cpu().tolist()}")
 
     def _bracelet_geom_rim_goals_env_local(self, env_ids: torch.Tensor) -> None:
         """Env-local rim goals from current nodal positions (geometry), matching rigid reward conventions."""
@@ -1390,31 +1407,31 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         # Dynamic outward targets track live fingertips; depth / ellipse below use **env-local base** offsets from ``goal_cent``.
         self._update_goal_aperture_targets(env_ids)
 
-        # Visualize thumb and pinky targets (must index by env_ids: subset reset has |env_ids| < num_envs)
-        # self.thumb_target_markers.visualize(
-        #     self.thumb_target[env_ids] + self.scene.env_origins[env_ids],
-        #     self.identity_quat[env_ids],
-        # )
-        # self.pinky_target_markers.visualize(
-        #     self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
-        #     self.identity_quat[env_ids],
-        # )
-        # if self.goal_east_markers is not None:
-        #     self.goal_east_markers.visualize(
-        #         self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-        #     )
-        #     self.goal_west_markers.visualize(
-        #         self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-        #     )
-        #     self.goal_north_markers.visualize(
-        #         self.goal_north_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-        #     )
-        #     self.goal_south_markers.visualize(
-        #         self.goal_south_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-        #     )
-        #     self.goal_cent_markers.visualize(
-        #         self.goal_cent_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
-        #     )
+        if self.cfg.show_task_markers and self.thumb_target_markers is not None:
+            self.thumb_target_markers.visualize(
+                self.thumb_target[env_ids] + self.scene.env_origins[env_ids],
+                self.identity_quat[env_ids],
+            )
+            self.pinky_target_markers.visualize(
+                self.pinky_target[env_ids] + self.scene.env_origins[env_ids],
+                self.identity_quat[env_ids],
+            )
+        if self.goal_east_markers is not None:
+            self.goal_east_markers.visualize(
+                self.goal_east_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
+            self.goal_west_markers.visualize(
+                self.goal_west_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
+            self.goal_north_markers.visualize(
+                self.goal_north_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
+            self.goal_south_markers.visualize(
+                self.goal_south_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
+            self.goal_cent_markers.visualize(
+                self.goal_cent_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
+            )
         #     # print(f"goal_north_pos: {self.goal_north_pos[0]}, goal_south_pos: {self.goal_south_pos[0]}, goal_east_pos: {self.goal_east_pos[0]}, goal_west_pos: {self.goal_west_pos[0]}, goal_cent_pos: {self.goal_cent_pos[0]}")
 
         if self._use_glove or self.cfg.object_type == "rigid":
