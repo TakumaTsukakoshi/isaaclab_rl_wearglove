@@ -734,6 +734,8 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 self.wrist_center_euclidean_distance.unsqueeze(1),
                 # per finger soft inside (5,)
                 self.per_finger_soft_inside,
+                # euclidean distance (1,)
+                self.goal_stretch_euclidean_distance.unsqueeze(1),
 
             ),
             dim=-1,
@@ -1452,18 +1454,18 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.top_wrist_euclidean_distance[env_ids] = torch.norm(self.top_wrist_distance[env_ids], dim=1)
         self.under_wrist_euclidean_distance[env_ids] = torch.norm(self.under_wrist_distance[env_ids], dim=1)
         # print(f"east: {self.west_edge_pos[0]} thumb_goal_pos:{self.thumb_goal_pos[0]}")
-        self.right_ee_thumb_distance[env_ids] = self.right_ee_pos[env_ids] - self.thumb_target[env_ids]
+        self.right_ee_thumb_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.thumb_target[env_ids]
         # print(f"right_ee_pos: {self.right_ee_pos[0]} thumb_target: {self.thumb_target[0]}")
         self.right_ee_thumb_euclidean_distance[env_ids] = torch.norm(self.right_ee_thumb_distance[env_ids], dim=1)
         # print(f"right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
-        self.right_ee_thumb_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.thumb_goal_rot[env_ids]))
-        self.right_ee_thumb_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.thumb_goal_rot[env_ids])
+        self.right_ee_thumb_rotation[env_ids] = quat_mul(self.right_upper_ee_rot[env_ids], quat_conjugate(self.thumb_goal_rot[env_ids]))
+        self.right_ee_thumb_angular_distance[env_ids] = rotation_distance(self.right_upper_ee_rot[env_ids], self.thumb_goal_rot[env_ids])
         # print(f"right_ee_thumb_angular_distance: {self.right_ee_thumb_angular_distance[0]}")
         # self.left_ee_goal_distance[env_ids] = self.left_l_ee_pos[env_ids] - self.pinky_goal_pos[env_ids]
-        self.left_ee_pinky_distance[env_ids] = self.left_ee_pos[env_ids] - self.pinky_target[env_ids]
+        self.left_ee_pinky_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.pinky_target[env_ids]
         self.left_ee_pinky_euclidean_distance[env_ids] = torch.norm(self.left_ee_pinky_distance[env_ids], dim=1)
-        self.left_ee_pinky_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.pinky_goal_rot[env_ids]))
-        self.left_ee_pinky_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.pinky_goal_rot[env_ids])
+        self.left_ee_pinky_rotation[env_ids] = quat_mul(self.left_upper_ee_rot[env_ids], quat_conjugate(self.pinky_goal_rot[env_ids]))
+        self.left_ee_pinky_angular_distance[env_ids] = rotation_distance(self.left_upper_ee_rot[env_ids], self.pinky_goal_rot[env_ids])
         # print(f"left_ee_pinky_angular_distance: {self.left_ee_pinky_angular_distance[0]}")
         # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
         # shadow hand aperature
