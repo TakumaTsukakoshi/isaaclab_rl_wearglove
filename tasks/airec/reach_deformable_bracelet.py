@@ -216,7 +216,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
                 collision_simplification_remeshing_resolution=12,
                 collision_simplification_target_triangle_count=0,
                 collision_simplification_force_conforming=True,
-                solver_position_iteration_count=24,
+                solver_position_iteration_count=64,
                 contact_offset=0.006,
                 rest_offset=0.003,
             ),
@@ -1594,7 +1594,7 @@ def compute_rewards(
     depth_thumb_reward_scale = 0.0
     depth_pinky_reward_scale = 0.0
     # rewards thresholds
-    ee_distance_threshold = 0.3 # default 0.3
+    ee_distance_threshold = 0.25 # default 0.3
     right_ee_thumb_angular_threshold = 1.4
     left_ee_pinky_angular_threshold = 0.8
     ######## conditions for rewards ########
@@ -1671,7 +1671,7 @@ def compute_rewards(
     )
 
     ######## rewards for stretch ########
-    stretch_reward_scale = 0.5
+    stretch_reward_scale = 0.0
     stretch_condition = (ee_near_condition)
     r_stretch_distance = (
         distance_reward(goal_stretch_euclidean_distance, std=0.05)

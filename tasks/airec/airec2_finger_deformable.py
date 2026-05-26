@@ -71,7 +71,7 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 300  # coarse PhysX step; upgraded at runtime by reach_* bracelet curriculum
+    physics_dt = 1 / 500  # coarse PhysX step; upgraded at runtime by reach_* bracelet curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
     decimation = 10
@@ -156,7 +156,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             gpu_max_soft_body_contacts= 2**24, # default 2**20
             gpu_collision_stack_size=2**30,
             gpu_heap_capacity=2**26,
-            # gpu_max_num_partitions=1,
+            gpu_max_num_partitions=1,
             # gpu_temp_buffer_capacity=2**18, # default 2**20
             # gpu_max_soft_body_contacts= 2**18, # default 2**20 
             # gpu_collision_stack_size=2**26, # default 2**26
@@ -1758,7 +1758,7 @@ class AIRECEnv(DirectRLEnv):
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
         is_grasp_right = self.garment_right_ee_euclidean_distance > 0.50 # check
         is_grasp_left = self.garment_left_ee_euclidean_distance > 0.50   # check
-        too_far = self.ee_euclidean_distance > 1.0 # 0.40 20
+        too_far = self.ee_euclidean_distance > 0.30 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
         termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
         # termination = too_far | out_of_reach
