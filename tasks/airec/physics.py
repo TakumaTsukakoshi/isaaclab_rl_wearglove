@@ -160,13 +160,21 @@ object_rigid_props = sim_utils.RigidBodyPropertiesCfg(
     max_angular_velocity=MAX_ANGULAR_VELOCITY,
 )
 
+# deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
+#     youngs_modulus=5.0e8,     #  8e7
+#     poissons_ratio=0.3,      #  0.48
+#     density=1000.0,            #  300 kg/m^3
+#     damping_scale=1.0,
+#     elasticity_damping=0.012, #  0.012
+#     dynamic_friction=1.0,     #  0.6
+# )
 deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
-    youngs_modulus=5.0e8,     #  8e7
-    poissons_ratio=0.3,      #  0.48
-    density=1000.0,            #  300 kg/m^3
+    youngs_modulus=5.0e10,       # INCREASED: Makes it significantly stiffer
+    poissons_ratio=0.48,        # INCREASED: Simulates volume-preserving real rubber
+    density=1000.0,
     damping_scale=1.0,
-    elasticity_damping=0.012, #  0.012
-    dynamic_friction=1.0,     #  0.6
+    elasticity_damping=0.05,    # SLIGHTLY INCREASED: Prevents it from jittering/oscillating wildly due to the higher stiffness
+    dynamic_friction=1.0,
 )
 
 deformable_glove_props = sim_utils.DeformableBodyMaterialCfg(

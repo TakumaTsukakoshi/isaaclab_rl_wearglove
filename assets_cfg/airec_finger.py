@@ -603,6 +603,8 @@ AIREC_CFG = ArticulationCfg(
             },
             stiffness=default_left_arm_stiffness,
             damping=default_left_arm_damping,
+            # stiffness=high_left_arm_stiffness,
+            # damping=high_left_arm_damping,
             velocity_limit_sim={
                 "left_arm_joint_1": 2.617 * OVERRIDE_SCALE,
                 "left_arm_joint_2": 2.617 * OVERRIDE_SCALE,
@@ -638,6 +640,8 @@ AIREC_CFG = ArticulationCfg(
             },
             stiffness=default_right_arm_stiffness,
             damping=default_right_arm_damping,
+            # stiffness=high_right_arm_stiffness,
+            # damping=high_right_arm_damping,
             velocity_limit_sim={
                 "right_arm_joint_1": 2.617 * OVERRIDE_SCALE,
                 "right_arm_joint_2": 2.617 * OVERRIDE_SCALE,

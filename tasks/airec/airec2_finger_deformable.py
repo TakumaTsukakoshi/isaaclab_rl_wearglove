@@ -71,10 +71,10 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 500  # coarse PhysX step; upgraded at runtime by reach_* bracelet curriculum
+    physics_dt = 1 / 300  # coarse PhysX step; upgraded at runtime by reach_* bracelet curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
-    decimation = 10
+    decimation = 30
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -99,7 +99,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     minimal_distance = 0.02
     maximum_width = 0.148 ########## need changed from measurements
 
-    act_moving_average = 0.001
+    act_moving_average = 0.1
+
+    #: Print policy actions vs ``joint_pos_cmd`` vs measured ``joint_pos`` (see ``_debug_print_joint_cmd_vs_actual``).
+    debug_joint_cmd_vs_actual: bool = False
+    debug_joint_print_env_id: int = 0
+    debug_joint_print_interval: int = 10
     minimal_angular = 10.0 # degree
     minimal_dense = 0.02 # added for dense reward 10/20
     reaching_object_goal_scale = 10.0
@@ -629,6 +634,10 @@ class AIRECEnv(DirectRLEnv):
         self.joint_pos_error = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
+
+        #: Previous sample for ``_debug_print_joint_cmd_vs_actual`` (Δq_cmd / Δq_act direction).
+        self._joint_debug_prev_cmd: torch.Tensor | None = None
+        self._joint_debug_prev_act: torch.Tensor | None = None
         
         self.object_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.normalised_forces = torch.zeros((self.num_envs, 2), device=self.device)
@@ -1002,10 +1011,73 @@ class AIRECEnv(DirectRLEnv):
             torch.zeros((self.num_envs, len(self.actuated_dof_indices)), device=self.device),
             joint_ids=self.actuated_dof_indices
         )
-        # self.robot.set_joint_position_target(
-        #     self.joint_pos_cmd[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
-        # )
-        
+        self.robot.set_joint_position_target(
+            self.joint_pos_cmd[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
+        )
+
+    @staticmethod
+    def _joint_dir_label(value: float, eps: float = 1e-4) -> str:
+        """Sign of angle (rad): ``+`` / ``-`` / ``0`` relative to joint zero."""
+        if abs(value) < eps:
+            return "0"
+        return "+" if value > 0.0 else "-"
+
+    @staticmethod
+    def _joint_delta_dir_label(delta: float, eps: float = 1e-5) -> str:
+        """Step-to-step change direction: ``↑`` increasing, ``↓`` decreasing, ``·`` flat."""
+        if abs(delta) < eps:
+            return "·"
+        return "↑" if delta > 0.0 else "↓"
+
+    def _debug_print_joint_cmd_vs_actual(self) -> None:
+        """Stdout: policy action, ``q_cmd``, ``q_act``, ``q_vel``, signs and step deltas."""
+        if not getattr(self.cfg, "debug_joint_cmd_vs_actual", False):
+            return
+        interval = max(1, int(getattr(self.cfg, "debug_joint_print_interval", 10)))
+        step = int(self.common_step_counter)
+        if step % interval != 0:
+            return
+        e = int(getattr(self.cfg, "debug_joint_print_env_id", 0))
+        names = [self.robot.joint_names[i] for i in self.actuated_dof_indices]
+        q_cmd_t = self.joint_pos_cmd[e, self.actuated_dof_indices].detach().cpu()
+        q_act_t = self.robot.data.joint_pos[e, self.actuated_dof_indices].detach().cpu()
+        q_vel_t = self.robot.data.joint_vel[e, self.actuated_dof_indices].detach().cpu()
+        raw_action = self.actions[e].detach().cpu().tolist()
+        q_cmd = q_cmd_t.tolist()
+        q_act = q_act_t.tolist()
+        q_vel = q_vel_t.tolist()
+        q_err = (q_cmd_t - q_act_t).tolist()
+
+        if self._joint_debug_prev_cmd is None:
+            self._joint_debug_prev_cmd = q_cmd_t.clone()
+            self._joint_debug_prev_act = q_act_t.clone()
+        d_cmd = (q_cmd_t - self._joint_debug_prev_cmd).tolist()
+        d_act = (q_act_t - self._joint_debug_prev_act).tolist()
+        self._joint_debug_prev_cmd = q_cmd_t.clone()
+        self._joint_debug_prev_act = q_act_t.clone()
+
+        print(
+            f"\n[joint debug] common_step={step} env={e}"
+        )
+        print(
+            "  dir: sign of value (+/- joint axis).  Δ: change since last print (↑ inc / ↓ dec)."
+        )
+        print(
+            "  cmd_dir=q_cmd sign | act_dir=q_act sign | vel_dir=q_vel sign | "
+            "Δcmd | Δact | match(cmd_dir,vel_dir)"
+        )
+        for j, name in enumerate(names):
+            cmd_dir = self._joint_dir_label(q_cmd[j])
+            act_dir = self._joint_dir_label(q_act[j])
+            vel_dir = self._joint_dir_label(q_vel[j])
+            vel_matches_cmd = "Y" if cmd_dir == vel_dir or cmd_dir == "0" or vel_dir == "0" else "N"
+            print(
+                f"  {name:32s}  action={raw_action[j]:+7.4f}  "
+                f"q_cmd={q_cmd[j]:+8.4f}  q_act={q_act[j]:+8.4f}  q_vel={q_vel[j]:+8.4f}  err={q_err[j]:+8.4f}  "
+                f"cmd_dir={cmd_dir} act_dir={act_dir} vel_dir={vel_dir}  "
+                f"Δcmd={self._joint_delta_dir_label(d_cmd[j])} Δact={self._joint_delta_dir_label(d_act[j])}  "
+                f"vel~cmd={vel_matches_cmd}"
+            )
 
     def scale_smooth_action(self, action):
         self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
@@ -1756,8 +1828,8 @@ class AIRECEnv(DirectRLEnv):
         # no termination at the moment
         # is_grasp_right = self.garment_right_ee_euclidean_distance > 0.045 # check
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.50 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.50   # check
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.30 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.30   # check
         too_far = self.ee_euclidean_distance > 0.30 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
         termination = out_of_reach | too_far | is_grasp_right | is_grasp_left

@@ -105,6 +105,10 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #: headless training: with many envs, ``visualize()`` drives Fabric point instancers and can OOM GPU.
     show_task_markers: bool = False
 
+    #: Print policy action vs ``joint_pos_cmd`` vs sim ``joint_pos`` every ``debug_joint_print_interval`` steps.
+    debug_joint_cmd_vs_actual: bool = False
+    debug_joint_print_interval: int = 10
+
     object_type = "deformable"
     #: Hide parent ``AIRECEnv`` red kinematic anchor cuboids on the rim (used for ``north_edge_pos`` when
     #: :attr:`deformable_bracelet_geom_rim_goals` is False; geometric mode uses ``goal_north/south`` for top/under wrist).
@@ -924,6 +928,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             self.extras["log"].update(term_log)
 
         self.extras["counters"] = {}
+        self._debug_print_joint_cmd_vs_actual()
         return rewards
     
     def _normalize_env_ids(self, env_ids):
