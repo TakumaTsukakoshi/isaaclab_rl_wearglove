@@ -220,7 +220,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
                 collision_simplification_remeshing_resolution=12,
                 collision_simplification_target_triangle_count=0,
                 collision_simplification_force_conforming=True,
-                solver_position_iteration_count=64,
+                solver_position_iteration_count=32,
                 contact_offset=0.006,
                 rest_offset=0.003,
             ),
@@ -738,8 +738,6 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 self.wrist_center_euclidean_distance.unsqueeze(1),
                 # per finger soft inside (5,)
                 self.per_finger_soft_inside,
-                # euclidean distance (1,)
-                self.goal_stretch_euclidean_distance.unsqueeze(1),
 
             ),
             dim=-1,
