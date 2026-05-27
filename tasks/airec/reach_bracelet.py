@@ -81,7 +81,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     reset_object_position_noise = 0.00
     #: Bracelet keeps ``object_cfg.init_state.rot`` on every reset (only position noise applies).
     randomize_object_rotation: bool = False
-    reset_goal_position_noise = 0.01  # scale factor for -1 to 1 m
+    reset_goal_position_noise = 1.0  # scale factor for -1 to 1 m
     default_goal_pos = [0.5, 0.5, 0.4]
     default_thumb_goal_pos = [0.70, -0.050, 1.07]
     default_pinky_goal_pos = [0.70, 0.050, 1.07]
@@ -941,88 +941,93 @@ class ReachBraceletEnv(AIRECEnv):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
-    # def _reset_target_pose(self, env_ids):
-    #     # Make sure this is already on the right device once
-    #     default_state = self.hand.data.default_root_state.clone()[env_ids]
-
-    #     pos_noise = sample_uniform(-0.02, 0.02, (len(env_ids), 3), device=self.device)
-
-    #     init_pos = default_state[0, 0:3].unsqueeze(0).repeat(len(env_ids), 1)
-      
-    #     default_state[:, 0:3] = (
-    #         init_pos
-    #         + pos_noise * self.cfg.reset_goal_position_noise
-    #         + self.scene.env_origins[env_ids]
-    #     )
-
-    #     init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
-
-    #     # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
-    #     B = int(len(env_ids))
-    #     # pitch_rad = sample_uniform(
-    #     #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-    #     #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-    #     #     (B,),
-    #     #     device=self.device,
-    #     # )
-    #     yaw_rad = sample_uniform(
-    #         torch.deg2rad(torch.tensor(-10.0, device=self.device, dtype=torch.float32)),
-    #         torch.deg2rad(torch.tensor(10.0, device=self.device, dtype=torch.float32)),
-    #         (B,),
-    #         device=self.device,
-    #     )
-    #     zero = torch.zeros_like(yaw_rad)
-    #     q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
-    #     # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
-    #     # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
-    #     default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
-
-    #     default_state[:, 7:] = 0.0
-
-    #     joint_pos = self.hand.data.default_joint_pos[env_ids]
-    #     joint_vel = torch.zeros_like(joint_pos)
-
-    #     self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
-    #     self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-    #     self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-    #     # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
-    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
-    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
-    #     self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
-    
     def _reset_target_pose(self, env_ids):
-        # Default root state for selected envs
         default_state = self.hand.data.default_root_state.clone()[env_ids]
 
-        # No randomization for position
+        num_envs = len(env_ids)
+
+        # x, y: ±0.02 m, z: ±0.01 m
+        pos_noise = torch.empty((num_envs, 3), device=self.device)
+        pos_noise[:, 0] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # x
+        pos_noise[:, 1] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # y
+        pos_noise[:, 2] = sample_uniform(-0.01, 0.01, (num_envs,), device=self.device)  # z
+
+        init_pos = default_state[0, 0:3].unsqueeze(0).repeat(num_envs, 1)
+
         default_state[:, 0:3] = (
-            self.hand.data.default_root_state[env_ids, 0:3]
+            init_pos
+            + pos_noise
             + self.scene.env_origins[env_ids]
         )
 
-        # No randomization for rotation
-        default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+        init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
 
-        # Reset root velocity
+        # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
+        B = int(len(env_ids))
+        # pitch_rad = sample_uniform(
+        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+        #     (B,),
+        #     device=self.device,
+        # )
+        yaw_rad = sample_uniform(
+            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+            (B,),
+            device=self.device,
+        )
+        zero = torch.zeros_like(yaw_rad)
+        q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
+        # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
+        # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
+        default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
+
         default_state[:, 7:] = 0.0
 
-        # Reset joints
         joint_pos = self.hand.data.default_joint_pos[env_ids]
         joint_vel = torch.zeros_like(joint_pos)
 
         self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
         self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-
-        # Cache root pose actually written
-        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
-            dtype=self.goal_hand_root_pos.dtype
-        )
-        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
-            dtype=self.goal_hand_root_quat.dtype
-        )
-
+        # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
+        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
+        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
         self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+    
+    # def _reset_target_pose(self, env_ids):
+    #     # Default root state for selected envs
+    #     default_state = self.hand.data.default_root_state.clone()[env_ids]
+
+    #     # No randomization for position
+    #     default_state[:, 0:3] = (
+    #         self.hand.data.default_root_state[env_ids, 0:3]
+    #         + self.scene.env_origins[env_ids]
+    #     )
+
+    #     # No randomization for rotation
+    #     default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+
+    #     # Reset root velocity
+    #     default_state[:, 7:] = 0.0
+
+    #     # Reset joints
+    #     joint_pos = self.hand.data.default_joint_pos[env_ids]
+    #     joint_vel = torch.zeros_like(joint_pos)
+
+    #     self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
+    #     self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+    #     self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+
+    #     # Cache root pose actually written
+    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
+    #         dtype=self.goal_hand_root_pos.dtype
+    #     )
+    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
+    #         dtype=self.goal_hand_root_quat.dtype
+    #     )
+
+    #     self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
     
     def _update_goal_aperture_targets(self, env_ids, thumb_offset=0.03, pinky_offset=0.02) -> None:
         """Recompute outward reach targets and stretch scalars from **current** ShadowHand geometry.
