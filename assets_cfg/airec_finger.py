@@ -9,6 +9,7 @@ Reference: /home/simon/IsaacLab/Models/AIREC/dry-airec.usd
 import isaaclab.sim as sim_utils
 
 from isaaclab.actuators import ImplicitActuatorCfg
+from tasks.airec.physics import contact_props, robot_material
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 import os
@@ -206,7 +207,7 @@ rigid_body_props = sim_utils.RigidBodyPropertiesCfg(
             angular_damping=0.0,
             max_linear_velocity=1000.0,
             max_angular_velocity=1000.0,
-            max_depenetration_velocity=1.0
+            max_depenetration_velocity=1.0,
         )
 
 default_left_arm_stiffness = {"left_arm_joint_1": 300, 
@@ -225,6 +226,39 @@ default_left_arm_damping = {"left_arm_joint_1": 30,
                     "left_arm_joint_5": 1,
                     "left_arm_joint_6": 1,
                     "left_arm_joint_7": 1
+                    }
+
+low_left_arm_stiffness = {"left_arm_joint_1": 100, 
+                    "left_arm_joint_2": 100,
+                    "left_arm_joint_3": 50,
+                    "left_arm_joint_4": 50,
+                    "left_arm_joint_5": 5,
+                    "left_arm_joint_6": 5,
+                    "left_arm_joint_7": 5
+                    }
+low_left_arm_damping = {"left_arm_joint_1": 10, 
+                    "left_arm_joint_2": 10,
+                    "left_arm_joint_3": 5,
+                    "left_arm_joint_4": 5,
+                    "left_arm_joint_5": 1,
+                    "left_arm_joint_6": 1,
+                    "left_arm_joint_7": 1
+                    }
+low_right_arm_stiffness = {"right_arm_joint_1": 100, 
+                    "right_arm_joint_2": 100,
+                    "right_arm_joint_3": 50,
+                    "right_arm_joint_4": 50,
+                    "right_arm_joint_5": 5,
+                    "right_arm_joint_6": 5,
+                    "right_arm_joint_7": 5
+                    }
+low_right_arm_damping = {"right_arm_joint_1": 10, 
+                    "right_arm_joint_2": 10,
+                    "right_arm_joint_3": 5,
+                    "right_arm_joint_4": 5,
+                    "right_arm_joint_5": 1,
+                    "right_arm_joint_6": 1,
+                    "right_arm_joint_7": 1
                     }
 default_right_arm_stiffness = {"right_arm_joint_1": 300, 
                     "right_arm_joint_2": 300,
@@ -362,7 +396,7 @@ AIREC_CFG = ArticulationCfg(
     #     "left_hand_thumb_joint_3": radians(5),
     #     "left_hand_thumb_joint_4": radians(0),
     #     "left_hand_first_finger_joint_1": radians(89),
-    #     "left_hand_first_finger_joint_2": radians(0),
+    #     "left_hand_first_finger_joint_2": radians(40),
     #     "left_hand_second_finger_joint_1": radians(89),
     #     "left_hand_second_finger_joint_2": radians(89),
     #     # "left_hand_second_finger_joint_1": radians(89),
@@ -379,7 +413,7 @@ AIREC_CFG = ArticulationCfg(
     #     "right_hand_thumb_joint_3": radians(5),
     #     "right_hand_thumb_joint_4": radians(0),
     #     "right_hand_first_finger_joint_1": radians(89),
-    #     "right_hand_first_finger_joint_2": radians(0),
+    #     "right_hand_first_finger_joint_2": radians(40),
     #     "right_hand_second_finger_joint_1": radians(89),
     #     "right_hand_second_finger_joint_2": radians(89),
     #     # "right_hand_second_finger_joint_1": radians(89),
@@ -460,7 +494,7 @@ AIREC_CFG = ArticulationCfg(
     #     },
     # ),
     ###########################################################################
-    # NOTE: for reach deformable bracelet task
+    #NOTE: for reach deformable bracelet task
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
         joint_pos={
@@ -475,9 +509,9 @@ AIREC_CFG = ArticulationCfg(
         # "left_arm_joint_2": radians(-14),
         # "left_arm_joint_2": radians(-20), default
         "left_arm_joint_2": radians(-11),
-        "left_arm_joint_3": radians(-14),
+        "left_arm_joint_3": radians(-9),
         # "left_arm_joint_4": radians(100),
-        "left_arm_joint_4": radians(105),
+        "left_arm_joint_4": radians(101),
         "left_arm_joint_5": radians(26),
         # "left_arm_joint_6": radians(45),
         "left_arm_joint_6": radians(65),
@@ -487,9 +521,9 @@ AIREC_CFG = ArticulationCfg(
         # "right_arm_joint_2": radians(-14),
         # "right_arm_joint_2": radians(-20),default
         "right_arm_joint_2": radians(-11),
-        "right_arm_joint_3": radians(-14),
+        "right_arm_joint_3": radians(-9),
         # "right_arm_joint_4": radians(100),
-        "right_arm_joint_4": radians(105),
+        "right_arm_joint_4": radians(101),
         "right_arm_joint_5": radians(26),
         # "right_arm_joint_6": radians(45),
         "right_arm_joint_6": radians(65),
@@ -603,6 +637,8 @@ AIREC_CFG = ArticulationCfg(
             },
             stiffness=default_left_arm_stiffness,
             damping=default_left_arm_damping,
+            # stiffness=low_left_arm_stiffness,
+            # damping=low_left_arm_damping,
             # stiffness=high_left_arm_stiffness,
             # damping=high_left_arm_damping,
             velocity_limit_sim={
@@ -640,6 +676,8 @@ AIREC_CFG = ArticulationCfg(
             },
             stiffness=default_right_arm_stiffness,
             damping=default_right_arm_damping,
+            # stiffness=low_right_arm_stiffness,
+            # damping=low_right_arm_damping,
             # stiffness=high_right_arm_stiffness,
             # damping=high_right_arm_damping,
             velocity_limit_sim={
@@ -671,8 +709,8 @@ AIREC_CFG = ArticulationCfg(
             ],
             stiffness={".*": 350.0},
             damping={".*": 170.0},
-            # stiffness={".*": 1000.0},
-            # damping={".*": 350.0},
+            # stiffness={".*": 100.0},
+            # damping={".*": 35.0},
         ),
 
         # ------------
@@ -693,8 +731,8 @@ AIREC_CFG = ArticulationCfg(
             ],
             stiffness={".*": 350.0},
             damping={".*": 170.0},
-            # stiffness={".*": 1000.0},
-            # damping={".*": 350.0},
+            # stiffness={".*": 100.0},
+            # damping={".*": 35.0},
         ),
     },
 )

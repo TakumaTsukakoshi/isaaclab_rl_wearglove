@@ -56,7 +56,7 @@ from assets_cfg.shadow_hand import SHADOW_HAND_CFG
 from pxr import Sdf, Usd, UsdPhysics, Sdf
 from isaaclab.sim import SimulationContext
 import re
-from tasks.airec.physics import deformable_bracelet_props, deformable_glove_props
+from tasks.airec.physics import deformable_bracelet_props, deformable_glove_props, robot_material
 
 def ensure_xform_prim(prim_path: str) -> bool:
     sim = SimulationContext.instance()
@@ -71,10 +71,10 @@ def ensure_xform_prim(prim_path: str) -> bool:
 class AIRECEnvCfg(DirectRLEnvCfg):
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 300  # coarse PhysX step; upgraded at runtime by reach_* bracelet curriculum
+    physics_dt = 1 / 300  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
 
-    # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
-    decimation = 30
+    # number of physics step per control step (RL step_dt = physics_dt * decimation ≈ 0.05 s)
+    decimation =30
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -93,7 +93,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # reset config
     reset_object_position_noise = 0.01
     #: If False, rigid / articulated task objects keep ``default_root_state`` orientation on reset (no ``randomize_rotation``).
-    randomize_object_rotation: bool = True
+    randomize_object_rotation: bool = False
     # lift stuff
     minimal_width = 0.02
     minimal_distance = 0.02
@@ -122,6 +122,23 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     default_goal_euclidean_distance = 0.19
 
+    #: Deformable glove long-axis hint (world). Which end is the cuff is chosen by larger rim radius, not sign of this vector.
+    mouth_axis_hint: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    mouth_end_slice_ratio: float = 0.1
+    #: Keep only vertices within this fraction of the entry-slice thickness (near the opening plane).
+    mouth_entry_plane_ratio: float = 0.5
+    #: Outer ring on the opening: keep vertices with radius >= this quantile of ``r`` on the entry patch.
+    mouth_ring_quantile: float = 0.65
+    #: Cuff end-slice: ``env_axis`` (recommended), ``toward_point``, ``away_from_point``, ``larger_radius``, ``smaller_radius``.
+    mouth_opening_end_mode: str = "away_from_point"
+    #: Env-local axis; opening is the end slice with larger (or smaller if ``mouth_opening_env_axis_pick_positive`` is False) mean projection.
+    mouth_opening_env_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    mouth_opening_env_axis_pick_positive: bool = True
+    mouth_opening_toward_env_point: tuple[float, float, float] | None = (0.14, 0.0, 0.84)
+    mouth_world_axis_extreme_k: int = 8
+    deformable_bracelet_geom_north_max_z: bool = True
+    deformable_bracelet_geom_east_max_y: bool = True
+
     # Task-space / Cartesian control (``airec2_finger_taskspace``, ``wear_finger_taskspace``; joint-space ignores these).
     task_space_pos_min: tuple[float, float, float] = (-0.55, -0.55, 0.35)
     task_space_pos_max: tuple[float, float, float] = (0.55, 0.55, 1.45)
@@ -136,7 +153,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         #     static_friction=1.0,
         #     dynamic_friction=1.0,
         # ),
-        physics_material=deformable_bracelet_props,
+        physics_material=deformable_glove_props,
             
         physx=PhysxCfg(
             solver_type=1,
@@ -148,18 +165,22 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             bounce_threshold_velocity=0.2,
 
             min_position_iteration_count=4,
-            max_position_iteration_count=32,
+            # max_position_iteration_count=32, # deformable bracelet
+            max_position_iteration_count=32, # deformable glove
             max_velocity_iteration_count=1,
 
             ### GPU Buffer Management: 
-            gpu_total_aggregate_pairs_capacity=2**25,
+            # gpu_total_aggregate_pairs_capacity=2**25,
+            gpu_total_aggregate_pairs_capacity=2**26,
             gpu_found_lost_aggregate_pairs_capacity=2**25,
             gpu_found_lost_pairs_capacity=2**27,
             gpu_max_rigid_contact_count=2**23, # default 2**23
             gpu_max_rigid_patch_count=2**23, #23, default 5 * 2 ** 15. # change 2**20 to default 1119
             gpu_temp_buffer_capacity=2**20, # default 2**20
-            gpu_max_soft_body_contacts= 2**24, # default 2**20
-            gpu_collision_stack_size=2**30,
+            gpu_max_soft_body_contacts= 2**25, # default 2**20
+            # gpu_max_soft_body_contacts= 2**24, # default 2**20
+            # gpu_collision_stack_size=2**30,
+            gpu_collision_stack_size=2**31,
             gpu_heap_capacity=2**26,
             gpu_max_num_partitions=1,
             # gpu_temp_buffer_capacity=2**18, # default 2**20
@@ -174,7 +195,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = False
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=1200, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=512, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
@@ -552,7 +573,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     object_type = "deformable"  # "none" (no scene object) | "rigid" | "deformable" — override in task cfgs (e.g. WearEnvCfg)
     #: If True, spawn visible red cuboids at ``Visuals/Anchor{East,West,North,South,Center}/Geom`` (rim kinematic bodies).
     #: Set False for rigid tasks (e.g. bracelet) to hide them while keeping physics anchors.
-    show_anchor_rim_cuboids: bool = True
+    show_anchor_rim_cuboids: bool = False
     binary_tactile = False
     OPEN_IS_UPPER = True  # True: 上限=開, 下限=閉 / False: 上限=閉, 下限=開
 
@@ -585,6 +606,9 @@ class AIRECEnv(DirectRLEnv):
         # create auxiliary variables for computing applied action, observations and rewards
         self.robot_dof_lower_limits = self.robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self.robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
+        # Hard USD/PhysX limits (used to clamp q_cmd after EMA; soft limits are narrower for action scaling).
+        self.robot_hard_dof_lower_limits = self.robot.data.joint_pos_limits[0, :, 0].to(device=self.device)
+        self.robot_hard_dof_upper_limits = self.robot.data.joint_pos_limits[0, :, 1].to(device=self.device)
         self.robot_joint_vel_limits = self.robot.data.joint_vel_limits[0, :].to(device=self.device)
 
         self.joint_pos_cmd = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
@@ -935,12 +959,44 @@ class AIRECEnv(DirectRLEnv):
         #     self.wholebody_contact_sensor = ContactSensor(self.cfg.wholebody_contact_cfg)
         #     self.scene.sensors["wholebody_contact_sensor"] = self.wholebody_contact_sensor
 
+    def _actuated_joint_limit_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Hard joint limits for policy-actuated DOFs (USD / PhysX ``joint_pos_limits``)."""
+        idx = self.actuated_dof_indices
+        return self.robot_hard_dof_lower_limits[idx], self.robot_hard_dof_upper_limits[idx]
+
+    def _clamp_actuated_joint_pos_cmd_inplace(self) -> None:
+        """Clamp ``joint_pos_cmd`` for actuated DOFs to hard joint limits."""
+        lower, upper = self._actuated_joint_limit_tensors()
+        sl = self.actuated_dof_indices
+        self.joint_pos_cmd[:, sl] = torch.clamp(self.joint_pos_cmd[:, sl], lower, upper)
+
+    def _update_actuated_joint_pos_cmd_from_actions(self) -> None:
+        """Map policy actions → joint targets with EMA, once per RL control step.
+
+        EMA must not run inside :meth:`_apply_action` (called ``decimation`` times per RL step);
+        otherwise ``prev_joint_pos_cmd`` integrates ~30× per policy output and ``q_cmd`` blows up.
+        """
+        sl = self.actuated_dof_indices
+        lower_soft = self.robot_dof_lower_limits[sl]
+        upper_soft = self.robot_dof_upper_limits[sl]
+        lower_hard, upper_hard = self._actuated_joint_limit_tensors()
+        ma = float(self.cfg.act_moving_average)
+
+        q_pred = scale(self.actions, lower_soft, upper_soft)
+        prev_safe = torch.clamp(self.prev_joint_pos_cmd[:, sl], lower_hard, upper_hard)
+        q_cmd = ma * q_pred + (1.0 - ma) * prev_safe
+        q_cmd = torch.clamp(q_cmd, lower_hard, upper_hard)
+
+        self.joint_pos_cmd[:, sl] = q_cmd
+        self.prev_joint_pos_cmd[:, sl] = q_cmd
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         Store actions from policy in a class variable
         """
         self.last_action = self.joint_pos_cmd[:, self.actuated_dof_indices]
         self.actions = actions.clone()
+        self._update_actuated_joint_pos_cmd_from_actions()
 
     # def _apply_action(self) -> None:
     #     """
@@ -979,23 +1035,11 @@ class AIRECEnv(DirectRLEnv):
     def _apply_action(self) -> None:
         """
         Apply actions to the robot. Called multiple times per RL step for decimation.
-        """
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-            self.actions,
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = (
-            self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
-            + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-            self.joint_pos_cmd[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
 
-        self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
+        Joint targets are computed once in :meth:`_pre_physics_step` (EMA + clamp). This method only
+        re-sends the held ``joint_pos_cmd`` to the articulation each physics substep.
+        """
+        self._clamp_actuated_joint_pos_cmd_inplace()
 
         # Keep fixed 2nd and 3rd finger joints at their default positions with zero velocity
         if self._fixed_joint_indices:
@@ -1080,37 +1124,25 @@ class AIRECEnv(DirectRLEnv):
             )
 
     def scale_smooth_action(self, action):
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-            action,
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = (
-            self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
-            + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-            self.joint_pos_cmd[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
-
-        return self.joint_pos_cmd[:, self.actuated_dof_indices] # need to modify index!!!!!!!!!!!!!!!!!!!
+        saved_actions = self.actions
+        self.actions = action
+        self._update_actuated_joint_pos_cmd_from_actions()
+        self.actions = saved_actions
+        return self.joint_pos_cmd[:, self.actuated_dof_indices]
 
     def scale_action(self, action):
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-            action,
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
+        sl = self.actuated_dof_indices
+        lower_hard, upper_hard = self._actuated_joint_limit_tensors()
+        self.joint_pos_cmd[:, sl] = torch.clamp(
+            scale(
+                action,
+                self.robot_dof_lower_limits[sl],
+                self.robot_dof_upper_limits[sl],
+            ),
+            lower_hard,
+            upper_hard,
         )
-
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-            self.joint_pos_cmd[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        return self.joint_pos_cmd[:, self.actuated_dof_indices]
+        return self.joint_pos_cmd[:, sl]
     
     def get_observations(self):
         # public method
@@ -1273,10 +1305,8 @@ class AIRECEnv(DirectRLEnv):
             return
       
         if self.cfg.object_type == "deformable":
-            self.anchor_idx = self._choose_mouth_nodes_4dirs(axis_hint=[1.0, 0.0, 0.0])
+            self.anchor_idx = self._choose_mouth_nodes_4dirs_from_cfg()
             self.prev_anchor_idx = self.anchor_idx
-            if self.anchor_idx is None:
-                self.anchor_idx = self._choose_mouth_nodes_4dirs()
         elif self.cfg.object_type == "rigid":
             # Rigid tasks drive anchor prims from the object's root pose (see ``_set_anchor_state``).
             self.anchor_idx = {"north": 0, "south": 0, "east": 0, "west": 0}
@@ -1376,6 +1406,172 @@ class AIRECEnv(DirectRLEnv):
 
     def _reset_target_pose(self, env_ids):
         pass
+
+    @staticmethod
+    def _pick_representative_vertex_from_extreme_band(
+        p: torch.Tensor,
+        values: torch.Tensor,
+        global_idx: torch.Tensor,
+        largest: bool,
+        k_extreme: int,
+    ) -> tuple[int, int]:
+        n = int(values.numel())
+        k = min(int(k_extreme), n)
+        if k <= 0:
+            return 0, int(global_idx[0].item())
+        if largest:
+            extreme_local = torch.topk(values, k=k, largest=True).indices
+        else:
+            extreme_local = torch.topk(values, k=k, largest=False).indices
+        centroid = p[extreme_local].mean(dim=0)
+        rep_local = int(torch.argmin(torch.norm(p - centroid.unsqueeze(0), dim=-1)).item())
+        return rep_local, int(global_idx[rep_local].item())
+
+    def _geom_world_axis_rim_extrema(
+        self, p: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Rim-local indices (east, west, north, south) from env Y/Z per :attr:`deformable_bracelet_geom_*` toggles."""
+        north_max_z = bool(getattr(self.cfg, "deformable_bracelet_geom_north_max_z", False))
+        east_max_y = bool(getattr(self.cfg, "deformable_bracelet_geom_east_max_y", True))
+        if p.dim() == 2:
+            ie = torch.argmax(p[:, 1], dim=0) if east_max_y else torch.argmin(p[:, 1], dim=0)
+            iw = torch.argmin(p[:, 1], dim=0) if east_max_y else torch.argmax(p[:, 1], dim=0)
+            inorth = torch.argmax(p[:, 2], dim=0) if north_max_z else torch.argmin(p[:, 2], dim=0)
+            isouth = torch.argmin(p[:, 2], dim=0) if north_max_z else torch.argmax(p[:, 2], dim=0)
+            return ie, iw, inorth, isouth
+        ie = torch.argmax(p[..., 1], dim=1) if east_max_y else torch.argmin(p[..., 1], dim=1)
+        iw = torch.argmin(p[..., 1], dim=1) if east_max_y else torch.argmax(p[..., 1], dim=1)
+        inorth = torch.argmax(p[..., 2], dim=1) if north_max_z else torch.argmin(p[..., 2], dim=1)
+        isouth = torch.argmin(p[..., 2], dim=1) if north_max_z else torch.argmax(p[..., 2], dim=1)
+        return ie, iw, inorth, isouth
+
+    def _mouth_entry_mask(
+        self,
+        P: torch.Tensor,
+        mask_plus: torch.Tensor,
+        mask_minus: torch.Tensor,
+        r: torch.Tensor,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Pick which end-slice of the rest mesh is the cuff opening (env-local semantics)."""
+        if mask_plus.sum() == 0:
+            return mask_minus
+        if mask_minus.sum() == 0:
+            return mask_plus
+
+        origin0 = torch.zeros(3, device=device, dtype=dtype)
+        if hasattr(self, "scene") and self.scene is not None:
+            origin0 = self.scene.env_origins[0].to(device=device, dtype=dtype)
+
+        mode = str(getattr(self.cfg, "mouth_opening_end_mode", "env_axis")).lower()
+        r_plus, r_minus = r[mask_plus], r[mask_minus]
+
+        if mode == "env_axis":
+            axis = torch.tensor(
+                getattr(self.cfg, "mouth_opening_env_axis", (1.0, 0.0, 0.0)),
+                device=device,
+                dtype=dtype,
+            )
+            axis = axis / (axis.norm() + 1e-8)
+            pick_pos = bool(getattr(self.cfg, "mouth_opening_env_axis_pick_positive", True))
+            s_plus = ((P[mask_plus] - origin0.unsqueeze(0)) @ axis).mean()
+            s_minus = ((P[mask_minus] - origin0.unsqueeze(0)) @ axis).mean()
+            use_plus = s_plus >= s_minus if pick_pos else s_plus < s_minus
+            return mask_plus if use_plus else mask_minus
+
+        hint_pt = getattr(self.cfg, "mouth_opening_toward_env_point", None)
+        if mode in ("toward_point", "away_from_point") and hint_pt is not None:
+            hint_w = origin0 + torch.tensor(hint_pt, device=device, dtype=dtype)
+            d_plus = torch.norm(P[mask_plus].mean(0) - hint_w)
+            d_minus = torch.norm(P[mask_minus].mean(0) - hint_w)
+            closer_plus = d_plus <= d_minus
+            return mask_plus if (closer_plus if mode == "toward_point" else not closer_plus) else mask_minus
+
+        if mode == "smaller_radius" and r_plus.numel() and r_minus.numel():
+            return mask_plus if r_plus.median() < r_minus.median() else mask_minus
+        if r_plus.numel() and r_minus.numel():
+            return mask_plus if r_plus.median() >= r_minus.median() else mask_minus
+        return mask_plus
+
+    def _build_opening_ring_node_indices(
+        self,
+        end_slice_ratio: float | None = None,
+        axis_hint=None,
+        entry_plane_ratio: float | None = None,
+        ring_quantile: float | None = None,
+    ) -> torch.Tensor:
+        """Rest-mesh vertex indices on the cuff **opening ring** (steps 1–3 of mouth selection, no N/S/E/W)."""
+        end_slice_ratio = float(
+            end_slice_ratio if end_slice_ratio is not None else getattr(self.cfg, "mouth_end_slice_ratio", 0.1)
+        )
+        entry_plane_ratio = float(
+            entry_plane_ratio
+            if entry_plane_ratio is not None
+            else getattr(self.cfg, "mouth_entry_plane_ratio", 0.5)
+        )
+        ring_quantile = float(
+            ring_quantile if ring_quantile is not None else getattr(self.cfg, "mouth_ring_quantile", 0.65)
+        )
+        if axis_hint is None:
+            axis_hint = getattr(self.cfg, "mouth_axis_hint", None)
+
+        P = self.object.data.default_nodal_state_w[0, :, :3].clone()
+        device, dtype = P.device, P.dtype
+        mean = P.mean(0)
+        X = P - mean
+
+        if axis_hint is None:
+            _, _, vt = torch.pca_lowrank(X, q=3, center=False)
+            a = vt[:, 0]
+        else:
+            if not torch.is_tensor(axis_hint):
+                axis_hint = torch.tensor(axis_hint, dtype=dtype, device=device)
+            a = axis_hint.to(device=device, dtype=dtype)
+            a = a / (a.norm() + 1e-8)
+
+        a = a / (a.norm() + 1e-8)
+        t = X @ a
+        t_min, t_max = t.min(), t.max()
+        sl = end_slice_ratio * float((t_max - t_min).item())
+        mask_plus = t >= (t_max - sl)
+        mask_minus = t <= (t_min + sl)
+        X_perp = X - t.unsqueeze(1) * a
+        r = torch.linalg.norm(X_perp, dim=1)
+
+        mask_entry = self._mouth_entry_mask(P, mask_plus, mask_minus, r, device, dtype)
+        idx_entry = torch.nonzero(mask_entry, as_tuple=False).squeeze(1)
+        if idx_entry.numel() == 0:
+            raise RuntimeError("Opening slice empty; tune mouth_end_slice_ratio / mouth_opening_end_mode.")
+
+        t_entry = t[idx_entry]
+        r_entry = r[idx_entry]
+        on_plus_end = bool(mask_plus[idx_entry].float().mean().item() > 0.5)
+        t0 = t_entry.max() if on_plus_end else t_entry.min()
+        plane_thresh = entry_plane_ratio * sl
+        plane_mask = (
+            torch.ones_like(t_entry, dtype=torch.bool)
+            if plane_thresh <= 0
+            else torch.abs(t_entry - t0) < plane_thresh
+        )
+        if 0.0 < ring_quantile < 1.0:
+            ring_mask = r_entry >= torch.quantile(r_entry, ring_quantile)
+        else:
+            ring_mask = torch.ones_like(r_entry, dtype=torch.bool)
+        idx_entry = idx_entry[plane_mask & ring_mask]
+        if idx_entry.numel() == 0:
+            idx_entry = torch.nonzero(mask_entry, as_tuple=False).squeeze(1)
+        return idx_entry.long()
+
+    def _choose_mouth_nodes_4dirs_from_cfg(self) -> dict[str, int]:
+        """N/S/E/W nodal indices on the cuff opening ring using :attr:`AIRECEnvCfg.mouth_*` settings."""
+        axis = getattr(self.cfg, "mouth_axis_hint", None)
+        return self._choose_mouth_nodes_4dirs(
+            end_slice_ratio=float(getattr(self.cfg, "mouth_end_slice_ratio", 0.1)),
+            axis_hint=list(axis) if axis is not None else None,
+            entry_plane_ratio=float(getattr(self.cfg, "mouth_entry_plane_ratio", 0.5)),
+            ring_quantile=float(getattr(self.cfg, "mouth_ring_quantile", 0.65)),
+        )
 
     def _choose_single_mouth_node(self, end_slice_ratio=0.06, axis_hint=None):
         P = self.object.data.default_nodal_state_w[0, :, :3].clone()  # (V,3)
@@ -1512,94 +1708,30 @@ class AIRECEnv(DirectRLEnv):
         v = torch.linalg.cross(a, u)
         v = v / (v.norm() + 1e-8)
 
-        # -----------------------------
-        # 2) 「入口スライス」の抽出
-        # -----------------------------
-        t = X @ a                    # (V,) → 長手方向の座標
-        t_min, t_max = t.min(), t.max()
-        L = float((t_max - t_min).item())
-        sl = end_slice_ratio * L     # スライス厚み
+        idx_entry = self._build_opening_ring_node_indices(
+            end_slice_ratio=end_slice_ratio,
+            axis_hint=axis_hint,
+            entry_plane_ratio=entry_plane_ratio,
+            ring_quantile=ring_quantile,
+        )
+        if bool(getattr(self.cfg, "show_task_markers", False)) and idx_entry.numel() > 0:
+            origin0 = self.scene.env_origins[0].to(device=P.device, dtype=P.dtype) if hasattr(self, "scene") else 0
+            c = (P[idx_entry].mean(0) - origin0).detach().cpu().tolist()
+            print(
+                f"[mouth] end_mode={getattr(self.cfg, 'mouth_opening_end_mode', 'away_from_point')} "
+                f"opening_centroid_env={c} ring_verts={int(idx_entry.numel())}"
+            )
 
-        # 両端スライス
-        mask_plus = t >= (t_max - sl)
-        mask_minus = t <= (t_min + sl)
-
-        # a に垂直な成分と半径
-        X_perp = X - t.unsqueeze(1) * a   # a 方向を除いた成分
-        r = torch.linalg.norm(X_perp, dim=1)  # (V,)
-
-        if axis_hint is None:
-            # --- どちらの端を「入口」とみなすかを自動判定 ---
-            # 半径の中央値が大きい方を入口とみなす
-            r_plus = r[mask_plus]
-            r_minus = r[mask_minus]
-            if r_plus.numel() == 0 or r_minus.numel() == 0:
-                # どちらかが空になってしまった場合のフォールバック
-                mask_entry = mask_plus
-            else:
-                mask_entry = mask_plus if r_plus.median() >= r_minus.median() else mask_minus
-        else:
-            # --- axis_hint がある場合は、必ず「+a 側」を入口とみなす ---
-            mask_entry = mask_plus
-
-        idx_entry = torch.nonzero(mask_entry, as_tuple=False).squeeze(1)  # (Ne,)
-
-        # -----------------------------
-        # 3) 入口スライスの中から「入口リング」を抽出
-        # -----------------------------
-        if idx_entry.numel() == 0:
-            raise RuntimeError("入口スライスが空です。end_slice_ratio や axis_hint を確認してください。")
-
-        t_entry = t[idx_entry]
-        r_entry = r[idx_entry]
-
-        # 入口側の代表的な t（ほぼ t_max の近く）
-        t0 = t_entry.max()
-
-        # 入口平面に近い点だけを残す
-        # entry_plane_ratio=0.3 なら、スライス厚み sl の 30% 以内
-        plane_thresh = entry_plane_ratio * sl
-        if plane_thresh <= 0:
-            plane_mask = torch.ones_like(t_entry, dtype=torch.bool)
-        else:
-            plane_mask = torch.abs(t_entry - t0) < plane_thresh
-
-        # 半径が大きい（外周リング）だけを残す
-        if 0.0 < ring_quantile < 1.0:
-            r_thresh = torch.quantile(r_entry, ring_quantile)
-            ring_mask = r_entry >= r_thresh
-        else:
-            ring_mask = torch.ones_like(r_entry, dtype=torch.bool)
-
-        mask_keep = plane_mask & ring_mask
-        idx_entry = idx_entry[mask_keep]
-
-        if idx_entry.numel() == 0:
-            # 絞り込みすぎた場合は一旦 plane のみでやり直す
-            idx_entry = torch.nonzero(mask_entry, as_tuple=False).squeeze(1)
-            t_entry = t[idx_entry]
-            r_entry = r[idx_entry]
-
-        # -----------------------------
-        # 4) 入口パッチ中での東西南北アンカーを算出
-        # -----------------------------
-        X_entry = X[idx_entry]
-        alpha = X_entry @ u   # 横方向
-        # print(f"alpha: min {alpha.min().item():.4f}, max {alpha.max().item():.4f}")
-        beta  = X_entry @ v   # 縦方向
-
-        # east = α 最大, west = α 最小
-        idx_right = idx_entry[torch.argmax(alpha)]
-        idx_left  = idx_entry[torch.argmin(alpha)]
-        # north = β 最大, south = β 最小
-        idx_up    = idx_entry[torch.argmax(beta)]
-        idx_down  = idx_entry[torch.argmin(beta)]
-
+        origin0 = torch.zeros(3, device=device, dtype=dtype)
+        if hasattr(self, "scene") and self.scene is not None:
+            origin0 = self.scene.env_origins[0].to(device=device, dtype=dtype)
+        p_ring = P[idx_entry] - origin0.unsqueeze(0)
+        li_e, li_w, li_n, li_s = self._geom_world_axis_rim_extrema(p_ring)
         return {
-            "north": int(idx_up.item()),
-            "south": int(idx_down.item()),
-            "west":  int(idx_left.item()),
-            "east":  int(idx_right.item()),
+            "north": int(idx_entry[li_n].item()),
+            "south": int(idx_entry[li_s].item()),
+            "east": int(idx_entry[li_e].item()),
+            "west": int(idx_entry[li_w].item()),
         }
 
     def _nearest_patch_indices(self, node_idx: int, k: int = 16):

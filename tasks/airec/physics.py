@@ -161,13 +161,15 @@ object_rigid_props = sim_utils.RigidBodyPropertiesCfg(
 )
 
 # deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
-#     youngs_modulus=5.0e8,     #  8e7
-#     poissons_ratio=0.3,      #  0.48
-#     density=1000.0,            #  300 kg/m^3
+#     youngs_modulus=1.0e7,    
+#     poissons_ratio=0.48,      
+#     density=300.0,            
 #     damping_scale=1.0,
-#     elasticity_damping=0.012, #  0.012
-#     dynamic_friction=1.0,     #  0.6
+#     elasticity_damping=0.012, 
+#     dynamic_friction=1.0,     
 # )
+
+# training parameters
 deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
     youngs_modulus=5.0e10,       # INCREASED: Makes it significantly stiffer
     poissons_ratio=0.48,        # INCREASED: Simulates volume-preserving real rubber
@@ -178,13 +180,21 @@ deformable_bracelet_props = sim_utils.DeformableBodyMaterialCfg(
 )
 
 deformable_glove_props = sim_utils.DeformableBodyMaterialCfg(
-    youngs_modulus=5.0e7,
-    poissons_ratio=0.42,
+    youngs_modulus=5.0e10,
+    poissons_ratio=0.48,
     density=1000.0,
     damping_scale=1.0,
     elasticity_damping=0.05,
     dynamic_friction=1.0,
 )
+# deformable_glove_props = sim_utils.DeformableBodyMaterialCfg(
+#     youngs_modulus=1.5e7,
+#     poissons_ratio=0.48,
+#     density=100.0,
+#     damping_scale=1.0,
+#     elasticity_damping=0.1,
+#     dynamic_friction=1.0,
+# )
 
 robot_rigid_props = sim_utils.RigidBodyPropertiesCfg(
     kinematic_enabled=False,
@@ -260,31 +270,82 @@ bracelet_sim_cfg = SimulationCfg(
 )
 
 
-def tune_physx_gpu_buffers_for_vec_env(physx: PhysxCfg, num_envs: int) -> None:
-    """Clamp PhysX GPU pool preallocation for large vectorized env counts.
+# Soft-body + rigid contact needs a large collision stack (PhysX often asks for ~40 MiB+).
+_DEFORMABLE_COLLISION_STACK_MIN = 1 << 26  # 64 MiB
+_DEFORMABLE_COLLISION_STACK_MAX = 1 << 28  # 256 MiB cap vs legacy 2**30
+# Maps to PhysX ``maxDeformableVolumeContacts`` (``gpu_max_soft_body_contacts``).
+_DEFORMABLE_VOLUME_CONTACTS_MIN = 262144  # PhysX-reported floor; use 2**19 for headroom
+_DEFORMABLE_VOLUME_CONTACTS_MAX = 1 << 22  # cap prealloc vs legacy 2**24
 
-    CUDA error code 2 (out of memory) during ``getArticulationData`` / ``getRigidDynamicData``
-    often comes from oversized *global* PhysX buffers (e.g. ``gpu_collision_stack_size=2**30``)
-    combined with many deformable FEM instances — not from RL tensors alone.
+
+def tune_physx_gpu_buffers_for_vec_env(
+    physx: PhysxCfg,
+    num_envs: int,
+    *,
+    deformable: bool = False,
+) -> None:
+    """Clamp PhysX GPU pool preallocation for vectorized / deformable sims.
+
+    For deformable gloves, keep ``gpu_collision_stack_size`` and
+    ``gpu_max_soft_body_contacts`` above PhysX-reported floors or contacts are dropped.
     """
-    if num_envs <= 512:
+    if physx is None:
         return
 
     def _clamp(attr: str, cap: int) -> None:
         if hasattr(physx, attr):
-            setattr(physx, attr, min(getattr(physx, attr), cap))
+            value = getattr(physx, attr)
+            if value is not None:
+                setattr(physx, attr, min(int(value), int(cap)))
 
-    _clamp("gpu_found_lost_pairs_capacity", 2**22)
     _clamp("gpu_found_lost_aggregate_pairs_capacity", 2**22)
+    _clamp("gpu_found_lost_pairs_capacity", 2**22)
     _clamp("gpu_total_aggregate_pairs_capacity", 2**22)
     _clamp("gpu_max_rigid_contact_count", 2**22)
     _clamp("gpu_max_rigid_patch_count", 5 * 2**15)
-    _clamp("gpu_max_soft_body_contacts", 2**21)
     _clamp("gpu_temp_buffer_capacity", 2**22)
     _clamp("gpu_heap_capacity", 2**25)
-    _clamp("gpu_collision_stack_size", 2**26)
+    _clamp("gpu_collision_stack_size", _DEFORMABLE_COLLISION_STACK_MAX)
+    _clamp("gpu_max_soft_body_contacts", 2**20)
+
+    if deformable or num_envs > 1:
+        _clamp("gpu_found_lost_aggregate_pairs_capacity", 2**21)
+        if not deformable:
+            _clamp("gpu_collision_stack_size", 2**24)
+            _clamp("gpu_max_soft_body_contacts", 2**19)
+
+    if num_envs > 128:
+        if not deformable:
+            _clamp("gpu_max_soft_body_contacts", 2**18)
+        _clamp("gpu_heap_capacity", 2**24)
+        if not deformable:
+            _clamp("gpu_collision_stack_size", 2**23)
+
+    if num_envs > 512:
+        _clamp("gpu_found_lost_aggregate_pairs_capacity", 2**20)
+        _clamp("gpu_found_lost_pairs_capacity", 2**21)
+        if not deformable:
+            _clamp("gpu_max_soft_body_contacts", 2**17)
+        _clamp("gpu_heap_capacity", 2**23)
+        if not deformable:
+            _clamp("gpu_collision_stack_size", 2**22)
 
     if num_envs > 1024:
-        _clamp("gpu_heap_capacity", 2**24)
-        _clamp("gpu_collision_stack_size", 2**25)
-        _clamp("gpu_max_soft_body_contacts", 2**20)
+        _clamp("gpu_found_lost_aggregate_pairs_capacity", 2**19)
+        if not deformable:
+            _clamp("gpu_max_soft_body_contacts", 2**16)
+        _clamp("gpu_heap_capacity", 2**22)
+        if not deformable:
+            _clamp("gpu_collision_stack_size", 2**21)
+
+    if deformable:
+        if hasattr(physx, "gpu_collision_stack_size"):
+            v = int(getattr(physx, "gpu_collision_stack_size"))
+            v = max(v, _DEFORMABLE_COLLISION_STACK_MIN)
+            v = min(v, _DEFORMABLE_COLLISION_STACK_MAX)
+            setattr(physx, "gpu_collision_stack_size", v)
+        if hasattr(physx, "gpu_max_soft_body_contacts"):
+            v = int(getattr(physx, "gpu_max_soft_body_contacts"))
+            v = max(v, _DEFORMABLE_VOLUME_CONTACTS_MIN)
+            v = min(v, _DEFORMABLE_VOLUME_CONTACTS_MAX)
+            setattr(physx, "gpu_max_soft_body_contacts", v)
