@@ -407,7 +407,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    # rot=[0.0, 0.0, 1.0, 0.0]
+                    rot=[1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -423,7 +424,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_upper_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    rot=[1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -487,7 +488,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_thumb",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    # rot=[0.0, 0.0, 1.0, 0.0]
+                    rot=[1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
