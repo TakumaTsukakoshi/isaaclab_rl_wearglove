@@ -13,6 +13,9 @@ import argparse
 import os
 import sys
 
+from shadow_debug_cli import add_shadow_debug_cli_args
+from ee_stretch_cli import add_ee_stretch_cli_args
+
 from isaaclab.app import AppLauncher
 
 # Parse command-line arguments
@@ -29,6 +32,8 @@ parser.add_argument("--video_dir", type=str, default=None, help="Directory to sa
 parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the agent configuration.")
 
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
+add_shadow_debug_cli_args(parser)
+add_ee_stretch_cli_args(parser)
 parser.add_argument(
     "--print-eval-episode-returns",
     action=argparse.BooleanOptionalAction,
@@ -47,6 +52,7 @@ parser.add_argument("--samples_per_pixel_per_frame", type=int, default=1, help="
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+args_cli.evaluation_mode = True
 if args_cli.video:
     args_cli.enable_cameras = True
 sys.argv = [sys.argv[0]] + hydra_args
@@ -55,13 +61,7 @@ simulation_app = app_launcher.app
 import torch
 
 import isaaclab_tasks  # noqa: F401
-from common_utils import (
-    LOG_PATH,
-    make_env,
-    make_models,
-    set_seed,
-    update_env_cfg,
-)
+from common_utils import LOG_PATH, get_unwrapped_env, make_env, make_models, set_seed, update_env_cfg
 from isaaclab.utils import update_dict
 from isaaclab_tasks.utils.hydra import register_task_to_hydra
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
@@ -193,6 +193,10 @@ def main():
                 break
 
         timestep += 1
+
+    unwrapped = get_unwrapped_env(env)
+    if hasattr(unwrapped, "finalize_ee_stretch_debug"):
+        unwrapped.finalize_ee_stretch_debug()
 
     # Close the simulator
     env.close()

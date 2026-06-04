@@ -1,5 +1,6 @@
 """Utility helpers shared between the RoTO training / inference scripts."""
 
+import argparse
 import gymnasium as gym
 import numpy as np
 import os
@@ -246,6 +247,17 @@ def make_trainer(env, agent, agent_cfg, ssl_task=None, writer=None, print_eval_e
     return trainer
 
 
+from shadow_debug_cli import add_shadow_debug_cli_args  # noqa: F401
+
+
+def get_unwrapped_env(env):
+    """Unwrap gym / FrameStack / IsaacLabWrapper to the base DirectRLEnv."""
+    base = env
+    while hasattr(base, "env"):
+        base = base.env
+    return getattr(base, "unwrapped", base)
+
+
 def update_env_cfg(args_cli, env_cfg, agent_cfg):
     """Sync Isaac Lab config with CLI + agent overrides.
 
@@ -264,8 +276,80 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
     env_cfg.obs_list = agent_cfg["observations"]["obs_list"]
-    env_cfg.num_eval_envs = agent_cfg["trainer"]["num_eval_envs"]
+    num_eval_envs = min(int(agent_cfg["trainer"]["num_eval_envs"]), int(env_cfg.scene.num_envs))
+    if num_eval_envs != int(agent_cfg["trainer"]["num_eval_envs"]):
+        print(
+            f"[update_env_cfg] Clamped num_eval_envs {agent_cfg['trainer']['num_eval_envs']} "
+            f"-> {num_eval_envs} (scene.num_envs={env_cfg.scene.num_envs})"
+        )
+        agent_cfg["trainer"]["num_eval_envs"] = num_eval_envs
+    env_cfg.num_eval_envs = num_eval_envs
     env_cfg.obs_stack = agent_cfg["observations"]["obs_stack"]
+
+    save_log = getattr(args_cli, "save_debug_log", None)
+    if save_log:
+        env_cfg.debug_save_rollout_log = True
+        env_cfg.debug_rollout_log_path = save_log
+    if getattr(args_cli, "debug_target_mode", None) is not None:
+        env_cfg.debug_target_mode = args_cli.debug_target_mode
+    if getattr(args_cli, "debug_save_rollout_log", False):
+        env_cfg.debug_save_rollout_log = True
+    if getattr(args_cli, "debug_rollout_log_path", None) is not None:
+        env_cfg.debug_rollout_log_path = args_cli.debug_rollout_log_path
+    if getattr(args_cli, "disable_shadow_bracelet_collision", None) is not None:
+        env_cfg.disable_shadow_bracelet_collision = args_cli.disable_shadow_bracelet_collision
+    if getattr(args_cli, "disable_shadow_robot_collision", None) is not None:
+        env_cfg.disable_shadow_robot_collision = args_cli.disable_shadow_robot_collision
+    if getattr(args_cli, "show_debug_fixed_target_markers", None) is not None:
+        env_cfg.show_debug_fixed_target_markers = args_cli.show_debug_fixed_target_markers
+    if getattr(args_cli, "debug_log_all_envs", False):
+        env_cfg.debug_log_eval_envs_only = False
+
+    # EE stretch debug (Deformable Bracelet evaluation / rollout only)
+    eval_mode = bool(getattr(args_cli, "evaluation_mode", False))
+    env_cfg.evaluation_mode = eval_mode
+    if getattr(args_cli, "debug_ee_stretch_log", False):
+        env_cfg.ee_stretch_log_enabled = True
+    if getattr(args_cli, "debug_ee_stretch_log_dir", None) is not None:
+        env_cfg.ee_stretch_log_dir = args_cli.debug_ee_stretch_log_dir
+    if getattr(args_cli, "debug_ee_watch_distance", None) is not None:
+        env_cfg.debug_ee_watch_distance = float(args_cli.debug_ee_watch_distance)
+    if getattr(args_cli, "debug_enable_ee_distance_clamp", False):
+        if not eval_mode:
+            print(
+                "[update_env_cfg] --debug-enable-ee-distance-clamp ignored "
+                "(evaluation_mode=False; use play.py or debug_rollout.py)"
+            )
+        else:
+            env_cfg.debug_enable_ee_distance_clamp = True
+    if getattr(args_cli, "debug_ee_clamp_limit", None) is not None:
+        env_cfg.debug_ee_clamp_limit = float(args_cli.debug_ee_clamp_limit)
+    if getattr(args_cli, "debug_ee_clamp_activation_distance", None) is not None:
+        env_cfg.debug_ee_clamp_activation_distance = float(args_cli.debug_ee_clamp_activation_distance)
+    if getattr(args_cli, "debug_ee_clamp_mode", None) is not None:
+        env_cfg.debug_ee_clamp_mode = args_cli.debug_ee_clamp_mode
+    if getattr(args_cli, "debug_target_object", None) is not None:
+        env_cfg.debug_target_object = args_cli.debug_target_object
+    if getattr(args_cli, "debug_joint7_fallback_clamp", False):
+        env_cfg.debug_joint7_fallback_clamp = True
+        env_cfg.debug_ee_clamp_mode = "joint7_fallback"
+    if getattr(args_cli, "debug_left_joint7_outward_direction", None) is not None:
+        env_cfg.debug_left_joint7_outward_direction = args_cli.debug_left_joint7_outward_direction
+    if getattr(args_cli, "debug_right_joint7_outward_direction", None) is not None:
+        env_cfg.debug_right_joint7_outward_direction = args_cli.debug_right_joint7_outward_direction
+    act_dist = float(getattr(env_cfg, "debug_ee_clamp_activation_distance", 0.295))
+    clamp_lim = float(getattr(env_cfg, "debug_ee_clamp_limit", 0.30))
+    if act_dist > clamp_lim:
+        raise ValueError(
+            f"debug_ee_clamp_activation_distance ({act_dist}) must be <= "
+            f"debug_ee_clamp_limit ({clamp_lim})"
+        )
+    if getattr(env_cfg, "ee_stretch_log_enabled", False) and not eval_mode:
+        print(
+            "[update_env_cfg] --debug-ee-stretch-log ignored "
+            "(evaluation_mode=False; use play.py or debug_rollout.py)"
+        )
+        env_cfg.ee_stretch_log_enabled = False
 
     return env_cfg
 
@@ -342,3 +426,10 @@ def train_one_seed(
     trainer = make_trainer(env, agent, agent_cfg, ssl_task, writer, print_eval_episode_returns=print_eval_episode_returns)
     trainer.train()
     print("Training complete!")
+
+    unwrapped = get_unwrapped_env(env)
+    if getattr(getattr(unwrapped, "cfg", None), "debug_save_rollout_log", False):
+        logger = getattr(unwrapped, "_debug_rollout_logger", None)
+        if logger is not None:
+            logger.save_final()
+            print(f"[train] Debug rollout log saved to {unwrapped.cfg.debug_rollout_log_path}")

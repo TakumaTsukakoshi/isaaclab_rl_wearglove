@@ -11,6 +11,8 @@ Author: Elle Miller
 import argparse
 import sys
 
+from shadow_debug_cli import add_shadow_debug_cli_args
+
 from isaaclab.app import AppLauncher
 
 # Parse command-line arguments
@@ -48,6 +50,8 @@ parser.add_argument(
 )
 parser.add_argument("--samples_per_pixel_per_frame", type=int, default=1, help="Number of samples per pixel per frame.")
 
+add_shadow_debug_cli_args(parser)
+
 # Append AppLauncher CLI args and initialize Isaac Sim
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -58,7 +62,7 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import isaaclab_tasks  # noqa: F401
-from common_utils import LOG_PATH, make_env, train_one_seed, update_env_cfg
+from common_utils import LOG_PATH, get_unwrapped_env, make_env, train_one_seed, update_env_cfg
 from isaaclab.utils import update_dict
 from isaaclab_tasks.utils.hydra import register_task_to_hydra
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
@@ -81,6 +85,17 @@ def main() -> None:
     writer = Writer(agent_cfg)
     env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
     env = make_env(agent_cfg, env_cfg, writer, args_cli)
+
+    unwrapped = get_unwrapped_env(env)
+    mode = getattr(unwrapped.cfg, "debug_target_mode", "baseline")
+    if mode != "baseline" or getattr(unwrapped.cfg, "debug_save_rollout_log", False):
+        print(
+            f"[train] Shadow debug: debug_target_mode={mode} "
+            f"debug_save_rollout_log={getattr(unwrapped.cfg, 'debug_save_rollout_log', False)} "
+            f"log_path={getattr(unwrapped.cfg, 'debug_rollout_log_path', '')} "
+            f"debug_log_eval_envs_only={getattr(unwrapped.cfg, 'debug_log_eval_envs_only', True)}"
+        )
+
     train_one_seed(
         args_cli,
         env,

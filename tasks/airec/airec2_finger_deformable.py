@@ -340,6 +340,9 @@ class AIRECEnvCfg(DirectRLEnvCfg):
         "base_rear_right_wheel_joint",
     ]
 
+    #: When False, Shadow Hand is not spawned (fixed virtual targets only; see ReachDeformableBracelet debug modes).
+    spawn_shadow_hand: bool = True
+
     # hand cfg
     hand_cfg: ArticulationCfg = SHADOW_HAND_CFG.replace(prim_path="/World/envs/env_.*/ShadowHand")
     reset_joint_pos_noise = 0.2  # range of dof pos at reset
@@ -370,7 +373,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    # rot=[0.0, 0.0, 1.0, 0.0]
+                rot = [1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -386,7 +390,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_upper_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    # rot=[0.0, 0.0, 1.0, 0.0]
+                    rot = [1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -450,7 +455,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_thumb",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    # rot=[0.0, 0.0, 1.0, 0.0]
+                    rot = [1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -817,7 +823,10 @@ class AIRECEnv(DirectRLEnv):
         # Isaac Sim 5.x + GPU stacks can invalidate PhysX articulation views (weakref.proxy dies on first
         # scene.update — ReferenceError in articulation_data.joint_vel).
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.hand = Articulation(self.cfg.hand_cfg)
+        if getattr(self.cfg, "spawn_shadow_hand", True):
+            self.hand = Articulation(self.cfg.hand_cfg)
+        else:
+            self.hand = None
 
         # self._add_object_to_scene()
         
@@ -923,7 +932,8 @@ class AIRECEnv(DirectRLEnv):
        
         # register to scene
         self.scene.articulations["robot"] = self.robot
-        self.scene.articulations["hand"] = self.hand
+        if self.hand is not None:
+            self.scene.articulations["hand"] = self.hand
         self.scene.sensors["left_ee_frame"] = self.left_ee_frame
         self.scene.sensors["right_ee_frame"] = self.right_ee_frame
         self.scene.sensors["left_upper_ee_frame"] = self.left_upper_ee_frame
@@ -1193,6 +1203,7 @@ class AIRECEnv(DirectRLEnv):
             ),
             dim=-1,
         )
+        # print(prop[0])
 
         return prop
 
@@ -1962,9 +1973,18 @@ class AIRECEnv(DirectRLEnv):
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
         is_grasp_right = self.garment_right_ee_euclidean_distance > 0.30 # check
         is_grasp_left = self.garment_left_ee_euclidean_distance > 0.30   # check
-        too_far = self.ee_euclidean_distance > 0.30 # 0.40 20
+        too_far = self.ee_euclidean_distance > 0.40 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
         termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
+        # if termination.any():
+            # print(f"too_far: {too_far[0]}")
+            # print(f"is_grasp_right: {is_grasp_right[0]}")
+            # print(f"is_grasp_left: {is_grasp_left[0]}")
+            # print(f"out_of_reach: {out_of_reach[0]}")
+            # print(f"ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
+            # print(f"garment_right_ee_euclidean_distance: {self.garment_right_ee_euclidean_distance[0]}")
+            # print(f"garment_left_ee_euclidean_distance: {self.garment_left_ee_euclidean_distance[0]}")
+            # print(f"wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
         # termination = too_far | out_of_reach
         # termination = too_far | is_grasp_right | is_grasp_left
        

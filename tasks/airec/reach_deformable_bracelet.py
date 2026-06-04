@@ -52,6 +52,19 @@ import sys
 sys.path.append("tasks/airec")
 from insert_rew import InsertReward
 from tasks.airec.physics import tune_physx_gpu_buffers_for_vec_env
+from tasks.airec.ee_stretch_debug import (
+    EEStretchDebugCfg,
+    EEStretchDebugLogger,
+    apply_ee_distance_clamp,
+)
+from tasks.airec.shadow_hand_debug import (
+    DebugFixedTargetCfg,
+    DebugRolloutLogger,
+    apply_shadow_hand_collision_filters,
+    expand_fixed_positions,
+    hide_shadow_hand_visual,
+    uses_fixed_task_targets,
+)
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -131,6 +144,39 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     debug_joint_cmd_vs_actual: bool = False
     debug_joint_print_env_id: int = 0
     debug_joint_print_interval: int = 1
+
+    #: Shadow Hand debug (fixed env-local targets, no Shadow Hand in scene):
+    #: ``baseline`` | ``no_shadow_collision_fixed_targets`` | ``no_shadow_actor_fixed_targets``.
+    #: Non-baseline modes spawn no Shadow Hand; rewards/obs use :attr:`debug_fixed_targets` constants.
+    debug_target_mode: str = "baseline"
+    debug_fixed_targets: DebugFixedTargetCfg = DebugFixedTargetCfg()
+    #: Filter ShadowHand colliders vs deformable ``Object`` (bracelet) prims.
+    disable_shadow_bracelet_collision: bool = True
+    #: Filter ShadowHand colliders vs AIREC hand / finger / palm links.
+    disable_shadow_robot_collision: bool = True
+    #: Show env-local fixed targets as collision-free ``VisualizationMarkers`` (sim world = local + env_origins).
+    show_debug_fixed_target_markers: bool = True
+    #: Skip fixed-target markers when ``scene.num_envs`` exceeds this (Fabric OOM); use ``--num_envs 1`` + GUI to view.
+    show_debug_fixed_target_markers_max_num_envs: int = 64
+    #: Step-wise debug rollout log (play / eval); saved on episode end.
+    debug_save_rollout_log: bool = False
+    debug_rollout_log_path: str = "logs/debug_rollout.pt"
+    #: When True (default), step logs only cover env_id < ``num_eval_envs`` during training.
+    debug_log_eval_envs_only: bool = True
+
+    #: Evaluation / rollout only (set by play.py / debug_rollout.py). EE stretch debug never runs in training.
+    evaluation_mode: bool = False
+    ee_stretch_log_enabled: bool = False
+    ee_stretch_log_dir: str = "logs/ee_stretch_debug"
+    debug_ee_watch_distance: float = 0.25
+    debug_enable_ee_distance_clamp: bool = False
+    debug_ee_clamp_limit: float = 0.30
+    debug_ee_clamp_activation_distance: float = 0.295
+    debug_ee_clamp_mode: str = "remove_outward_relative_command"
+    debug_target_object: str = "deformable_bracelet"
+    debug_joint7_fallback_clamp: bool = False
+    debug_left_joint7_outward_direction: str = "none"
+    debug_right_joint7_outward_direction: str = "none"
 
     object_type = "deformable"
     #: Hide parent ``AIRECEnv`` red kinematic anchor cuboids on the rim (used for ``north_edge_pos`` when
@@ -458,6 +504,34 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
         }
     )
 
+    debug_middle_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/debug_middle_target_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.008,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 1.0)),
+            ),
+        },
+    )
+    debug_ring_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/debug_ring_target_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.008,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.2, 0.8)),
+            ),
+        },
+    )
+    debug_wrist_target_marker: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/debug_wrist_target_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.012,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
+            ),
+        },
+    )
+
     finger_joint_names = [
             "robot0_FFJ3",
             "robot0_FFJ2",
@@ -517,13 +591,29 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             )
         cfg.show_task_markers = use_markers
 
+        if uses_fixed_task_targets(str(getattr(cfg, "debug_target_mode", "baseline"))):
+            cfg.spawn_shadow_hand = False
+            max_dm = int(getattr(cfg, "show_debug_fixed_target_markers_max_num_envs", 64))
+            if bool(cfg.show_debug_fixed_target_markers) and cfg.scene.num_envs > max_dm:
+                print(
+                    f"[ReachDeformableBraceletEnv] Disabling fixed-target markers "
+                    f"(num_envs={cfg.scene.num_envs} > {max_dm}). "
+                    "Use --num_envs 1 without --headless to view marker spheres."
+                )
+                cfg.show_debug_fixed_target_markers = False
+
         super().__init__(cfg, render_mode, **kwargs)
 
         if bool(getattr(cfg, "show_task_markers", False)) and not self.sim.has_gui():
             print(
                 "[ReachDeformableBraceletEnv] show_task_markers=True but no GUI "
-                "(e.g. --headless): markers are not created / not visible. "
-                "Run play without --headless and --num_envs 1."
+                "(e.g. --headless): rim markers are not visible. "
+                "Run without --headless and --num_envs 1 to view."
+            )
+        if self._uses_fixed_task_targets() and bool(cfg.show_debug_fixed_target_markers) and not self.sim.has_gui():
+            print(
+                "[ReachDeformableBraceletEnv] Fixed-target markers need a GUI "
+                "(omit --headless; use --num_envs 1 for clearest view)."
             )
 
         self._physics_timestep_upgraded = False
@@ -639,12 +729,16 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.task_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
-        self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
-        self._shadow_hand_finger_hold = torch.zeros(
-            (self.num_envs, len(self.finger_joint_ids)),
-            device=self.device,
-            dtype=self.hand.data.joint_pos.dtype,
-        )
+        if self.cfg.spawn_shadow_hand:
+            self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
+            self._shadow_hand_finger_hold = torch.zeros(
+                (self.num_envs, len(self.finger_joint_ids)),
+                device=self.device,
+                dtype=self.hand.data.joint_pos.dtype,
+            )
+        else:
+            self.finger_joint_ids = []
+            self._shadow_hand_finger_hold = None
 
         self._bracelet_rim_idx: torch.Tensor | None = None
         self._bracelet_geom_e1_ref: torch.Tensor | None = None
@@ -695,10 +789,120 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.per_finger_height_z = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
         self.per_finger_ellipse_value = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
         self.per_finger_inside_ellipse = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
+
+        self._debug_rollout_logger = DebugRolloutLogger(
+            save_path=getattr(self.cfg, "debug_rollout_log_path", None),
+            enabled=bool(getattr(self.cfg, "debug_save_rollout_log", False)),
+            mode=str(getattr(self.cfg, "debug_target_mode", "baseline")),
+            num_envs=self.num_envs,
+            device=self.device,
+        )
+        self._left_arm_joint_7_robot_idx = self.robot.joint_names.index("left_arm_joint_7")
+        self._right_arm_joint_7_robot_idx = self.robot.joint_names.index("right_arm_joint_7")
+        self._left_arm_joint_7_policy_col = self.cfg.actuated_joint_names.index("left_arm_joint_7")
+        self._right_arm_joint_7_policy_col = self.cfg.actuated_joint_names.index("right_arm_joint_7")
+        self._left_arm_robot_dof_indices = [
+            self.robot.joint_names.index(n) for n in self.cfg.actuated_larm_joints
+        ]
+        self._right_arm_robot_dof_indices = [
+            self.robot.joint_names.index(n) for n in self.cfg.actuated_rarm_joints
+        ]
+        self._ee_stretch_debug_cfg: EEStretchDebugCfg | None = None
+        self._ee_stretch_logger: EEStretchDebugLogger | None = None
+        self._ee_stretch_pre_joint_pos_cmd: torch.Tensor | None = None
+        self._ee_stretch_clamp_meta: dict = {}
+        if bool(getattr(self.cfg, "evaluation_mode", False)) and self.cfg.debug_target_object == "deformable_bracelet":
+            log_on = bool(getattr(self.cfg, "ee_stretch_log_enabled", False))
+            clamp_on = bool(getattr(self.cfg, "debug_enable_ee_distance_clamp", False))
+            if log_on or clamp_on:
+                self._ee_stretch_debug_cfg = EEStretchDebugCfg(
+                    enabled=log_on,
+                    log_dir=str(getattr(self.cfg, "ee_stretch_log_dir", "logs/ee_stretch_debug")),
+                    watch_distance=float(getattr(self.cfg, "debug_ee_watch_distance", 0.25)),
+                    clamp_enabled=clamp_on,
+                    clamp_limit=float(getattr(self.cfg, "debug_ee_clamp_limit", 0.30)),
+                    clamp_activation_distance=float(
+                        getattr(self.cfg, "debug_ee_clamp_activation_distance", 0.295)
+                    ),
+                    clamp_mode=str(getattr(self.cfg, "debug_ee_clamp_mode", "remove_outward_relative_command")),
+                    target_object=str(getattr(self.cfg, "debug_target_object", "deformable_bracelet")),
+                    joint7_fallback=bool(getattr(self.cfg, "debug_joint7_fallback_clamp", False)),
+                    left_joint7_outward_direction=str(
+                        getattr(self.cfg, "debug_left_joint7_outward_direction", "none")
+                    ),
+                    right_joint7_outward_direction=str(
+                        getattr(self.cfg, "debug_right_joint7_outward_direction", "none")
+                    ),
+                    evaluation_mode=True,
+                )
+                if self._ee_stretch_debug_cfg.joint7_fallback:
+                    self._ee_stretch_debug_cfg.clamp_mode = "joint7_fallback"
+            if log_on:
+                self._ee_stretch_logger = EEStretchDebugLogger(self._ee_stretch_debug_cfg, self.num_envs)
+                self._ee_stretch_logger.bind_env(self)
+        self._debug_collision_filter_stats: dict | None = None
+        self._last_terminated = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        self._last_truncated = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+
+        if self._uses_fixed_task_targets():
+            fixed = self._get_task_target_positions(self.robot._ALL_INDICES)
+            if fixed is not None:
+                self._apply_task_target_dict(self.robot._ALL_INDICES, fixed)
+            print(
+                "[ReachDeformableBraceletEnv] Fixed env-local targets (no Shadow Hand): "
+                f"mode={self.cfg.debug_target_mode} "
+                f"thumb={tuple(self.cfg.debug_fixed_targets.thumb_target)} "
+                f"wrist={tuple(self.cfg.debug_fixed_targets.goal_wrist_pos)} "
+                f"markers={self.cfg.show_debug_fixed_target_markers}"
+            )
+            if self.cfg.show_debug_fixed_target_markers and self.sim.has_gui():
+                self._visualize_debug_fixed_targets(self.robot._ALL_INDICES)
     
+    def _uses_fixed_task_targets(self) -> bool:
+        return uses_fixed_task_targets(str(self.cfg.debug_target_mode))
+
+    def _get_task_target_positions(
+        self, env_ids: torch.Tensor | Sequence[int]
+    ) -> dict[str, torch.Tensor] | None:
+        """Per-env **env-local** targets for rewards / success / debug markers.
+
+        Returns ``None`` in ``baseline`` (live Shadow Hand FrameTransformers + aperture offsets).
+        """
+        if not self._uses_fixed_task_targets():
+            return None
+        if isinstance(env_ids, torch.Tensor):
+            eids = env_ids
+        else:
+            eids = self._normalize_env_ids(env_ids)
+        return expand_fixed_positions(
+            eids,
+            self.num_envs,
+            self.device,
+            self.cfg.debug_fixed_targets,
+        )
+
+    def _apply_task_target_dict(
+        self, env_ids: torch.Tensor, targets: dict[str, torch.Tensor]
+    ) -> None:
+        """Write fixed virtual targets; skip live ShadowHand fingertip offsets."""
+        self.thumb_target[env_ids] = targets["thumb_target"][env_ids]
+        self.pinky_target[env_ids] = targets["pinky_target"][env_ids]
+        self.fore_goal_pos[env_ids] = targets["fore_goal_pos"][env_ids]
+        self.middle_goal_pos[env_ids] = targets["middle_goal_pos"][env_ids]
+        self.ring_goal_pos[env_ids] = targets["ring_goal_pos"][env_ids]
+        self.goal_wrist_pos[env_ids] = targets["goal_wrist_pos"][env_ids]
+        self.thumb_goal_pos[env_ids] = targets["thumb_goal_pos"][env_ids]
+        self.pinky_goal_pos[env_ids] = targets["pinky_goal_pos"][env_ids]
+        self.human_stretch_euclidean_distance[env_ids] = torch.norm(
+            self.thumb_target[env_ids] - self.pinky_target[env_ids], dim=1
+        )
+        stretch_scalar = self.human_stretch_euclidean_distance[env_ids]
+        self.human_stretch_distance[env_ids] = stretch_scalar.unsqueeze(-1).expand(-1, 3)
 
     def _apply_action(self) -> None:
         super()._apply_action()
+        if not self.cfg.spawn_shadow_hand or self._shadow_hand_finger_hold is None:
+            return
         # hold finger targets
         finger_target_pos = self._shadow_hand_finger_hold
         zv = torch.zeros_like(finger_target_pos)
@@ -735,27 +939,33 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         else:
             self.thumb_target_markers = None
             self.pinky_target_markers = None
-        
 
-        self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
-        self.thumb_goal_frame.set_debug_vis(False)
-        self.pinky_goal_frame = FrameTransformer(self.cfg.pinky_goal_config)
-        self.pinky_goal_frame.set_debug_vis(False)
-        self.fore_goal_frame = FrameTransformer(self.cfg.fore_goal_config)
-        self.fore_goal_frame.set_debug_vis(False)
-        self.middle_goal_frame = FrameTransformer(self.cfg.middle_goal_config)
-        self.middle_goal_frame.set_debug_vis(False)
-        self.ring_goal_frame = FrameTransformer(self.cfg.ring_goal_config)
-        self.ring_goal_frame.set_debug_vis(False)
-        self.wrist_goal_frame = FrameTransformer(self.cfg.wrist_goal_config)
-        self.wrist_goal_frame.set_debug_vis(False)
+        if self.cfg.show_debug_fixed_target_markers and self._uses_fixed_task_targets():
+            if self.thumb_target_markers is None:
+                self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
+            if self.pinky_target_markers is None:
+                self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
+            self.fore_target_markers = VisualizationMarkers(self.cfg.fore_target_marker)
+            self.debug_middle_target_markers = VisualizationMarkers(self.cfg.debug_middle_target_marker)
+            self.debug_ring_target_markers = VisualizationMarkers(self.cfg.debug_ring_target_marker)
+            self.debug_wrist_target_markers = VisualizationMarkers(self.cfg.debug_wrist_target_marker)
+        else:
+            self.fore_target_markers = None
+            self.debug_middle_target_markers = None
+            self.debug_ring_target_markers = None
+            self.debug_wrist_target_markers = None
 
-        self.scene.sensors["pinky_goal_frame"] = self.pinky_goal_frame
-        self.scene.sensors["thumb_goal_frame"] = self.thumb_goal_frame
-        self.scene.sensors["fore_goal_frame"] = self.fore_goal_frame
-        self.scene.sensors["middle_goal_frame"] = self.middle_goal_frame
-        self.scene.sensors["ring_goal_frame"] = self.ring_goal_frame
-        self.scene.sensors["wrist_goal_frame"] = self.wrist_goal_frame
+        self._apply_debug_shadow_collision_and_visual()
+
+        if self.cfg.spawn_shadow_hand:
+            self._setup_shadow_goal_frames()
+        else:
+            self.thumb_goal_frame = None
+            self.pinky_goal_frame = None
+            self.fore_goal_frame = None
+            self.middle_goal_frame = None
+            self.ring_goal_frame = None
+            self.wrist_goal_frame = None
 
         right_goal_path_env0 = "/World/envs/env_0/Visuals/RightGoal/Geom"
         left_goal_path_env0  = "/World/envs/env_0/Visuals/LeftGoal/Geom"
@@ -777,6 +987,90 @@ class ReachDeformableBraceletEnv(AIRECEnv):
 
         self.scene.rigid_objects["right_goal"] = self.right_goal_rb
         self.scene.rigid_objects["left_goal"]  = self.left_goal_rb
+
+    def _setup_shadow_goal_frames(self) -> None:
+        """FrameTransformers tracking Shadow Hand fingertip / wrist links (baseline only)."""
+        self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
+        self.thumb_goal_frame.set_debug_vis(False)
+        self.pinky_goal_frame = FrameTransformer(self.cfg.pinky_goal_config)
+        self.pinky_goal_frame.set_debug_vis(False)
+        self.fore_goal_frame = FrameTransformer(self.cfg.fore_goal_config)
+        self.fore_goal_frame.set_debug_vis(False)
+        self.middle_goal_frame = FrameTransformer(self.cfg.middle_goal_config)
+        self.middle_goal_frame.set_debug_vis(False)
+        self.ring_goal_frame = FrameTransformer(self.cfg.ring_goal_config)
+        self.ring_goal_frame.set_debug_vis(False)
+        self.wrist_goal_frame = FrameTransformer(self.cfg.wrist_goal_config)
+        self.wrist_goal_frame.set_debug_vis(False)
+
+        self.scene.sensors["pinky_goal_frame"] = self.pinky_goal_frame
+        self.scene.sensors["thumb_goal_frame"] = self.thumb_goal_frame
+        self.scene.sensors["fore_goal_frame"] = self.fore_goal_frame
+        self.scene.sensors["middle_goal_frame"] = self.middle_goal_frame
+        self.scene.sensors["ring_goal_frame"] = self.ring_goal_frame
+        self.scene.sensors["wrist_goal_frame"] = self.wrist_goal_frame
+
+    def _apply_debug_shadow_collision_and_visual(self) -> None:
+        """Legacy collision-filter hook (only when Shadow Hand remains spawned)."""
+        if not self.cfg.spawn_shadow_hand:
+            return
+        mode = str(self.cfg.debug_target_mode)
+        if mode == "baseline":
+            return
+
+        from isaaclab.sim import SimulationContext
+
+        stage = SimulationContext.instance().stage
+        if mode == "no_shadow_collision_fixed_targets":
+            self._debug_collision_filter_stats = apply_shadow_hand_collision_filters(
+                stage,
+                self.num_envs,
+                disable_shadow_bracelet_collision=bool(
+                    self.cfg.disable_shadow_bracelet_collision
+                ),
+                disable_shadow_robot_collision=bool(self.cfg.disable_shadow_robot_collision),
+                disable_all_shadow_collision=False,
+            )
+            print(
+                "[ReachDeformableBraceletEnv] debug_target_mode=no_shadow_collision_fixed_targets "
+                f"collision_filter_stats={self._debug_collision_filter_stats} "
+                "(env-local fixed targets; ShadowHand visual unchanged)"
+            )
+        elif mode == "no_shadow_actor_fixed_targets":
+            self._debug_collision_filter_stats = apply_shadow_hand_collision_filters(
+                stage,
+                self.num_envs,
+                disable_shadow_bracelet_collision=True,
+                disable_shadow_robot_collision=True,
+                disable_all_shadow_collision=True,
+            )
+            hide_shadow_hand_visual(stage, self.num_envs)
+            print(
+                "[ReachDeformableBraceletEnv] debug_target_mode=no_shadow_actor_fixed_targets "
+                f"collision_filter_stats={self._debug_collision_filter_stats} "
+                "(all ShadowHand collision disabled + hidden; fixed env-local targets)"
+            )
+        else:
+            raise ValueError(f"Unknown debug_target_mode: {mode!r}")
+
+    def _visualize_debug_fixed_targets(self, env_ids: torch.Tensor) -> None:
+        """Draw fixed virtual targets in sim world (env-local + env_origins). No collision."""
+        if not self.cfg.show_debug_fixed_target_markers or not self._uses_fixed_task_targets():
+            return
+        origins = self.scene.env_origins[env_ids]
+        quat = self.identity_quat[env_ids]
+        if self.thumb_target_markers is not None:
+            self.thumb_target_markers.visualize(self.thumb_target[env_ids] + origins, quat)
+        if self.pinky_target_markers is not None:
+            self.pinky_target_markers.visualize(self.pinky_target[env_ids] + origins, quat)
+        if self.fore_target_markers is not None:
+            self.fore_target_markers.visualize(self.fore_goal_pos[env_ids] + origins, quat)
+        if self.debug_middle_target_markers is not None:
+            self.debug_middle_target_markers.visualize(self.middle_goal_pos[env_ids] + origins, quat)
+        if self.debug_ring_target_markers is not None:
+            self.debug_ring_target_markers.visualize(self.ring_goal_pos[env_ids] + origins, quat)
+        if self.debug_wrist_target_markers is not None:
+            self.debug_wrist_target_markers.visualize(self.goal_wrist_pos[env_ids] + origins, quat)
 
     def _get_gt(self):
         gt = torch.cat(
@@ -803,11 +1097,22 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             ),
             dim=-1,
         )
+        # print(gt[0])
         return gt
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.prev_actions[:] = self.actions
+        if self._ee_stretch_debug_cfg is not None:
+            self._ee_stretch_pre_joint_pos_cmd = self.joint_pos_cmd.clone()
         super()._pre_physics_step(actions)
+        if (
+            self._ee_stretch_debug_cfg is not None
+            and self._ee_stretch_debug_cfg.clamp_enabled
+            and self._ee_stretch_pre_joint_pos_cmd is not None
+        ):
+            self._ee_stretch_clamp_meta = apply_ee_distance_clamp(self, self._ee_stretch_debug_cfg)
+        else:
+            self._ee_stretch_clamp_meta = {}
 
     def _maybe_upgrade_physics_timestep(self) -> None:
         if not self.cfg.adaptive_physics_on_success or self._physics_timestep_upgraded:
@@ -864,6 +1169,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             # Refresh transforms before aperture logic (thumb/pinky goal frames depend on ShadowHand pose).
             self._compute_intermediate_values(env_ids=e)
             self._reset_goal_aperture(e)
+
+        if self._ee_stretch_logger is not None:
+            self._ee_stretch_logger.on_reset(e)
+
+    def finalize_ee_stretch_debug(self) -> None:
+        if self._ee_stretch_logger is not None:
+            self._ee_stretch_logger.finalize()
+            print(f"[ReachDeformableBraceletEnv] EE stretch debug logs saved to {self._ee_stretch_logger.log_dir}")
     
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         # Parent calls ``_compute_intermediate_values()`` and writes ``self._term_log`` for wandb.
@@ -896,9 +1209,12 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self._episode_end_task_success = self.task_success.clone()
         self._episode_end_wrist_center_euclidean_distance = self.wrist_center_euclidean_distance.clone()
 
+        self._last_terminated = termination.clone()
+        self._last_truncated = time_out.clone()
         return termination, time_out
 
     def _get_rewards(self) -> torch.Tensor:
+        r_wrist_center_log = None
         if self.cfg.use_geometryrl_b7_reward:
             rewards, b7_log = geometryrl_b7_cloth_hanging_reward(self)
             self.extras["log"] = dict(b7_log)
@@ -970,6 +1286,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 "stretch_distance_reward": r_stretch_distance,
                 "fingers_inside_soft_gate": self.fingers_inside_soft_gate,
             }
+            r_wrist_center_log = r_wrist_center_distance
 
         if "tactile" in self.cfg.obs_list:
             self.extras["log"].update(
@@ -986,6 +1303,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.extras["log"]["task_success_bonus"] = success_bonus
         self.extras["log"]["task_success"] = self.task_success.float()
         self.extras["log"]["wrist_center_distance"] = self.wrist_center_euclidean_distance
+        self.extras["log"]["ee_euclidean_distance"] = self.ee_euclidean_distance
         if self.cfg.adaptive_physics_on_success:
             rate = self._curriculum_success_count / max(self._curriculum_episode_count, 1)
             self.extras["log"]["curriculum_success_rate"] = torch.full(
@@ -1006,6 +1324,33 @@ class ReachDeformableBraceletEnv(AIRECEnv):
 
         self.extras["counters"] = {}
         self._debug_print_joint_cmd_vs_actual()
+        if self._debug_rollout_logger.enabled:
+            self._debug_rollout_logger.log_step(
+                self,
+                step=int(self.common_step_counter),
+                rewards=rewards,
+                terminated=getattr(
+                    self,
+                    "_last_terminated",
+                    torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+                ),
+                truncated=getattr(
+                    self,
+                    "_last_truncated",
+                    torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+                ),
+                r_wrist_center=r_wrist_center_log,
+            )
+        if self._ee_stretch_logger is not None:
+            done = torch.logical_or(self._last_terminated, self._last_truncated)
+            self._ee_stretch_logger.log_step(
+                env_ids=None,
+                rewards=rewards.squeeze(-1) if rewards.ndim > 1 else rewards,
+                log_extras=self.extras.get("log", {}),
+                success=self.task_success,
+                done=done,
+                clamp_meta=self._ee_stretch_clamp_meta,
+            )
         return rewards
     
     def _normalize_env_ids(self, env_ids):
@@ -1013,93 +1358,98 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
-    def _reset_target_pose(self, env_ids):
-        default_state = self.hand.data.default_root_state.clone()[env_ids]
-
-        num_envs = len(env_ids)
-
-        # x, y: ±0.02 m, z: ±0.01 m
-        pos_noise = torch.empty((num_envs, 3), device=self.device)
-        pos_noise[:, 0] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # x
-        pos_noise[:, 1] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # y
-        pos_noise[:, 2] = sample_uniform(-0.01, 0.01, (num_envs,), device=self.device)  # z
-
-        init_pos = default_state[0, 0:3].unsqueeze(0).repeat(num_envs, 1)
-
-        default_state[:, 0:3] = (
-            init_pos
-            + pos_noise 
-            + self.scene.env_origins[env_ids]
-        )
-
-        init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
-
-        # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
-        B = int(len(env_ids))
-        # pitch_rad = sample_uniform(
-        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-        #     (B,),
-        #     device=self.device,
-        # )
-        yaw_rad = sample_uniform(
-            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
-            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
-            (B,),
-            device=self.device,
-        )
-        zero = torch.zeros_like(yaw_rad)
-        q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
-        # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
-        # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
-        default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
-
-        default_state[:, 7:] = 0.0
-
-        joint_pos = self.hand.data.default_joint_pos[env_ids]
-        joint_vel = torch.zeros_like(joint_pos)
-
-        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
-        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-        self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-        # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
-        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
-        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
-        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
-    
     # def _reset_target_pose(self, env_ids):
-    #     # Default root state for selected envs
     #     default_state = self.hand.data.default_root_state.clone()[env_ids]
 
-    #     # No randomization for position
+    #     num_envs = len(env_ids)
+
+    #     # x, y: ±0.02 m, z: ±0.01 m
+    #     pos_noise = torch.empty((num_envs, 3), device=self.device)
+    #     pos_noise[:, 0] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # x
+    #     pos_noise[:, 1] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # y
+    #     pos_noise[:, 2] = sample_uniform(-0.01, 0.01, (num_envs,), device=self.device)  # z
+
+    #     init_pos = default_state[0, 0:3].unsqueeze(0).repeat(num_envs, 1)
+
     #     default_state[:, 0:3] = (
-    #         self.hand.data.default_root_state[env_ids, 0:3]
+    #         init_pos
+    #         + pos_noise 
     #         + self.scene.env_origins[env_ids]
     #     )
 
-    #     # No randomization for rotation
-    #     default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+    #     init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
 
-    #     # Reset root velocity
+    #     # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
+    #     B = int(len(env_ids))
+    #     # pitch_rad = sample_uniform(
+    #     #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+    #     #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+    #     #     (B,),
+    #     #     device=self.device,
+    #     # )
+    #     yaw_rad = sample_uniform(
+    #         torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+    #         torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+    #         (B,),
+    #         device=self.device,
+    #     )
+    #     zero = torch.zeros_like(yaw_rad)
+    #     q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
+    #     # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
+    #     # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
+    #     default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
+
     #     default_state[:, 7:] = 0.0
 
-    #     # Reset joints
     #     joint_pos = self.hand.data.default_joint_pos[env_ids]
     #     joint_vel = torch.zeros_like(joint_pos)
 
     #     self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
     #     self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
     #     self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-
-    #     # Cache root pose actually written
-    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
-    #         dtype=self.goal_hand_root_pos.dtype
-    #     )
-    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
-    #         dtype=self.goal_hand_root_quat.dtype
-    #     )
-
+    #     # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
+    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
+    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
     #     self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+    
+    def _reset_target_pose(self, env_ids):
+        if not self.cfg.spawn_shadow_hand:
+            fixed = self._get_task_target_positions(env_ids)
+            if fixed is not None:
+                self._apply_task_target_dict(env_ids, fixed)
+            return
+        # Default root state for selected envs
+        default_state = self.hand.data.default_root_state.clone()[env_ids]
+
+        # No randomization for position
+        default_state[:, 0:3] = (
+            self.hand.data.default_root_state[env_ids, 0:3]
+            + self.scene.env_origins[env_ids]
+        )
+
+        # No randomization for rotation
+        default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+
+        # Reset root velocity
+        default_state[:, 7:] = 0.0
+
+        # Reset joints
+        joint_pos = self.hand.data.default_joint_pos[env_ids]
+        joint_vel = torch.zeros_like(joint_pos)
+
+        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
+        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+        self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+
+        # Cache root pose actually written
+        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
+            dtype=self.goal_hand_root_pos.dtype
+        )
+        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
+            dtype=self.goal_hand_root_quat.dtype
+        )
+
+        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
 
     def _update_goal_aperture_targets(self, env_ids, thumb_offset=0.03, pinky_offset=0.02) -> None:
         """Recompute outward reach targets and stretch scalars from **current** ShadowHand geometry.
@@ -1144,6 +1494,8 @@ class ReachDeformableBraceletEnv(AIRECEnv):
 
     def _reset_goal_aperture(self, env_ids, thumb_offset=0.03, pinky_offset=0.02):
         """Reset-time hook: same as per-step aperture update (expects fresh fingertip frames if called after compute)."""
+        if self._uses_fixed_task_targets():
+            return
         self._update_goal_aperture_targets(env_ids, thumb_offset=thumb_offset, pinky_offset=pinky_offset)
 
     def _build_bracelet_rim_node_indices(self) -> torch.Tensor:
@@ -1505,22 +1857,39 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             self.goal_west_pos[env_ids] = 0.0
             self.goal_cent_pos[env_ids] = 0.0
         
-        self.goal_wrist_pos[env_ids] = self.wrist_goal_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.thumb_goal_pos[env_ids] = self.thumb_goal_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.pinky_goal_pos[env_ids] = self.pinky_goal_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.thumb_goal_rot[env_ids] = self.thumb_goal_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.pinky_goal_rot[env_ids] = self.pinky_goal_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.fore_goal_pos[env_ids] = self.fore_goal_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.fore_goal_rot[env_ids] = self.fore_goal_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.middle_goal_pos[env_ids] = self.middle_goal_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.middle_goal_rot[env_ids] = self.middle_goal_frame.data.target_quat_source[..., 0, :][env_ids]
-        self.ring_goal_pos[env_ids] = self.ring_goal_frame.data.target_pos_source[..., 0, :][env_ids]
-        self.ring_goal_rot[env_ids] = self.ring_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+        fixed_targets = self._get_task_target_positions(env_ids)
+        if fixed_targets is not None:
+            self._apply_task_target_dict(env_ids, fixed_targets)
+            if self.cfg.spawn_shadow_hand:
+                self.thumb_goal_rot[env_ids] = self.thumb_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+                self.pinky_goal_rot[env_ids] = self.pinky_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+                self.fore_goal_rot[env_ids] = self.fore_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+                self.middle_goal_rot[env_ids] = self.middle_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+                self.ring_goal_rot[env_ids] = self.ring_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+            else:
+                q = self.identity_quat[env_ids]
+                self.thumb_goal_rot[env_ids] = q
+                self.pinky_goal_rot[env_ids] = q
+                self.fore_goal_rot[env_ids] = q
+                self.middle_goal_rot[env_ids] = q
+                self.ring_goal_rot[env_ids] = q
+            self._visualize_debug_fixed_targets(env_ids)
+        else:
+            self.goal_wrist_pos[env_ids] = self.wrist_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+            self.thumb_goal_pos[env_ids] = self.thumb_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+            self.pinky_goal_pos[env_ids] = self.pinky_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+            self.thumb_goal_rot[env_ids] = self.thumb_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+            self.pinky_goal_rot[env_ids] = self.pinky_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+            self.fore_goal_pos[env_ids] = self.fore_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+            self.fore_goal_rot[env_ids] = self.fore_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+            self.middle_goal_pos[env_ids] = self.middle_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+            self.middle_goal_rot[env_ids] = self.middle_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+            self.ring_goal_pos[env_ids] = self.ring_goal_frame.data.target_pos_source[..., 0, :][env_ids]
+            self.ring_goal_rot[env_ids] = self.ring_goal_frame.data.target_quat_source[..., 0, :][env_ids]
+            # Dynamic outward targets track live fingertips; depth / ellipse below use **env-local** offsets.
+            self._update_goal_aperture_targets(env_ids)
 
-        # Dynamic outward targets track live fingertips; depth / ellipse below use **env-local base** offsets from ``goal_cent``.
-        self._update_goal_aperture_targets(env_ids)
-
-        if self.cfg.show_task_markers and self.thumb_target_markers is not None:
+        if self.cfg.show_task_markers and self.thumb_target_markers is not None and fixed_targets is None:
             self.thumb_target_markers.visualize(
                 self.thumb_target[env_ids] + self.scene.env_origins[env_ids],
                 self.identity_quat[env_ids],
@@ -1563,6 +1932,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             self.garment_left_ee_euclidean_distance[env_ids] = 1e3
 
         # upper/under distance
+        # print(f"ee_pos: {self.ee_pos[0]}, goal_wrist_pos: {self.goal_wrist_pos[0]}")
         self.wrist_ee_distance[env_ids] = self.ee_pos[env_ids] - self.goal_wrist_pos[env_ids]
         self.wrist_ee_euclidean_distance[env_ids] = torch.norm(self.wrist_ee_distance[env_ids], dim=1)
 
@@ -1592,7 +1962,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
         # print(f"ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
-        # print(f"goal_stretch_euclidean_distance: {self.goal_stretch_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}, ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
+        # print(f"goal_stretch_euclidean_distance: {self.goal_streetch_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}, ee_euclidean_distance: {self.ee_euclidean_distance[0]}")
         # print(f"garment_right_ee_euclidean_distance: {self.garment_right_ee_euclidean_distance[0]}, garment_left_ee_euclidean_distance: {self.garment_left_ee_euclidean_distance[0]}, right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}, left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]}")
         # print(f"wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
         # print(f"Goal stretch Euclidean distance: {self.goal_stretch_euclidean_distance[env_ids]}")
@@ -1601,6 +1971,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         # Env-local (robot base) bracelet metrics — same as :class:`~tasks.airec.reach_bracelet.ReachBraceletEnv`.
         # All positions are already env-local; no rim-PCA / ``quat_apply_inverse`` opening frame.
         # ------------------------------------------------------------------
+        # print(f"goal_cent_pos: {self.goal_cent_pos[0]}, goal_wrist_pos: {self.goal_wrist_pos[0]}")
         self.wrist_center_distance[env_ids] = self.goal_wrist_pos[env_ids] - self.goal_cent_pos[env_ids]
         self.wrist_center_euclidean_distance[env_ids] = torch.norm(self.wrist_center_distance[env_ids], dim=1)
         # print(f"wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
@@ -1742,6 +2113,18 @@ def compute_rewards(
     left_ee_pinky_angular_threshold = 0.8
     ######## conditions for rewards ########
     ee_near_condition = (ee_euclidean_distance < ee_distance_threshold) #& (right_ee_thumb_angular_distance < ee_angular_thretholds["right_ee_thumb"])
+    safe_ee_distance = 0.25
+    too_far_threshold = 0.30
+
+    ee_width_warning_ratio = torch.clamp(
+        (ee_euclidean_distance - safe_ee_distance)
+        / (too_far_threshold - safe_ee_distance),
+        min=0.0,
+        max=1.0,
+    )
+
+    ee_width_soft_gate = 1.0 - ee_width_warning_ratio
+
     right_ee_thumb_angular_condition = (right_ee_thumb_angular_distance < right_ee_thumb_angular_threshold)
     left_ee_pinky_angular_condition = (left_ee_pinky_angular_distance < left_ee_pinky_angular_threshold)
     wrist_between_height_condition = (top_height > wrist_height) & (wrist_height > bottom_height)
@@ -1751,8 +2134,8 @@ def compute_rewards(
     ######## rewards for reaching ########
     reaching_right_ee_thumb_scale = 2.0
     reaching_left_ee_pinky_scale = 1.0
-    right_ee_thumb_condition = (ee_near_condition) & thumb_between_height_condition
-    left_ee_pinky_condition = (ee_near_condition) & pinky_between_height_condition 
+    right_ee_thumb_condition = ee_width_soft_gate * thumb_between_height_condition
+    left_ee_pinky_condition = ee_width_soft_gate * pinky_between_height_condition 
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")
     r_right_ee_thumb_distance = (
         distance_reward(right_ee_thumb_euclidean_distance, std=0.14) 
@@ -1768,11 +2151,11 @@ def compute_rewards(
     )
 
     ######## rewards for insert ########
-    reaching_wrist_center_scale = 20.0
-    wrist_center_condition = ee_near_condition 
+    reaching_wrist_center_scale = 10.0
+    wrist_center_condition = ee_width_soft_gate 
     
     r_wrist_center_distance = (
-        distance_reward(wrist_center_euclidean_distance, std=0.26)
+        distance_reward(wrist_center_euclidean_distance, std=0.16)
         * reaching_wrist_center_scale 
         * wrist_center_condition
         * fingers_inside_soft_gate
