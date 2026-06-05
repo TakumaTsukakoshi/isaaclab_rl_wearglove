@@ -2019,6 +2019,10 @@ def compute_rewards(
     left_ee_pinky_angular_threshold = 0.8
     ######## conditions for rewards ########
     ee_near_condition = (ee_euclidean_distance < ee_distance_threshold) #& (right_ee_thumb_angular_distance < ee_angular_thretholds["right_ee_thumb"])
+<<<<<<< HEAD
+=======
+
+>>>>>>> 1ad02b7 (refactor: Update AIREC environment configurations for enhanced grasping dynamics and reward calculations)
     safe_ee_distance = 0.25
     too_far_threshold = 0.30
 
@@ -2030,6 +2034,10 @@ def compute_rewards(
     )
 
     ee_width_soft_gate = 1.0 - ee_width_warning_ratio
+<<<<<<< HEAD
+=======
+
+>>>>>>> 1ad02b7 (refactor: Update AIREC environment configurations for enhanced grasping dynamics and reward calculations)
     right_ee_thumb_angular_condition = (right_ee_thumb_angular_distance < right_ee_thumb_angular_threshold)
     left_ee_pinky_angular_condition = (left_ee_pinky_angular_distance < left_ee_pinky_angular_threshold)
     wrist_between_height_condition = (top_height > wrist_height) & (wrist_height > bottom_height)
@@ -2039,8 +2047,13 @@ def compute_rewards(
     ######## rewards for reaching ########
     reaching_right_ee_thumb_scale = 2.0
     reaching_left_ee_pinky_scale = 1.0
+<<<<<<< HEAD
     right_ee_thumb_condition = (ee_width_soft_gate) * thumb_between_height_condition
     left_ee_pinky_condition = (ee_width_soft_gate) * pinky_between_height_condition 
+=======
+    right_ee_thumb_condition = (ee_width_soft_gate) & thumb_between_height_condition
+    left_ee_pinky_condition = (ee_width_soft_gate) & pinky_between_height_condition 
+>>>>>>> 1ad02b7 (refactor: Update AIREC environment configurations for enhanced grasping dynamics and reward calculations)
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")
     r_right_ee_thumb_distance = (
         distance_reward(right_ee_thumb_euclidean_distance, std=0.14) 
@@ -2056,7 +2069,11 @@ def compute_rewards(
     )
 
     ######## rewards for insert ########
+<<<<<<< HEAD
     reaching_wrist_center_scale = 5.0
+=======
+    reaching_wrist_center_scale = 10.0
+>>>>>>> 1ad02b7 (refactor: Update AIREC environment configurations for enhanced grasping dynamics and reward calculations)
     wrist_center_condition = ee_width_soft_gate 
     
     r_wrist_center_distance = (
