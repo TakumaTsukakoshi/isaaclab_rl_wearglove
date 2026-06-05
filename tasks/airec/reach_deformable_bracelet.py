@@ -2048,12 +2048,17 @@ def compute_rewards(
     reaching_right_ee_thumb_scale = 2.0
     reaching_left_ee_pinky_scale = 1.0
 <<<<<<< HEAD
+<<<<<<< HEAD
     right_ee_thumb_condition = (ee_width_soft_gate) * thumb_between_height_condition
     left_ee_pinky_condition = (ee_width_soft_gate) * pinky_between_height_condition 
 =======
     right_ee_thumb_condition = (ee_width_soft_gate) & thumb_between_height_condition
     left_ee_pinky_condition = (ee_width_soft_gate) & pinky_between_height_condition 
 >>>>>>> 1ad02b7 (refactor: Update AIREC environment configurations for enhanced grasping dynamics and reward calculations)
+=======
+    right_ee_thumb_condition = (ee_width_soft_gate) * thumb_between_height_condition
+    left_ee_pinky_condition = (ee_width_soft_gate) * pinky_between_height_condition 
+>>>>>>> d4e1c8d (refactor: Update reward condition calculations in ReachDeformableBraceletEnv)
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")
     r_right_ee_thumb_distance = (
         distance_reward(right_ee_thumb_euclidean_distance, std=0.14) 
