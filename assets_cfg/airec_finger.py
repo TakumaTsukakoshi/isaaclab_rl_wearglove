@@ -342,7 +342,7 @@ AIREC_CFG = ArticulationCfg(
     articulation_root_prim_path="/world",
     spawn=sim_utils.UsdFileCfg(
         # usd_path=os.path.join(PARENT_DIR, "assets/airec/dry-airec_collision_filtered-new.usd"),
-        usd_path=os.path.join(PARENT_DIR, "assets/airec2_finger_v4/airec2_finger_new.usd"),
+        usd_path=os.path.join(PARENT_DIR, "assets/airec2_finger_v5/airec2_finger.usd"),
         activate_contact_sensors=False,
         #to fix self collision, look up collision filtering in isaac sim docs
         articulation_props=robot_articulation_settings,
@@ -509,21 +509,25 @@ AIREC_CFG = ArticulationCfg(
         # "left_arm_joint_2": radians(-14),
         # "left_arm_joint_2": radians(-20), default
         "left_arm_joint_2": radians(-11),
-        "left_arm_joint_3": radians(-9),
+        "left_arm_joint_3": radians(-9), # for real
+        # "left_arm_joint_3": radians(-14), # default
         # "left_arm_joint_4": radians(100),
-        "left_arm_joint_4": radians(101),
+        "left_arm_joint_4": radians(101), # for real
+        # "left_arm_joint_4": radians(105), # default
         "left_arm_joint_5": radians(26),
         # "left_arm_joint_6": radians(45),
         "left_arm_joint_6": radians(65),
-        "left_arm_joint_7": radians(-20),
+        "left_arm_joint_7": radians(20),
         # "right_arm_joint_1": radians(33),
         "right_arm_joint_1": radians(20),
         # "right_arm_joint_2": radians(-14),
         # "right_arm_joint_2": radians(-20),default
         "right_arm_joint_2": radians(-11),
-        "right_arm_joint_3": radians(-9),
+        "right_arm_joint_3": radians(-9), # for real
+        # "right_arm_joint_3": radians(-14), # default
         # "right_arm_joint_4": radians(100),
-        "right_arm_joint_4": radians(101),
+        "right_arm_joint_4": radians(101), # for real
+        # "right_arm_joint_4": radians(105), # default
         "right_arm_joint_5": radians(26),
         # "right_arm_joint_6": radians(45),
         "right_arm_joint_6": radians(65),

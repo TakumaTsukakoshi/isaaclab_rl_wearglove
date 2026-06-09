@@ -41,6 +41,7 @@ SHADOW_HAND_CFG = ArticulationCfg(
             max_depenetration_velocity=_SHADOW_HAND_MAX_DEPENETRATION_VELOCITY, # default 1000.0
         ),
         scale=(1.0, 0.75, 1.0),
+        # scale=(1.0, 1.0, 1.0),
         # scale=(0.7, 0.7, 0.7),
         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
             enabled_self_collisions=True,
@@ -69,18 +70,19 @@ SHADOW_HAND_CFG = ArticulationCfg(
         # pos=(0.95, 0.0, 0.90),
         #    pos=(0.95, 0.0, 0.95),
             # pos=(0.85, 0.0, 0.75), # default
-            #  pos=(0.83, 0.0, 0.75), # rigid bracelet
-            # pos=(0.90, 0.0, 0.88), # deformable bracelet
+            # pos=(0.83, 0.0, 0.75), # rigid bracelet
+            # pos=(0.90, 0.0, 0.75), # deformable bracelet
             pos=(0.80, 0.0, 0.80), # deformable bracelet - after chnging scale to 0.75
         # rot=(0.0, 0.7071, 0.7071, 0.0),# imitation
         rot=(0.5, 0.5, -0.5, -0.5),
         joint_pos={
             #".*": 0.0,          # default: open hand
             "robot0_THJ0": 0.0,   # thumb ab/adduction
-            "robot0_THJ1": -0.524,   # CMC flex
-            "robot0_THJ2": 0.0,   # CMC rotation
+            # "robot0_THJ1": -0.524,   # CMC flex
+            "robot0_THJ1": -0.35,   # CMC flex
+            "robot0_THJ2": -0.2,   # CMC rotation
             "robot0_THJ3": 0.0,   # MCP flex
-            "robot0_THJ4": 0.0,   # IP flex
+            "robot0_THJ4": 0.8,   # IP flex
             # "robot0_THJ0": 3.14,
             # "robot0_THJ1":  3.14,        # example values – tweak
             # "robot0_THJ2":  3.14,
