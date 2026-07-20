@@ -289,6 +289,22 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
     if getattr(args_cli, "debug_joint_interval", None) is not None:
         env_cfg.debug_joint_print_interval = int(args_cli.debug_joint_interval)
 
+    if bool(getattr(args_cli, "show_task_markers", False)):
+        if not hasattr(env_cfg, "show_task_markers"):
+            raise AttributeError(
+                "--show-task-markers requested, but env_cfg has no show_task_markers field"
+            )
+        env_cfg.show_task_markers = True
+    if bool(getattr(args_cli, "debug_opening_pca", False)):
+        if not hasattr(env_cfg, "debug_opening_pca_on_reset"):
+            raise AttributeError(
+                "--debug-opening-pca requested, but env_cfg has no debug_opening_pca_on_reset field"
+            )
+        env_cfg.debug_opening_pca_on_reset = True
+        # Match production NSEW (opening_ring + pca_frozen) when inspecting PCA.
+        if hasattr(env_cfg, "debug_opening_pca_use_opening_ring"):
+            env_cfg.debug_opening_pca_use_opening_ring = True
+
     return env_cfg
 
 

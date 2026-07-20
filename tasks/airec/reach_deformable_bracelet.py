@@ -77,8 +77,8 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #: If False, use the glove-style **fixed** nodal indices from :meth:`AIRECEnv._choose_mouth_nodes_4dirs` (same as before).
     deformable_bracelet_geom_rim_goals: bool = True
     #: How N/S/E/W rim goals are computed (deformable glove):
-    #:   ``pca_frozen`` — **recommended**: opening-ring PCA on the rest mesh once; N/S on in-plane
-    #:   short axis ``e2`` (±Z stabilized); E/W on ``e1``; fixed nodal indices thereafter.
+    #:   ``pca_frozen`` — **recommended**: opening-ring PCA once; N/S/E/W = rim nodes nearest to
+    #:   PCA-axis ∩ rim (+Y=E, −Y=W, +Z=N, −Z=S); fixed nodal indices thereafter.
     #:   ``world_axes`` — each step: env-local Y/Z extrema on the rim vertex set.
     #:   ``world_axes_frozen`` — same world-axis rules once at init on rest pose; track fixed nodal indices.
     #:   ``pca`` — each step: PCA on the deformed rim band (set ``geom_freeze_nsew_at_init=True`` to freeze instead).
@@ -94,6 +94,15 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     deformable_bracelet_geom_freeze_nsew_at_init: bool = True
     deformable_bracelet_freeze_nsew_use_world_axes: bool = False
     deformable_bracelet_rim_world_axis_extreme_k: int = 8
+    #: Corridor half-width (fraction of max in-plane rim radius) for PCA-axis ∩ rim NSEW picks.
+    #: Vertices with perpendicular distance to the axis ray above this fall back to
+    #: ``center + median_r * axis`` then nearest rim node. Raise toward ``0.6–0.8`` if N/S
+    #: keep landing on E/W walls.
+    deformable_bracelet_ns_midline_frac: float = 0.35
+    #: Opening-ring radial quantile used **only for N/S** axis∩rim picks.
+    #: ``None`` = same as ``mouth_ring_quantile`` (E/W ring). ``0.0`` = full opening-plane
+    #: patch (includes top/bottom edges that the outer ring often misses).
+    deformable_bracelet_ns_ring_quantile: float | None = 0.0
     #: ``opening_ring`` = cuff opening vertices only; ``outer_band`` = full-mesh outer quantile band.
     deformable_bracelet_rim_vertex_set: str = "opening_ring"
     #: Opening end for ``opening_ring``: slice **away** from AIREC grip toward Shadow Hand.
@@ -1409,8 +1418,9 @@ class ReachDeformableBraceletEnv(AIRECEnv):
     def _freeze_geom_rim_nsew_labels_from_rest(self) -> None:
         """N/S/E/W from opening-ring PCA on the **rest** mesh (``default_nodal_state_w``), evaluated once.
 
-        E/W: top-``k`` extreme band along in-plane ``e1`` (wide axis).
-        N/S: extremal ``e2`` (short axis) with minimum ``e1`` offset (top/bottom of opening ellipse).
+        E/W: PCA-axis ∩ thin opening ring (``mouth_ring_quantile``).
+        N/S: PCA-axis ∩ thicker opening patch (``deformable_bracelet_ns_ring_quantile``, default 0).
+        Labels: +Y=E, −Y=W, +Z=N, −Z=S.
         """
         if self._bracelet_rim_idx is None:
             return
@@ -1419,20 +1429,41 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         r = self._compute_rest_rim_pca_frame()
         if r is None:
             return
-        _, e1, e2, x = r
-        idx = self._bracelet_rim_idx
-        p_w = self.object.data.default_nodal_state_w[0, idx, :3].to(device=self.device, dtype=torch.float32)
-        origin0 = self.scene.env_origins[0].to(dtype=p_w.dtype)
-        p_row = p_w - origin0.unsqueeze(0)
-        mouths = self._pick_nsew_global_indices_pca_frozen_ring(p_row, idx, e1, e2, x)
+        _, e1, e2, _ = r
+        idx_ew = self._bracelet_rim_idx
+        ns_q = getattr(self.cfg, "deformable_bracelet_ns_ring_quantile", None)
+        ew_q = float(getattr(self.cfg, "mouth_ring_quantile", 0.65))
+        if ns_q is not None and float(ns_q) < ew_q - 1e-9:
+            idx_ns = self._build_opening_ring_node_indices(ring_quantile=float(ns_q))
+        else:
+            idx_ns = idx_ew
+
+        origin0 = self.scene.env_origins[0].to(device=self.device, dtype=torch.float32)
+        p_all = self.object.data.default_nodal_state_w[0, :, :3].to(device=self.device, dtype=torch.float32)
+        p_ew = p_all[idx_ew] - origin0.unsqueeze(0)
+        p_ns = p_all[idx_ns] - origin0.unsqueeze(0)
+        # Shared PCA center from the E/W ring (stable wide-axis frame).
+        center = p_ew.mean(dim=0)
+        mouths = self._pick_nsew_axis_rim_indices(
+            center=center,
+            e1=e1,
+            e2=e2,
+            p_ew=p_ew,
+            idx_ew=idx_ew,
+            p_ns=p_ns,
+            idx_ns=idx_ns,
+        )
         self._frozen_geom_east_idx = mouths["east"]
         self._frozen_geom_west_idx = mouths["west"]
         self._frozen_geom_north_idx = mouths["north"]
         self._frozen_geom_south_idx = mouths["south"]
 
         if self.cfg.show_task_markers:
-            print("[PCA-frozen NSEW rim labels on rest opening ring]")
-            p_all = self.object.data.default_nodal_state_w[0, :, :3].to(device=self.device, dtype=torch.float32)
+            print(
+                f"[PCA-frozen NSEW] E/W ring={int(idx_ew.numel())} verts "
+                f"(q={ew_q:.2f}), N/S patch={int(idx_ns.numel())} verts "
+                f"(q={ew_q if ns_q is None else float(ns_q):.2f})"
+            )
             for name, gidx in (
                 ("north", self._frozen_geom_north_idx),
                 ("south", self._frozen_geom_south_idx),

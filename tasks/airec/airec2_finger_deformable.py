@@ -362,7 +362,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # currently 28
     # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_torso_joints
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints 
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -1563,10 +1563,8 @@ class AIRECEnv(DirectRLEnv):
         *,
         positive_e2: bool,
     ) -> int | torch.Tensor:
-        """North/south on an elliptical opening ring in the ``(e1, e2)`` plane.
-
-        Prefer extremal ``e2`` (short / N–S axis) while penalizing ``e1`` offset so the pick
-        sits near the top/bottom of the ring (not a left/right wall corner).
+        """Legacy N/S pick (batched ``pca`` path). Prefer axis–rim intersection via
+        :meth:`_pick_nsew_global_indices_pca_frozen_ring` for production ``pca_frozen``.
         """
         if rel.dim() == 2:
             pu = (rel * e1.unsqueeze(0)).sum(-1)
@@ -1596,6 +1594,39 @@ class AIRECEnv(DirectRLEnv):
             vert = AIRECEnv._rim_local_idx_on_vertical_axis(rel, upward=positive_e2)
             best = torch.where(all_bad, vert, best)
         return best
+
+    @staticmethod
+    def _nearest_rim_local_on_axis_ray(
+        p_row: torch.Tensor,
+        center: torch.Tensor,
+        axis_dir: torch.Tensor,
+        *,
+        midline_frac: float = 0.35,
+    ) -> int:
+        """Rim-local index nearest to where the ray ``center + t * axis_dir`` (t>0) meets the rim.
+
+        1) Prefer vertices close to the ray (small perpendicular distance) with ``t > 0``.
+        2) If none lie in the axis corridor, snap to the ideal intersection
+           ``center + r_med * axis_dir`` (median in-plane radius) then nearest rim vertex.
+        """
+        d = axis_dir / (torch.norm(axis_dir) + 1e-8)
+        rel = p_row - center.unsqueeze(0)
+        along = (rel * d.unsqueeze(0)).sum(-1)
+        perp = rel - along.unsqueeze(1) * d.unsqueeze(0)
+        dist_perp = torch.linalg.norm(perp, dim=-1)
+        r = torch.linalg.norm(rel, dim=-1)
+        r_scale = r.amax().clamp_min(1e-6)
+        corridor = (along > 0.0) & (dist_perp <= midline_frac * r_scale)
+        if bool(corridor.any().item()):
+            scores = torch.where(
+                corridor,
+                along - 2.0 * dist_perp,
+                torch.full_like(along, float("-inf")),
+            )
+            return int(torch.argmax(scores).item())
+        r_med = float(torch.quantile(r, 0.5).item()) if int(r.numel()) > 0 else float(r_scale.item())
+        target = center + r_med * d
+        return int(torch.argmin(torch.linalg.norm(p_row - target.unsqueeze(0), dim=-1)).item())
 
     @staticmethod
     def _pca_frozen_axes_from_ring_positions(
@@ -1636,27 +1667,52 @@ class AIRECEnv(DirectRLEnv):
         *,
         k_extreme: int | None = None,
     ) -> dict[str, int]:
-        """N/S/E/W global nodal indices on ``opening_ring`` (production ``pca_frozen`` rules)."""
-        k_ext = int(
-            k_extreme
-            if k_extreme is not None
-            else getattr(self.cfg, "deformable_bracelet_rim_world_axis_extreme_k", 8)
+        """N/S/E/W = rim nodes nearest to PCA-axis ∩ opening rim (single vertex set)."""
+        del k_extreme
+        del x_centered
+        center = p_row.mean(dim=0)
+        return self._pick_nsew_axis_rim_indices(
+            center=center,
+            e1=e1,
+            e2=e2,
+            p_ew=p_row,
+            idx_ew=rim_idx,
+            p_ns=p_row,
+            idx_ns=rim_idx,
         )
-        a = (x_centered * e1.unsqueeze(0)).sum(-1)
-        _, g_e = self._pick_representative_vertex_from_extreme_band(
-            p_row, a, rim_idx, largest=True, k_extreme=k_ext
-        )
-        _, g_w = self._pick_representative_vertex_from_extreme_band(
-            p_row, a, rim_idx, largest=False, k_extreme=k_ext
-        )
-        rel = p_row - p_row.mean(dim=0, keepdim=True)
-        nl = self._rim_local_idx_on_inplane_short_axis(rel, e1, e2, positive_e2=True)
-        sl = self._rim_local_idx_on_inplane_short_axis(rel, e1, e2, positive_e2=False)
+
+    def _pick_nsew_axis_rim_indices(
+        self,
+        *,
+        center: torch.Tensor,
+        e1: torch.Tensor,
+        e2: torch.Tensor,
+        p_ew: torch.Tensor,
+        idx_ew: torch.Tensor,
+        p_ns: torch.Tensor,
+        idx_ns: torch.Tensor,
+    ) -> dict[str, int]:
+        """Axis∩rim picks with optional separate vertex sets for E/W vs N/S.
+
+        Labels follow world convention: **+Y → East, −Y → West, +Z → North, −Z → South**.
+        """
+        y_axis = torch.tensor([0.0, 1.0, 0.0], device=center.device, dtype=center.dtype)
+        z_axis = torch.tensor([0.0, 0.0, 1.0], device=center.device, dtype=center.dtype)
+        e1_ew = e1 if float(torch.dot(e1, y_axis).item()) >= 0.0 else -e1
+        e2_ns = e2 if float(torch.dot(e2, z_axis).item()) >= 0.0 else -e2
+        midline = float(getattr(self.cfg, "deformable_bracelet_ns_midline_frac", 0.20))
+
+        def _g(p_row: torch.Tensor, rim_idx: torch.Tensor, axis: torch.Tensor) -> int:
+            local = self._nearest_rim_local_on_axis_ray(
+                p_row, center, axis, midline_frac=midline
+            )
+            return int(rim_idx[local].item())
+
         return {
-            "east": g_e,
-            "west": g_w,
-            "north": int(rim_idx[nl].item()),
-            "south": int(rim_idx[sl].item()),
+            "east": _g(p_ew, idx_ew, e1_ew),
+            "west": _g(p_ew, idx_ew, -e1_ew),
+            "north": _g(p_ns, idx_ns, e2_ns),
+            "south": _g(p_ns, idx_ns, -e2_ns),
         }
 
     @staticmethod

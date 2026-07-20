@@ -46,6 +46,22 @@ parser.add_argument(
     action="store_true",
     help="Disable AIREC self-collision. Not implied by --scene-mode free_space.",
 )
+parser.add_argument(
+    "--show-task-markers",
+    action="store_true",
+    help=(
+        "Show N/S/E/W/C rim goal spheres (+ thumb/pinky targets). "
+        "Requires a GUI viewport (do not use --headless). Also prints frozen NSEW indices at init."
+    ),
+)
+parser.add_argument(
+    "--debug-opening-pca",
+    action="store_true",
+    help=(
+        "Draw opening-ring PCA axes (e1/e2/n) on reset via debug_draw. "
+        "Requires GUI; useful to inspect how NSEW axes are chosen."
+    ),
+)
 
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument(
