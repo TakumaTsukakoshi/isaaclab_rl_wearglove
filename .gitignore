@@ -211,3 +211,7 @@ outputs/
 wandb/
 assets/
 videos/
+finger_gate_plots/
+joint_tracking_plots/
+joint_tracking_plots_free_space/
+log_eval/

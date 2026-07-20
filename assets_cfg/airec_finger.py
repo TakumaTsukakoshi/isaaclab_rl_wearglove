@@ -192,7 +192,16 @@ IMITATION_DEFAULT_JOINT_NAMES: tuple[str, ...] = (
 )
 
 robot_articulation_settings = sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True,
+            # 2026-07-19: self-collision disabled. The wrist/hand collision meshes
+            # interpenetrate permanently (joint-6 hold torque +442 Nm with
+            # self-collision ON vs +0.3 Nm OFF, measured in free_space with effort
+            # limits lifted; even a 0 deg target could not be held). This pushed
+            # arm joints 5-7 into 100% torque saturation and ~2.5 rad tracking
+            # error. Gravity itself needs <10 Nm at the wrist, so the configured
+            # effort limits (50/30 Nm) are fine. Re-enable only after fixing the
+            # asset collision geometry or adding USD filtered pairs for the
+            # overlapping wrist/hand links.
+            enabled_self_collisions=False,
             solver_position_iteration_count=24, # default 8
             solver_velocity_iteration_count=12,
             sleep_threshold=0.00001,
@@ -295,41 +304,39 @@ high_torso_damping={"torso_joint_1": 1000,
                     "torso_joint_3": 300,
                     }
 
-high_left_arm_stiffness = {"left_arm_joint_1": 5000, 
-                    "left_arm_joint_2": 5000,
-                    "left_arm_joint_3": 3000,
-                    "left_arm_joint_4": 1000,
-                    "left_arm_joint_5": 1000,
-                    "left_arm_joint_6": 1000,
-                    "left_arm_joint_7": 1000,
+high_left_arm_stiffness = {"left_arm_joint_1": 3000, 
+                    "left_arm_joint_2": 3000,
+                    "left_arm_joint_3": 2000,
+                    "left_arm_joint_4": 2000,
+                    "left_arm_joint_5": 200,
+                    "left_arm_joint_6": 200,
+                    "left_arm_joint_7": 200,
                     }
 
-high_left_arm_damping = {"left_arm_joint_1": 500, 
-                    "left_arm_joint_2": 500,
-                    "left_arm_joint_3": 100,
-                    "left_arm_joint_4": 100,
-                    "left_arm_joint_5": 100,
-                    "left_arm_joint_6": 100,
-                    "left_arm_joint_7": 100
+high_left_arm_damping = {"left_arm_joint_1": 300, 
+                    "left_arm_joint_2": 300,
+                    "left_arm_joint_3": 200,
+                    "left_arm_joint_4": 200,
+                    "left_arm_joint_5": 20,
+                    "left_arm_joint_6": 20,
+                    "left_arm_joint_7": 20
                     }
 
-high_right_arm_stiffness = {"right_arm_joint_1": 5000, 
-
-                    "right_arm_joint_2": 5000,
-                    "right_arm_joint_3": 3000,
-                    "right_arm_joint_4": 3000,
-                    "right_arm_joint_5": 1000,
-                    "right_arm_joint_6": 1000,
-                    "right_arm_joint_7": 1000,
+high_right_arm_stiffness = {"right_arm_joint_1": 3000, 
+                    "right_arm_joint_2": 3000,
+                    "right_arm_joint_3": 2000,
+                    "right_arm_joint_4": 2000,
+                    "right_arm_joint_5": 200,
+                    "right_arm_joint_6": 200,
+                    "right_arm_joint_7": 200,
                     }
-
-high_right_arm_damping = {"right_arm_joint_1": 500, 
-                    "right_arm_joint_2": 500,
-                    "right_arm_joint_3": 300,
-                    "right_arm_joint_4": 300,
-                    "right_arm_joint_5": 100,
-                    "right_arm_joint_6": 100,
-                    "right_arm_joint_7": 100
+high_right_arm_damping = {"right_arm_joint_1": 300, 
+                    "right_arm_joint_2": 300,
+                    "right_arm_joint_3": 200,
+                    "right_arm_joint_4": 200,
+                    "right_arm_joint_5": 20,
+                    "right_arm_joint_6": 20,
+                    "right_arm_joint_7": 20
                     }
 
 AIREC_CFG = ArticulationCfg(
@@ -444,7 +451,7 @@ AIREC_CFG = ArticulationCfg(
     #     # "left_arm_joint_6": radians(45),
     #     "left_arm_joint_6": radians(65),
     #     "left_arm_joint_7": radians(-13),
-    #     "left_arm_joint_7": radians(-13),
+    #     "left_arm_joint_7": radians(13),
     #     # "right_arm_joint_1": radians(33),
     #     "right_arm_joint_1": radians(20),
     #     # "right_arm_joint_2": radians(-14),
@@ -631,20 +638,20 @@ AIREC_CFG = ArticulationCfg(
                 "left_arm_joint_7",
             ],
             effort_limit={
-                "left_arm_joint_1": 70.0,
-                "left_arm_joint_2": 150.0,
-                "left_arm_joint_3": 100.0,
-                "left_arm_joint_4": 190.0,
-                "left_arm_joint_5": 80.0,
-                "left_arm_joint_6": 60.0,
-                "left_arm_joint_7": 50.0,
+                "left_arm_joint_1": 220.0,
+                "left_arm_joint_2": 220.0,
+                "left_arm_joint_3": 110.0,
+                "left_arm_joint_4": 110.0,
+                "left_arm_joint_5": 50.0,
+                "left_arm_joint_6": 50.0,
+                "left_arm_joint_7": 30.0,
             },
-            stiffness=default_left_arm_stiffness,
-            damping=default_left_arm_damping,
+            # stiffness=default_left_arm_stiffness,
+            # damping=default_left_arm_damping,
             # stiffness=low_left_arm_stiffness,
             # damping=low_left_arm_damping,
-            # stiffness=high_left_arm_stiffness,
-            # damping=high_left_arm_damping,
+            stiffness=high_left_arm_stiffness,
+            damping=high_left_arm_damping,
             velocity_limit_sim={
                 "left_arm_joint_1": 2.617 * OVERRIDE_SCALE,
                 "left_arm_joint_2": 2.617 * OVERRIDE_SCALE,
@@ -670,20 +677,20 @@ AIREC_CFG = ArticulationCfg(
                 "right_arm_joint_7",
             ],
             effort_limit={
-                "right_arm_joint_1": 70.0,
-                "right_arm_joint_2": 150.0,
-                "right_arm_joint_3": 100.0,
-                "right_arm_joint_4": 190.0,
-                "right_arm_joint_5": 80.0,
-                "right_arm_joint_6": 60.0,
-                "right_arm_joint_7": 50.0,
+                "right_arm_joint_1": 220.0,
+                "right_arm_joint_2": 220.0,
+                "right_arm_joint_3": 110.0,
+                "right_arm_joint_4": 110.0,
+                "right_arm_joint_5": 50.0,
+                "right_arm_joint_6": 50.0,
+                "right_arm_joint_7": 30.0,
             },
-            stiffness=default_right_arm_stiffness,
-            damping=default_right_arm_damping,
+            # stiffness=default_right_arm_stiffness,
+            # damping=default_right_arm_damping,
             # stiffness=low_right_arm_stiffness,
             # damping=low_right_arm_damping,
-            # stiffness=high_right_arm_stiffness,
-            # damping=high_right_arm_damping,
+            stiffness=high_right_arm_stiffness,
+            damping=high_right_arm_damping,
             velocity_limit_sim={
                 "right_arm_joint_1": 2.617 * OVERRIDE_SCALE,
                 "right_arm_joint_2": 2.617 * OVERRIDE_SCALE,

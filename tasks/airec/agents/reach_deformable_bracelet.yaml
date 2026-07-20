@@ -33,17 +33,12 @@ pixels:
   latent_img_dim: 128
   channels: 3
 
-
-
-# PPO agent configuration (field names are from PPO_DEFAULT_CONFIG)
-# https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
 agent:
   rollouts: 32
   learning_epochs: 8
   mini_batches: 16
   discount_factor: 0.99
   lambda: 0.95
-  # learning_rate: 1.0595873261695062e-05
   learning_rate: 1.0e-06
   random_timesteps: 0
   learning_starts: 0
@@ -58,7 +53,7 @@ agent:
   augment: False
 
 trainer:
-  num_eval_envs: 50
+  num_eval_envs: 200
   max_global_timesteps_M: 200
 
 # logging and checkpoints

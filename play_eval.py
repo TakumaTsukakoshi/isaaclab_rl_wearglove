@@ -34,18 +34,6 @@ parser.add_argument(
 )
 parser.add_argument("--video_dir", type=str, default=None, help="Directory to save recorded videos.")
 parser.add_argument("--agent_cfg", type=str, default=None, help="Name of the agent configuration.")
-parser.add_argument(
-    "--scene-mode",
-    type=str,
-    choices=("full", "free_space"),
-    default="full",
-    help="Scene contents: full task scene (default) or robot-only free-space diagnostics.",
-)
-parser.add_argument(
-    "--disable-self-collision",
-    action="store_true",
-    help="Disable AIREC self-collision. Not implied by --scene-mode free_space.",
-)
 
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument(
@@ -58,55 +46,46 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
-    "--debug-joints",
-    action=argparse.BooleanOptionalAction,
-    default=None,
-    help="Print policy action vs joint_pos_cmd vs measured joint_pos (overrides env cfg).",
-)
-parser.add_argument(
-    "--debug-joint-env-id",
-    type=int,
-    default=None,
-    help="Env index for joint debug stdout (default: env cfg, usually 0).",
-)
-parser.add_argument(
-    "--debug-joint-interval",
-    type=int,
-    default=None,
-    help="Print joint debug every N control steps (default: env cfg).",
-)
-parser.add_argument(
-    "--record-joint-tracking",
-    nargs="?",
-    const="joint_tracking_plots",
-    default=None,
-    help=(
-        "Record q_policy / q_cmd / q_act + applied/computed torque each step for --joint-tracking-env-id. "
-        "Optional DIR (default: joint_tracking_plots). Writes JSON/CSV/PNG per episode."
-    ),
-)
-parser.add_argument(
-    "--joint-tracking-no-plots",
+    "--dressing-eval",
     action="store_true",
-    help="With --record-joint-tracking: save JSON/CSV only, skip PNG plots.",
+    default=False,
+    help="Run dressing-task evaluation (strict success, fingers, wrist distance) and exit.",
 )
 parser.add_argument(
-    "--joint-tracking-env-id",
-    type=int,
-    default=0,
-    help="Env index for joint tracking recording (default: 0).",
-)
-parser.add_argument(
-    "--joint-tracking-max-episodes",
-    type=int,
-    default=3,
-    help="Stop joint tracking recording after this many completed episodes.",
-)
-parser.add_argument(
-    "--joint-tracking-max-joints",
-    type=int,
+    "--object-name",
+    type=str,
     default=None,
-    help="Optional: plot only the first N actuated joints (less clutter).",
+    help="Label for evaluation tables (default: experiment name or object_type).",
+)
+parser.add_argument(
+    "--object-type",
+    type=str,
+    default=None,
+    help="Object category for tables (default: env cfg object_type).",
+)
+parser.add_argument(
+    "--max-episodes",
+    type=int,
+    default=50,
+    help="Stop dressing evaluation after this many completed episodes.",
+)
+parser.add_argument(
+    "--num-fingers",
+    type=int,
+    default=5,
+    help="Number of fingertips for insertion reporting.",
+)
+parser.add_argument(
+    "--eval-save-dir",
+    type=str,
+    default=None,
+    help="With --dressing-eval: save evaluation JSON (includes per-episode insertion gates).",
+)
+parser.add_argument(
+    "--insertion-gate-analysis-dir",
+    type=str,
+    default=None,
+    help="With --dressing-eval: run insertion gate sensitivity analysis into this directory (single method).",
 )
 parser.add_argument(
     "--record-finger-insertion-gate",
@@ -114,7 +93,7 @@ parser.add_argument(
     const="finger_insertion_gate_records",
     default=None,
     help=(
-        "Record per_finger_soft_inside each step for --finger-gate-env-id. "
+        "Record per_finger_soft_inside for --finger-gate-env-id each step. "
         "Optional DIR (default: finger_insertion_gate_records). Writes JSON + CSV per episode."
     ),
 )
@@ -122,7 +101,7 @@ parser.add_argument(
     "--plot-finger-insertion-gate",
     type=str,
     default=None,
-    help="Alias for --record-finger-insertion-gate DIR (also saves PNG unless --finger-gate-no-plots).",
+    help="Alias for --record-finger-insertion-gate DIR (also saves PNG plots unless --finger-gate-no-plots).",
 )
 parser.add_argument(
     "--finger-gate-no-plots",
@@ -152,10 +131,25 @@ parser.add_argument(
     help="Plot each per_finger_soft_inside curve; default is fingers_inside_soft_gate only.",
 )
 parser.add_argument(
-    "--num-fingers",
+    "--debug-joints",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help=(
+        "Print policy action vs joint_pos_cmd vs measured joint_pos (overrides env cfg). "
+        "Reach bracelet / deformable bracelet tasks support this via _debug_print_joint_cmd_vs_actual."
+    ),
+)
+parser.add_argument(
+    "--debug-joint-env-id",
     type=int,
-    default=5,
-    help="Number of fingers for insertion gate logging.",
+    default=None,
+    help="Env index for joint debug stdout (default: env cfg, usually 0).",
+)
+parser.add_argument(
+    "--debug-joint-interval",
+    type=int,
+    default=None,
+    help="Print joint debug every N control steps (default: env cfg).",
 )
 # Rendering options (useful for RTX5090 and similar GPUs)
 parser.add_argument(
@@ -187,6 +181,7 @@ from isaaclab.utils import update_dict
 from isaaclab_tasks.utils.hydra import register_task_to_hydra
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
+from dressing_eval import evaluate_dressing_rollouts, resolve_num_eval_envs, save_dressing_eval_results
 from finger_insertion_gate_viz import (
     FingerInsertionEpisodeTrace,
     FingerInsertionStep,
@@ -194,107 +189,9 @@ from finger_insertion_gate_viz import (
     read_finger_insertion_from_env,
     save_all_traces_csv,
 )
-from joint_tracking_debug import (
-    JointTrackingEpisodeTrace,
-    JointTrackingStep,
-    finalize_joint_tracking_episode,
-    read_joint_tracking_from_env,
-    save_all_joint_tracking_csv,
-)
+from insertion_gate_analysis import analyze_insertion_gate_sensitivity
 from multimodal_rl.rl.ppo import PPO, PPO_DEFAULT_CONFIG
 from multimodal_rl.tools.writer import Writer
-
-
-def _raw_env(env):
-    current = env
-    seen = set()
-    while id(current) not in seen:
-        seen.add(id(current))
-        next_env = getattr(current, "env", None)
-        if next_env is None:
-            break
-        current = next_env
-    return getattr(current, "unwrapped", current)
-
-
-def _print_runtime_diagnostics(env, env_cfg, checkpoint_path: str) -> None:
-    """Print the comparison contract shared by full and free-space runs."""
-    raw = _raw_env(env)
-    scene_mode = str(getattr(env_cfg, "scene_mode", "full"))
-    free_space = scene_mode == "free_space"
-    obs_space = env.observation_space["policy"]
-    obs_shapes = {key: tuple(space.shape) for key, space in obs_space.spaces.items()}
-    obs_keys = list(obs_space.spaces.keys())
-    action_shape = tuple(env.action_space.shape)
-    expected_keys = list(getattr(env_cfg, "obs_list", []))
-    # gym.spaces.Dict stores keys alphabetically; compare as sets (schema, not order).
-    assert set(obs_keys) == set(expected_keys), (
-        f"observation keys changed: runtime={sorted(obs_keys)}, expected={sorted(expected_keys)}"
-    )
-    assert action_shape[-1] == int(env_cfg.num_actions), (
-        f"action width changed: runtime={action_shape}, expected={env_cfg.num_actions}"
-    )
-
-    robot = raw.robot
-    data = robot.data
-    joint_ids = list(raw.actuated_dof_indices)
-    joint_order = [robot.joint_names[i] for i in joint_ids]
-    self_collision = bool(
-        getattr(
-            getattr(getattr(env_cfg.robot_cfg, "spawn", None), "articulation_props", None),
-            "enabled_self_collisions",
-            False,
-        )
-    )
-
-    scene = raw.scene
-    articulation_keys = list(getattr(scene, "articulations", {}).keys())
-    rigid_keys = list(getattr(scene, "rigid_objects", {}).keys())
-    deformable_keys = list(getattr(scene, "deformable_objects", {}).keys())
-    if free_space:
-        assert articulation_keys == ["robot"], (
-            f"free_space contains unexpected articulations: {articulation_keys}"
-        )
-        assert not rigid_keys, f"free_space contains rigid objects: {rigid_keys}"
-        assert not deformable_keys, f"free_space contains deformable objects: {deformable_keys}"
-
-    idx = torch.as_tensor(joint_ids, device=data.joint_pos.device, dtype=torch.long)
-    stiffness = getattr(data, "joint_stiffness", None)
-    damping = getattr(data, "joint_damping", None)
-    effort_limits = getattr(data, "joint_effort_limits", None)
-    velocity_limits = getattr(data, "joint_vel_limits", None)
-
-    def _selected(value):
-        if value is None:
-            return "unavailable"
-        tensor = value[0] if value.ndim > 1 else value
-        return tensor[idx].detach().cpu().tolist()
-
-    print(f"Scene mode: {scene_mode}")
-    print(f"Checkpoint: {checkpoint_path}")
-    print("Robot asset: enabled")
-    print(f"Bracelet asset: {'disabled' if free_space else 'enabled'}")
-    print(f"Shadow Hand asset: {'disabled' if free_space else 'enabled'}")
-    print("Human asset: disabled (this task has no separate Human articulation)")
-    print(f"External collision: {'disabled' if free_space else 'enabled'}")
-    print(f"Robot self-collision: {'enabled' if self_collision else 'disabled'}")
-    print("Observation schema unchanged: yes")
-    print("Action schema unchanged: yes")
-    print(f"Observation keys: {obs_keys}")
-    print(f"Observation shapes: {obs_shapes}")
-    print(f"Dummy observations: {getattr(raw, 'free_space_dummy_observations', [])}")
-    print(f"Action shape: {action_shape}")
-    print(f"Joint order: {joint_order}")
-    print(f"Physics timestep: {float(env_cfg.sim.dt):.9g} s")
-    print(f"Control/policy timestep: {float(env_cfg.sim.dt) * int(env_cfg.decimation):.9g} s")
-    print(f"Decimation: {int(env_cfg.decimation)}")
-    print(f"Stiffness: {_selected(stiffness)}")
-    print(f"Damping: {_selected(damping)}")
-    print(f"Torque limits: {_selected(effort_limits)}")
-    print(f"Velocity limits: {_selected(velocity_limits)}")
-    print(f"Scene articulations: {articulation_keys}")
-    print(f"Scene rigid objects: {rigid_keys}")
-    print(f"Scene deformable objects: {deformable_keys}")
 
 
 def main():
@@ -322,7 +219,7 @@ def main():
     env_cfg = update_env_cfg(args_cli, env_cfg, agent_cfg)
     if getattr(env_cfg, "debug_joint_cmd_vs_actual", False):
         print(
-            "[play] joint debug ON: "
+            "[play_eval] joint debug ON: "
             f"env_id={getattr(env_cfg, 'debug_joint_print_env_id', 0)}, "
             f"interval={getattr(env_cfg, 'debug_joint_print_interval', 10)}"
         )
@@ -358,17 +255,13 @@ def main():
 
     # Load checkpoint
     if not args_cli.checkpoint:
-        parser.error(
-            "Missing checkpoint path. Use --checkpoint /path/to/best_agent.pt "
-            "(not --checkpoints unless you use the plural alias we accept)."
-        )
+        parser.error("Missing checkpoint path. Use --checkpoint /path/to/best_agent.pt")
     try:
         resume_path = resolve_checkpoint_path(args_cli.checkpoint)
     except (ValueError, FileNotFoundError) as err:
         parser.error(str(err))
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
     load_play_checkpoint(agent, resume_path)
-    _print_runtime_diagnostics(env, env_cfg, resume_path)
     modules = torch.load(resume_path, map_location=env.device)
     if isinstance(modules, dict):
         for name in modules.keys():
@@ -381,7 +274,7 @@ def main():
     returns = torch.zeros(size=(env.num_envs, 1), device=env.device)
     mask = torch.Tensor([[1] for _ in range(env.num_envs)]).to(env.device)
 
-    num_eval_envs = int(agent_cfg["trainer"]["num_eval_envs"])
+    num_eval_envs = resolve_num_eval_envs(env, int(agent_cfg["trainer"]["num_eval_envs"]))
     episode_return_sum = torch.zeros((num_eval_envs, 1), device=env.device)
     print_eval_episode_returns = bool(args_cli.print_eval_episode_returns)
 
@@ -400,30 +293,7 @@ def main():
             episode_index=0, env_id=finger_gate_env_id
         )
         print(
-            f"[play] recording finger insertion soft gate: env_id={finger_gate_env_id} -> {finger_gate_dir}"
-        )
-
-    joint_track_dir = args_cli.record_joint_tracking
-    joint_track_save_plots = joint_track_dir is not None and not bool(args_cli.joint_tracking_no_plots)
-    joint_track_env_id = int(args_cli.joint_tracking_env_id)
-    joint_track_traces: list = []
-    joint_track_current: JointTrackingEpisodeTrace | None = None
-    joint_track_episode_cap = int(args_cli.joint_tracking_max_episodes)
-    if joint_track_dir:
-        joint_track_dir = os.path.abspath(joint_track_dir)
-        os.makedirs(joint_track_dir, exist_ok=True)
-        joint_track_current = JointTrackingEpisodeTrace(
-            episode_index=0, env_id=joint_track_env_id
-        )
-        # Also enable stdout joint debug if not already set.
-        if not getattr(env_cfg, "debug_joint_cmd_vs_actual", False):
-            env_cfg.debug_joint_cmd_vs_actual = True
-            unwrapped = getattr(env, "unwrapped", env)
-            if hasattr(unwrapped, "cfg"):
-                unwrapped.cfg.debug_joint_cmd_vs_actual = True
-        print(
-            f"[play] recording joint tracking (q_policy / q_cmd / q_act + torque): "
-            f"env_id={joint_track_env_id} -> {joint_track_dir}"
+            f"[play_eval] recording finger insertion soft gate: env_id={finger_gate_env_id} -> {finger_gate_dir}"
         )
 
     def _finalize_finger_gate_episode(*, terminated: bool, truncated: bool) -> None:
@@ -445,42 +315,43 @@ def main():
             show_ellipse=bool(args_cli.finger_gate_show_ellipse),
         )
         print(
-            f"[play] finger gate episode {ep}: {len(finger_gate_current.steps)} steps -> "
-            f"{paths.get('png', paths.get('csv', paths.get('json')))}"
+            f"[play_eval] finger gate episode {ep}: {len(finger_gate_current.steps)} steps -> "
+            f"{paths.get('csv', paths.get('json'))}"
         )
         finger_gate_traces.append(finger_gate_current)
         finger_gate_current = FingerInsertionEpisodeTrace(
             episode_index=len(finger_gate_traces), env_id=finger_gate_env_id
         )
 
-    def _finalize_joint_track_episode(*, terminated: bool, truncated: bool) -> None:
-        nonlocal joint_track_current
-        if joint_track_current is None or not joint_track_current.steps:
-            joint_track_current = JointTrackingEpisodeTrace(
-                episode_index=len(joint_track_traces), env_id=joint_track_env_id
+    if args_cli.dressing_eval:
+        exp_name = (agent_cfg.get("experiment") or {}).get("experiment_name")
+        result = evaluate_dressing_rollouts(
+            env,
+            agent,
+            encoder,
+            simulation_app=simulation_app,
+            checkpoint_path=resume_path,
+            environment_config=env_cfg,
+            object_name=args_cli.object_name or exp_name,
+            object_type=args_cli.object_type or getattr(env_cfg, "object_type", None),
+            max_episodes=args_cli.max_episodes,
+            num_fingers=args_cli.num_fingers,
+            num_eval_envs=None,
+        )
+        if args_cli.eval_save_dir:
+            save_path = args_cli.eval_save_dir
+            if os.path.isdir(save_path):
+                save_path = os.path.join(save_path, f"{result.get('object_name', 'eval')}_dressing_eval.json")
+            save_dressing_eval_results(result, os.path.abspath(save_path))
+            print(f"[play_eval] saved dressing eval JSON to {os.path.abspath(save_path)}")
+        if args_cli.insertion_gate_analysis_dir:
+            method_label = args_cli.object_name or exp_name or "eval"
+            analyze_insertion_gate_sensitivity(
+                {method_label: result},
+                os.path.abspath(args_cli.insertion_gate_analysis_dir),
             )
-            return
-        joint_track_current.terminated = terminated
-        joint_track_current.truncated = truncated
-        ep = joint_track_current.episode_index
-        paths = finalize_joint_tracking_episode(
-            joint_track_current,
-            joint_track_dir,
-            save_plots=joint_track_save_plots,
-            max_joints=args_cli.joint_tracking_max_joints,
-        )
-        print(
-            f"[play] joint tracking episode {ep}: {len(joint_track_current.steps)} steps -> "
-            f"{paths.get('right_png', '')}, {paths.get('left_png', '')}"
-            + (f", {paths['torso_png']}" if paths.get("torso_png") else "")
-            + (f" / {paths.get('csv', paths.get('json'))}" if not paths.get("right_png") else "")
-        )
-        joint_track_traces.append(joint_track_current)
-        joint_track_current = JointTrackingEpisodeTrace(
-            episode_index=len(joint_track_traces),
-            env_id=joint_track_env_id,
-            joint_names=list(joint_track_traces[-1].joint_names),
-        )
+        env.close()
+        return
 
     # Simulate environment
     while simulation_app.is_running():
@@ -505,50 +376,14 @@ def main():
                     FingerInsertionStep(
                         step=len(finger_gate_current.steps),
                         global_step=timestep,
-                        per_finger_soft_inside=snap.get("per_finger_soft_inside")
-                        or [0.0] * args_cli.num_fingers,
+                        per_finger_soft_inside=snap.get("per_finger_soft_inside") or [0.0] * args_cli.num_fingers,
                         fingers_inside_soft_gate=float(snap.get("fingers_inside_soft_gate", 0.0)),
                         per_finger_inside_ellipse=snap.get("per_finger_inside_ellipse"),
                         per_finger_insert_margin=snap.get("per_finger_insert_margin"),
                     )
                 )
-                if done_e:
+                if bool(terminated[eid].item()) or bool(truncated[eid].item()):
                     _finalize_finger_gate_episode(
-                        terminated=bool(terminated[eid].item()),
-                        truncated=bool(truncated[eid].item()),
-                    )
-
-            if joint_track_current is not None and len(joint_track_traces) < joint_track_episode_cap:
-                eid = joint_track_env_id
-                done_e = bool(terminated[eid].item()) or bool(truncated[eid].item())
-                snap = read_joint_tracking_from_env(env, env_id=eid)
-                if not joint_track_current.joint_names:
-                    joint_track_current.joint_names = list(snap["joint_names"])
-                joint_track_current.steps.append(
-                    JointTrackingStep(
-                        step=len(joint_track_current.steps),
-                        global_step=timestep,
-                        joint_names=list(snap["joint_names"]),
-                        action=snap["action"],
-                        q_cmd=snap["q_cmd"],
-                        q_act=snap["q_act"],
-                        q_err=snap["q_err"],
-                        q_vel=snap["q_vel"],
-                        q_policy=snap.get("q_policy"),
-                        simulation_time=float(snap.get("simulation_time", 0.0)),
-                        q_actual=snap.get("q_actual"),
-                        q_error_cmd=snap.get("q_error_cmd"),
-                        q_error_policy=snap.get("q_error_policy"),
-                        applied_torque=snap.get("applied_torque"),
-                        computed_torque=snap.get("computed_torque"),
-                        torque_err=snap.get("torque_err"),
-                        torque_limit_reached=snap.get("torque_limit_reached"),
-                        velocity_limit_reached=snap.get("velocity_limit_reached"),
-                        position_limit_reached=snap.get("position_limit_reached"),
-                    )
-                )
-                if done_e:
-                    _finalize_joint_track_episode(
                         terminated=bool(terminated[eid].item()),
                         truncated=bool(truncated[eid].item()),
                     )
@@ -580,8 +415,6 @@ def main():
             if timestep > 0 and timestep % ep_length == 0:
                 if finger_gate_current is not None and len(finger_gate_traces) < finger_gate_episode_cap:
                     _finalize_finger_gate_episode(terminated=False, truncated=True)
-                if joint_track_current is not None and len(joint_track_traces) < joint_track_episode_cap:
-                    _finalize_joint_track_episode(terminated=False, truncated=True)
                 mean_eval_return = returns.mean().item()
                 states, infos = env.reset(hard=True)
 
@@ -596,34 +429,16 @@ def main():
 
         if finger_gate_dir and len(finger_gate_traces) >= finger_gate_episode_cap:
             break
-        if joint_track_dir and len(joint_track_traces) >= joint_track_episode_cap:
-            break
 
         timestep += 1
 
-    if (
-        finger_gate_current is not None
-        and finger_gate_current.steps
-        and len(finger_gate_traces) < finger_gate_episode_cap
-    ):
+    if finger_gate_current is not None and finger_gate_current.steps and len(finger_gate_traces) < finger_gate_episode_cap:
         _finalize_finger_gate_episode(terminated=False, truncated=False)
 
     if finger_gate_dir and finger_gate_traces:
         combined = os.path.join(finger_gate_dir, "all_episodes_finger_insertion_gate.csv")
         save_all_traces_csv(finger_gate_traces, combined, num_fingers=args_cli.num_fingers)
-        print(f"[play] combined finger gate CSV ({len(finger_gate_traces)} episode(s)): {combined}")
-
-    if (
-        joint_track_current is not None
-        and joint_track_current.steps
-        and len(joint_track_traces) < joint_track_episode_cap
-    ):
-        _finalize_joint_track_episode(terminated=False, truncated=False)
-
-    if joint_track_dir and joint_track_traces:
-        combined = os.path.join(joint_track_dir, "all_episodes_joint_tracking.csv")
-        save_all_joint_tracking_csv(joint_track_traces, combined)
-        print(f"[play] combined joint tracking CSV ({len(joint_track_traces)} episode(s)): {combined}")
+        print(f"[play_eval] combined finger gate CSV ({len(finger_gate_traces)} episode(s)): {combined}")
 
     # Close the simulator
     env.close()

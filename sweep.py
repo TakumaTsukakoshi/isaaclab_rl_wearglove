@@ -203,6 +203,7 @@ class OptimisationRunner:
         # Configure and instantiate PPO agent
         ppo_agent_cfg = PPO_DEFAULT_CONFIG.copy()
         ppo_agent_cfg.update(agent_cfg["agent"])
+        value.value_preprocessor = value_preprocessor
         agent = PPO(
             encoder,
             policy,

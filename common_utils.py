@@ -266,8 +266,124 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
     env_cfg.obs_list = agent_cfg["observations"]["obs_list"]
     env_cfg.num_eval_envs = agent_cfg["trainer"]["num_eval_envs"]
     env_cfg.obs_stack = agent_cfg["observations"]["obs_stack"]
+    env_cfg.scene_mode = str(getattr(args_cli, "scene_mode", "full"))
+    if env_cfg.scene_mode not in ("full", "free_space"):
+        raise ValueError(
+            f"scene_mode must be 'full' or 'free_space', got {env_cfg.scene_mode!r}"
+        )
+
+    if bool(getattr(args_cli, "disable_self_collision", False)):
+        articulation_props = getattr(
+            getattr(env_cfg.robot_cfg, "spawn", None), "articulation_props", None
+        )
+        if articulation_props is None:
+            raise AttributeError(
+                "--disable-self-collision requested, but robot_cfg.spawn.articulation_props is unavailable"
+            )
+        articulation_props.enabled_self_collisions = False
+
+    if getattr(args_cli, "debug_joints", None) is not None:
+        env_cfg.debug_joint_cmd_vs_actual = bool(args_cli.debug_joints)
+    if getattr(args_cli, "debug_joint_env_id", None) is not None:
+        env_cfg.debug_joint_print_env_id = int(args_cli.debug_joint_env_id)
+    if getattr(args_cli, "debug_joint_interval", None) is not None:
+        env_cfg.debug_joint_print_interval = int(args_cli.debug_joint_interval)
 
     return env_cfg
+
+
+def resolve_checkpoint_path(checkpoint: str) -> str:
+    """Normalize a checkpoint path from the CLI (handles newlines and duplicated prefixes).
+
+    Common mistake: run from ``isaaclab_rl_wearglove/`` with
+    ``--checkpoint home/tamon/code/isaaclab_rl_wearglove/logs/.../best_agent.pt``,
+    which ``abspath`` turns into ``.../isaaclab_rl_wearglove/home/tamon/...``.
+    """
+    raw = " ".join(str(checkpoint).split())
+    if not raw:
+        raise ValueError("empty checkpoint path")
+
+    candidates: list[str] = []
+    candidates.append(raw)
+    candidates.append(os.path.expanduser(raw))
+    candidates.append(os.path.abspath(raw))
+
+    # Fix duplicated ``.../isaaclab_rl_wearglove/home/...`` segment.
+    dup_marker = "/isaaclab_rl_wearglove/home/"
+    abs_raw = os.path.abspath(raw)
+    if dup_marker in abs_raw:
+        fixed = "/home/" + abs_raw.split(dup_marker, 1)[-1]
+        candidates.append(fixed)
+        candidates.append(os.path.realpath(fixed))
+
+    seen: set[str] = set()
+    for path in candidates:
+        path = os.path.realpath(path)
+        if path in seen:
+            continue
+        seen.add(path)
+        if os.path.isfile(path):
+            return path
+
+    raise FileNotFoundError(
+        "Checkpoint file not found. Tried:\n  "
+        + "\n  ".join(seen)
+        + "\nUse an absolute path, e.g. "
+        "--checkpoint /home/tamon/code/isaaclab_rl_wearglove/logs/.../best_agent.pt"
+    )
+
+
+def load_play_checkpoint(agent, path: str) -> None:
+    """Load a training checkpoint for play / eval.
+
+    Older checkpoints store ``value_preprocessor`` separately, while
+    ``DeterministicValue`` also holds ``value.value_preprocessor`` as a submodule.
+    Remove the nested submodule before loading ``value`` weights, then re-attach
+    the loaded preprocessor (or the one built at init if absent from the file).
+    """
+    if agent.writer is None:
+        raise ValueError("Cannot load checkpoint: writer is None")
+
+    value = agent.value
+    if hasattr(value, "_modules") and "value_preprocessor" in value._modules:
+        del value._modules["value_preprocessor"]
+
+    modules = torch.load(path, map_location=agent.device)
+    if not isinstance(modules, dict):
+        raise ValueError(f"Expected checkpoint dict, got {type(modules)}")
+
+    # Inference-only: skip optimizers (and avoid Optimizer.load_state_dict(strict=...) issues).
+    skip_names = {"policy_optimiser", "value_optimiser", "encoder_optimiser"}
+
+    for name, data in modules.items():
+        if name in skip_names:
+            continue
+        module = agent.writer.checkpoint_modules.get(name)
+        if module is None:
+            print(f"Warning: Cannot load '{name}' module (not registered)")
+            continue
+        if not hasattr(module, "load_state_dict"):
+            continue
+        state = data
+        if name == "value" and isinstance(data, dict):
+            state = {k: v for k, v in data.items() if not k.startswith("value_preprocessor.")}
+        incompatible = module.load_state_dict(state, strict=False)
+        missing = getattr(incompatible, "missing_keys", None) or []
+        unexpected = getattr(incompatible, "unexpected_keys", None) or []
+        if missing:
+            print(f"Warning: checkpoint '{name}' missing keys: {missing}")
+        if unexpected:
+            print(f"Warning: checkpoint '{name}' unexpected keys: {unexpected}")
+        if hasattr(module, "eval"):
+            module.eval()
+
+    loaded_vp = None
+    if agent.writer is not None:
+        loaded_vp = agent.writer.checkpoint_modules.get("value_preprocessor")
+    if loaded_vp is not None:
+        value.value_preprocessor = loaded_vp
+    elif getattr(agent, "_value_preprocessor", None) is not None:
+        value.value_preprocessor = agent._value_preprocessor
 
 
 def set_seed(seed: int = 42) -> None:

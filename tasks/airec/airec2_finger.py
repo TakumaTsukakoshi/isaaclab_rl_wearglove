@@ -74,10 +74,10 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # # number of physics step per control step
     # decimation = 5  # 10 # # 50 Hz
-    physics_dt = 1 / 300  # coarse PhysX step (Hz = 300); upgraded at runtime by reach_bracelet curriculum
+    physics_dt = 1 / 500  # coarse PhysX step (Hz = 300); upgraded at runtime by reach_bracelet curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
-    decimation = 30
+    decimation = 10
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -102,6 +102,11 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     minimal_distance = 0.02
 
     act_moving_average = 0.1
+
+    #: Print policy actions vs ``joint_pos_cmd`` vs measured ``joint_pos`` (see ``_debug_print_joint_cmd_vs_actual``).
+    debug_joint_cmd_vs_actual: bool = False
+    debug_joint_print_env_id: int = 0
+    debug_joint_print_interval: int = 10
     minimal_angular = 10.0 # degree
     minimal_dense = 0.02 # added for dense reward 10/20
     reaching_object_goal_scale = 10.0
@@ -348,7 +353,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # currently 28
     # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints 
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_torso_joints
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -605,11 +610,14 @@ class AIRECEnv(DirectRLEnv):
         # create auxiliary variables for computing applied action, observations and rewards
         self.robot_dof_lower_limits = self.robot.data.soft_joint_pos_limits[0, :, 0].to(device=self.device)
         self.robot_dof_upper_limits = self.robot.data.soft_joint_pos_limits[0, :, 1].to(device=self.device)
+        self.robot_hard_dof_lower_limits = self.robot.data.joint_pos_limits[0, :, 0].to(device=self.device)
+        self.robot_hard_dof_upper_limits = self.robot.data.joint_pos_limits[0, :, 1].to(device=self.device)
         self.robot_joint_vel_limits = self.robot.data.joint_vel_limits[0, :].to(device=self.device)
 
         self.joint_pos_cmd = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
         self.prev_joint_pos_cmd = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
-        self.joint_pos_cmd  = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
+        #: Policy target in joint space after ``scale(actions)``, **before** EMA (debug / recording).
+        self.joint_pos_policy = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
 
         ############################# list of actuated joints/manual joints #################################
         self.actuated_dof_indices = list()
@@ -648,12 +656,17 @@ class AIRECEnv(DirectRLEnv):
         default_joint_pos = self.robot.data.default_joint_pos
         self.joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
         self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
+        self.joint_pos_policy[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
         
         self.joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.joint_pos_error = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.normalised_joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
+
+        #: Previous sample for ``_debug_print_joint_cmd_vs_actual`` (Δq_cmd / Δq_act direction).
+        self._joint_debug_prev_cmd: torch.Tensor | None = None
+        self._joint_debug_prev_act: torch.Tensor | None = None
         
         self.object_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.normalised_forces = torch.zeros((self.num_envs, 2), device=self.device)
@@ -945,33 +958,57 @@ class AIRECEnv(DirectRLEnv):
         #     self.wholebody_contact_sensor = ContactSensor(self.cfg.wholebody_contact_cfg)
         #     self.scene.sensors["wholebody_contact_sensor"] = self.wholebody_contact_sensor
 
+    def _actuated_joint_limit_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Hard joint limits for policy-actuated DOFs (USD / PhysX ``joint_pos_limits``)."""
+        idx = self.actuated_dof_indices
+        return self.robot_hard_dof_lower_limits[idx], self.robot_hard_dof_upper_limits[idx]
+
+    def _clamp_actuated_joint_pos_cmd_inplace(self) -> None:
+        """Clamp ``joint_pos_cmd`` for actuated DOFs to hard joint limits."""
+        lower, upper = self._actuated_joint_limit_tensors()
+        sl = self.actuated_dof_indices
+        self.joint_pos_cmd[:, sl] = torch.clamp(self.joint_pos_cmd[:, sl], lower, upper)
+
+    def _update_actuated_joint_pos_cmd_from_actions(self) -> None:
+        """Map policy actions → joint targets with EMA, once per RL control step.
+
+        Pipeline (actuated DOFs only)::
+
+            actions ∈ [-1, 1]
+              → scale → ``joint_pos_policy``   # policy target in joint space
+              → EMA + hard clamp → ``joint_pos_cmd``  # sent to Isaac via set_joint_position_target
+        """
+        sl = self.actuated_dof_indices
+        lower_soft = self.robot_dof_lower_limits[sl]
+        upper_soft = self.robot_dof_upper_limits[sl]
+        lower_hard, upper_hard = self._actuated_joint_limit_tensors()
+        ma = float(self.cfg.act_moving_average)
+
+        q_policy = scale(self.actions, lower_soft, upper_soft)
+        prev_safe = torch.clamp(self.prev_joint_pos_cmd[:, sl], lower_hard, upper_hard)
+        q_cmd = ma * q_policy + (1.0 - ma) * prev_safe
+        q_cmd = torch.clamp(q_cmd, lower_hard, upper_hard)
+
+        self.joint_pos_policy[:, sl] = q_policy
+        self.joint_pos_cmd[:, sl] = q_cmd
+        self.prev_joint_pos_cmd[:, sl] = q_cmd
+
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         """
         Store actions from policy in a class variable
         """
         self.last_action = self.joint_pos_cmd[:, self.actuated_dof_indices]
         self.actions = actions.clone()
+        self._update_actuated_joint_pos_cmd_from_actions()
 
     def _apply_action(self) -> None:
         """
         Apply actions to the robot. Called multiple times per RL step for decimation.
-        """
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-            self.actions,
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = (
-            self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
-            + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-            self.joint_pos_cmd[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
 
-        self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
+        Joint targets are computed once in :meth:`_pre_physics_step` (EMA + clamp). This method only
+        re-sends the held ``joint_pos_cmd`` to the articulation each physics substep.
+        """
+        self._clamp_actuated_joint_pos_cmd_inplace()
 
         # Keep fixed 2nd and 3rd finger joints at their default positions with zero velocity
         if self._fixed_joint_indices:
@@ -987,38 +1024,102 @@ class AIRECEnv(DirectRLEnv):
             self.joint_pos_cmd[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
         )
 
-    def scale_smooth_action(self, action):
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-            action,
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = (
-            self.cfg.act_moving_average * self.joint_pos_cmd[:, self.actuated_dof_indices]
-            + (1.0 - self.cfg.act_moving_average) * self.prev_joint_pos_cmd[:, self.actuated_dof_indices]
-        )
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-            self.joint_pos_cmd[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = self.joint_pos_cmd[:, self.actuated_dof_indices]
+    @staticmethod
+    def _joint_dir_label(value: float, eps: float = 1e-4) -> str:
+        if abs(value) < eps:
+            return "0"
+        return "+" if value > 0.0 else "-"
 
-        return self.joint_pos_cmd[:, self.actuated_dof_indices] # need to modify index!!!!!!!!!!!!!!!!!!!
+    @staticmethod
+    def _joint_delta_dir_label(delta: float, eps: float = 1e-5) -> str:
+        if abs(delta) < eps:
+            return "·"
+        return "↑" if delta > 0.0 else "↓"
+
+    def _debug_print_joint_cmd_vs_actual(self) -> None:
+        """Stdout: policy action, ``q_cmd``, ``q_act``, ``q_vel``, torques, signs and step deltas."""
+        if not getattr(self.cfg, "debug_joint_cmd_vs_actual", False):
+            return
+        interval = max(1, int(getattr(self.cfg, "debug_joint_print_interval", 10)))
+        step = int(self.common_step_counter)
+        if step % interval != 0:
+            return
+        e = int(getattr(self.cfg, "debug_joint_print_env_id", 0))
+        names = [self.robot.joint_names[i] for i in self.actuated_dof_indices]
+        q_cmd_t = self.joint_pos_cmd[e, self.actuated_dof_indices].detach().cpu()
+        q_act_t = self.robot.data.joint_pos[e, self.actuated_dof_indices].detach().cpu()
+        q_vel_t = self.robot.data.joint_vel[e, self.actuated_dof_indices].detach().cpu()
+        raw_action = self.actions[e].detach().cpu().tolist()
+        q_cmd = q_cmd_t.tolist()
+        q_act = q_act_t.tolist()
+        q_vel = q_vel_t.tolist()
+        q_err = (q_cmd_t - q_act_t).tolist()
+
+        applied_t = computed_t = torque_err = None
+        data = self.robot.data
+        if hasattr(data, "applied_torque") and data.applied_torque is not None:
+            applied_t = data.applied_torque[e, self.actuated_dof_indices].detach().cpu()
+        if hasattr(data, "computed_torque") and data.computed_torque is not None:
+            computed_t = data.computed_torque[e, self.actuated_dof_indices].detach().cpu()
+        if applied_t is not None and computed_t is not None:
+            torque_err = (computed_t - applied_t).tolist()
+        applied = applied_t.tolist() if applied_t is not None else None
+        computed = computed_t.tolist() if computed_t is not None else None
+
+        if self._joint_debug_prev_cmd is None:
+            self._joint_debug_prev_cmd = q_cmd_t.clone()
+            self._joint_debug_prev_act = q_act_t.clone()
+        d_cmd = (q_cmd_t - self._joint_debug_prev_cmd).tolist()
+        d_act = (q_act_t - self._joint_debug_prev_act).tolist()
+        self._joint_debug_prev_cmd = q_cmd_t.clone()
+        self._joint_debug_prev_act = q_act_t.clone()
+
+        print(f"\n[joint debug] common_step={step} env={e}")
+        print("  dir: sign of value (+/- joint axis).  Δ: change since last print (↑ inc / ↓ dec).")
+        print(
+            "  cmd_dir=q_cmd sign | act_dir=q_act sign | vel_dir=q_vel sign | "
+            "Δcmd | Δact | match(cmd_dir,vel_dir) | τ_app / τ_comp / τ_err"
+        )
+        for j, name in enumerate(names):
+            cmd_dir = self._joint_dir_label(q_cmd[j])
+            act_dir = self._joint_dir_label(q_act[j])
+            vel_dir = self._joint_dir_label(q_vel[j])
+            vel_matches_cmd = "Y" if cmd_dir == vel_dir or cmd_dir == "0" or vel_dir == "0" else "N"
+            tau_str = ""
+            if applied is not None:
+                tau_str += f"  τ_app={applied[j]:+8.3f}"
+            if computed is not None:
+                tau_str += f"  τ_comp={computed[j]:+8.3f}"
+            if torque_err is not None:
+                tau_str += f"  τ_err={torque_err[j]:+8.3f}"
+            print(
+                f"  {name:32s}  action={raw_action[j]:+7.4f}  "
+                f"q_cmd={q_cmd[j]:+8.4f}  q_act={q_act[j]:+8.4f}  q_vel={q_vel[j]:+8.4f}  err={q_err[j]:+8.4f}  "
+                f"cmd_dir={cmd_dir} act_dir={act_dir} vel_dir={vel_dir}  "
+                f"Δcmd={self._joint_delta_dir_label(d_cmd[j])} Δact={self._joint_delta_dir_label(d_act[j])}  "
+                f"vel~cmd={vel_matches_cmd}{tau_str}"
+            )
+
+    def scale_smooth_action(self, action):
+        saved_actions = self.actions
+        self.actions = action
+        self._update_actuated_joint_pos_cmd_from_actions()
+        self.actions = saved_actions
+        return self.joint_pos_cmd[:, self.actuated_dof_indices]
 
     def scale_action(self, action):
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = scale(
-            action,
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
+        sl = self.actuated_dof_indices
+        lower_hard, upper_hard = self._actuated_joint_limit_tensors()
+        self.joint_pos_cmd[:, sl] = torch.clamp(
+            scale(
+                action,
+                self.robot_dof_lower_limits[sl],
+                self.robot_dof_upper_limits[sl],
+            ),
+            lower_hard,
+            upper_hard,
         )
-
-        self.joint_pos_cmd[:, self.actuated_dof_indices] = saturate(
-            self.joint_pos_cmd[:, self.actuated_dof_indices],
-            self.robot_dof_lower_limits[self.actuated_dof_indices],
-            self.robot_dof_upper_limits[self.actuated_dof_indices],
-        )
-        return self.joint_pos_cmd[:, self.actuated_dof_indices]
+        return self.joint_pos_cmd[:, sl]
     
     def get_observations(self):
         # public method

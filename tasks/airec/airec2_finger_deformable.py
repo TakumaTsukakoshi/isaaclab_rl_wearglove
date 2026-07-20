@@ -16,6 +16,7 @@ import numpy as np
 import torch
 import math
 from collections.abc import Sequence
+from typing import Literal
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg, DeformableObject, DeformableObjectCfg
@@ -69,12 +70,18 @@ def ensure_xform_prim(prim_path: str) -> bool:
 
 @configclass
 class AIRECEnvCfg(DirectRLEnvCfg):
+    #: ``full`` keeps the task scene; ``free_space`` spawns only the AIREC robot
+    #: (plus non-physical lights and robot-mounted frame sensors).
+    scene_mode: Literal["full", "free_space"] = "full"
+    #: The AIREC root is fixed, so free-space diagnostics do not require a ground plane.
+    free_space_keep_ground: bool = False
+
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 300  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
+    physics_dt = 1 / 500  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation ≈ 0.05 s)
-    decimation =30
+    decimation =50
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -100,6 +107,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     maximum_width = 0.148 ########## need changed from measurements
 
     act_moving_average = 0.1
+
+    #: If True, policy actions are residuals around reset pose (``a=0`` holds ref).
+    #: If False, actions map absolutely into soft joint limits (legacy).
+    residual_body_actions: bool = True
+    #: Max residual [rad] per body DOF when ``residual_body_actions`` is True (broadcast to all actuated DOFs).
+    residual_action_scale: float | None = None
 
     #: Print policy actions vs ``joint_pos_cmd`` vs measured ``joint_pos`` (see ``_debug_print_joint_cmd_vs_actual``).
     debug_joint_cmd_vs_actual: bool = False
@@ -349,7 +362,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # currently 28
     # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_torso_joints
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -579,6 +592,12 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
 
 class AIRECEnv(DirectRLEnv):
+    def _is_free_space_mode(self) -> bool:
+        mode = str(getattr(self.cfg, "scene_mode", "full")).strip().lower()
+        if mode not in ("full", "free_space"):
+            raise ValueError(f"scene_mode must be 'full' or 'free_space', got {mode!r}")
+        return mode == "free_space"
+
     # pre-physics step calls
     #   |-- _pre_physics_step(action)
     #   |-- _apply_action()
@@ -613,7 +632,8 @@ class AIRECEnv(DirectRLEnv):
 
         self.joint_pos_cmd = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
         self.prev_joint_pos_cmd = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
-        self.joint_pos_cmd  = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
+        #: Policy target in joint space after ``scale(actions)``, **before** EMA (debug / recording).
+        self.joint_pos_policy = torch.zeros((self.num_envs, self.robot.num_joints), device=self.device)
 
         ############################# list of actuated joints/manual joints #################################
         self.actuated_dof_indices = list()
@@ -649,9 +669,28 @@ class AIRECEnv(DirectRLEnv):
         n_actuated_policy = len(self.actuated_dof_indices)
         self.actions = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.prev_actions = torch.zeros_like(self.actions)
+        self._raw_actions = torch.zeros_like(self.actions)
         default_joint_pos = self.robot.data.default_joint_pos
         self.joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
         self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
+        self.joint_pos_policy[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
+
+        # Body joint limits used by absolute / residual action mapping (actuated DOFs only).
+        sl = self.actuated_dof_indices
+        self._body_pos_lower = self.robot_dof_lower_limits[sl].clone()
+        self._body_pos_upper = self.robot_dof_upper_limits[sl].clone()
+        self._body_hard_lower = self.robot_hard_dof_lower_limits[sl].clone()
+        self._body_hard_upper = self.robot_hard_dof_upper_limits[sl].clone()
+        half_range = (self._body_pos_upper - self._body_pos_lower) / 2.0       
+        if self.cfg.residual_action_scale is None:
+            self._body_residual_scale = half_range
+        else:
+            self._body_residual_scale = torch.full(
+                (len(sl),),
+                float(self.cfg.residual_action_scale),
+                device=self.device,
+                dtype=torch.float32,
+            )
         
         self.joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
@@ -759,6 +798,9 @@ class AIRECEnv(DirectRLEnv):
         self.prev_anchor_idx = None           
         self.max_nodes = None
         self.nodal_state = None  
+
+        # for residual body tracking
+        self._residual_body_ref = self.robot.data.default_joint_pos[:, self.actuated_dof_indices].clone()
             
         self.extras["log"] = {
             "right_reach_reward": None,
@@ -799,6 +841,8 @@ class AIRECEnv(DirectRLEnv):
         self.action_space = action
 
     def _add_object_to_scene(self):
+        if self._is_free_space_mode():
+            return
         if self.cfg.object_type == "none":
             return
         if self.cfg.object_type == "rigid":
@@ -817,7 +861,9 @@ class AIRECEnv(DirectRLEnv):
         # Isaac Sim 5.x + GPU stacks can invalidate PhysX articulation views (weakref.proxy dies on first
         # scene.update — ReferenceError in articulation_data.joint_vel).
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.hand = Articulation(self.cfg.hand_cfg)
+        self.hand = None
+        if not self._is_free_space_mode():
+            self.hand = Articulation(self.cfg.hand_cfg)
 
         # self._add_object_to_scene()
         
@@ -827,14 +873,33 @@ class AIRECEnv(DirectRLEnv):
         self.right_ee_frame = FrameTransformer(self.cfg.right_ee_config)
         self.right_ee_frame.set_debug_vis(False)
         self.left_upper_ee_frame = FrameTransformer(self.cfg.left_upper_ee_config)
-        self.left_upper_ee_frame.set_debug_vis(True)
+        self.left_upper_ee_frame.set_debug_vis(not self._is_free_space_mode())
         self.right_upper_ee_frame = FrameTransformer(self.cfg.right_upper_ee_config)
-        self.right_upper_ee_frame.set_debug_vis(True)
+        self.right_upper_ee_frame.set_debug_vis(not self._is_free_space_mode())
         self.left_thumb_frame = FrameTransformer(self.cfg.left_thumb_config)
         self.left_thumb_frame.set_debug_vis(False)
         self.right_thumb_frame = FrameTransformer(self.cfg.right_thumb_config)
         self.right_thumb_frame.set_debug_vis(False)
         #################################################################################
+
+        if self._is_free_space_mode():
+            if bool(getattr(self.cfg, "free_space_keep_ground", False)):
+                if not SimulationContext.instance().stage.GetPrimAtPath("/World/ground"):
+                    spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(size=(10000, 10000)))
+            self.scene.clone_environments(copy_from_source=False)
+            self.scene.articulations["robot"] = self.robot
+            self.scene.sensors["left_ee_frame"] = self.left_ee_frame
+            self.scene.sensors["right_ee_frame"] = self.right_ee_frame
+            self.scene.sensors["left_upper_ee_frame"] = self.left_upper_ee_frame
+            self.scene.sensors["right_upper_ee_frame"] = self.right_upper_ee_frame
+            self.scene.sensors["left_thumb_frame"] = self.left_thumb_frame
+            self.scene.sensors["right_thumb_frame"] = self.right_thumb_frame
+            light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
+            light_cfg.func("/World/Light", light_cfg)
+            if "pixels" in self.cfg.obs_list or "pixels" in self.cfg.aux_list:
+                self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+                self.scene.sensors["tiled_camera"] = self._tiled_camera
+            return
 
         rb_east_path_env0 = "/World/envs/env_0/Visuals/AnchorEast/Geom"
         rb_west_path_env0 = "/World/envs/env_0/Visuals/AnchorWest/Geom"
@@ -971,31 +1036,52 @@ class AIRECEnv(DirectRLEnv):
         self.joint_pos_cmd[:, sl] = torch.clamp(self.joint_pos_cmd[:, sl], lower, upper)
 
     def _update_actuated_joint_pos_cmd_from_actions(self) -> None:
-        """Map policy actions → joint targets with EMA, once per RL control step.
+        """Map (already EMA-smoothed) actions → joint targets, once per RL control step.
 
-        EMA must not run inside :meth:`_apply_action` (called ``decimation`` times per RL step);
-        otherwise ``prev_joint_pos_cmd`` integrates ~30× per policy output and ``q_cmd`` blows up.
+        Pipeline (actuated / body DOFs)::
+
+            raw actions ∈ [-1, 1]
+              → action-space EMA in :meth:`_pre_physics_step`  (``act_moving_average``)
+              → absolute scale  OR  residual around ``_residual_body_ref``
+              → hard clamp → ``joint_pos_cmd``  # sent to Isaac via set_joint_position_target
+
+        ``joint_pos_policy`` = joint target from **raw** (pre-EMA) action (debug plots).
+        EMA must not run inside :meth:`_apply_action` (decimation).
         """
         sl = self.actuated_dof_indices
-        lower_soft = self.robot_dof_lower_limits[sl]
-        upper_soft = self.robot_dof_upper_limits[sl]
-        lower_hard, upper_hard = self._actuated_joint_limit_tensors()
-        ma = float(self.cfg.act_moving_average)
+        lower_soft = self._body_pos_lower
+        upper_soft = self._body_pos_upper
+        lower_hard = self._body_hard_lower
+        upper_hard = self._body_hard_upper
+        raw = self._raw_actions
 
-        q_pred = scale(self.actions, lower_soft, upper_soft)
-        prev_safe = torch.clamp(self.prev_joint_pos_cmd[:, sl], lower_hard, upper_hard)
-        q_cmd = ma * q_pred + (1.0 - ma) * prev_safe
-        q_cmd = torch.clamp(q_cmd, lower_hard, upper_hard)
+        if self.cfg.residual_body_actions:
+            q_policy = self._residual_body_ref + scale(
+                raw, -self._body_residual_scale, self._body_residual_scale
+            )
+            body_cmd = self._residual_body_ref + scale(
+                self.actions, -self._body_residual_scale, self._body_residual_scale
+            )
+        else:
+            q_policy = scale(raw, lower_soft, upper_soft)
+            body_cmd = scale(self.actions, lower_soft, upper_soft)
 
+        q_cmd = torch.clamp(body_cmd, lower_hard, upper_hard)
+        q_policy = torch.clamp(q_policy, lower_hard, upper_hard)
+
+        self.joint_pos_policy[:, sl] = q_policy
         self.joint_pos_cmd[:, sl] = q_cmd
         self.prev_joint_pos_cmd[:, sl] = q_cmd
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        """
-        Store actions from policy in a class variable
-        """
+        """Store actions from policy, apply action-space EMA, then build joint targets."""
         self.last_action = self.joint_pos_cmd[:, self.actuated_dof_indices]
-        self.actions = actions.clone()
+        self.prev_joint_pos_cmd[:] = self.joint_pos_cmd
+        self.prev_actions[:] = self.actions
+        self._raw_actions[:] = actions
+        tau = float(self.cfg.act_moving_average)
+        # In-place EMA in action space (``action_tau`` in the reference snippet).
+        self.actions[:] = tau * actions + (1.0 - tau) * self.prev_actions
         self._update_actuated_joint_pos_cmd_from_actions()
 
     # def _apply_action(self) -> None:
@@ -1074,7 +1160,7 @@ class AIRECEnv(DirectRLEnv):
         return "↑" if delta > 0.0 else "↓"
 
     def _debug_print_joint_cmd_vs_actual(self) -> None:
-        """Stdout: policy action, ``q_cmd``, ``q_act``, ``q_vel``, signs and step deltas."""
+        """Stdout: policy action, ``q_cmd``, ``q_act``, ``q_vel``, torques, signs and step deltas."""
         if not getattr(self.cfg, "debug_joint_cmd_vs_actual", False):
             return
         interval = max(1, int(getattr(self.cfg, "debug_joint_print_interval", 10)))
@@ -1092,6 +1178,17 @@ class AIRECEnv(DirectRLEnv):
         q_vel = q_vel_t.tolist()
         q_err = (q_cmd_t - q_act_t).tolist()
 
+        applied_t = computed_t = torque_err = None
+        data = self.robot.data
+        if hasattr(data, "applied_torque") and data.applied_torque is not None:
+            applied_t = data.applied_torque[e, self.actuated_dof_indices].detach().cpu()
+        if hasattr(data, "computed_torque") and data.computed_torque is not None:
+            computed_t = data.computed_torque[e, self.actuated_dof_indices].detach().cpu()
+        if applied_t is not None and computed_t is not None:
+            torque_err = (computed_t - applied_t).tolist()
+        applied = applied_t.tolist() if applied_t is not None else None
+        computed = computed_t.tolist() if computed_t is not None else None
+
         if self._joint_debug_prev_cmd is None:
             self._joint_debug_prev_cmd = q_cmd_t.clone()
             self._joint_debug_prev_act = q_act_t.clone()
@@ -1108,19 +1205,26 @@ class AIRECEnv(DirectRLEnv):
         )
         print(
             "  cmd_dir=q_cmd sign | act_dir=q_act sign | vel_dir=q_vel sign | "
-            "Δcmd | Δact | match(cmd_dir,vel_dir)"
+            "Δcmd | Δact | match(cmd_dir,vel_dir) | τ_app / τ_comp / τ_err"
         )
         for j, name in enumerate(names):
             cmd_dir = self._joint_dir_label(q_cmd[j])
             act_dir = self._joint_dir_label(q_act[j])
             vel_dir = self._joint_dir_label(q_vel[j])
             vel_matches_cmd = "Y" if cmd_dir == vel_dir or cmd_dir == "0" or vel_dir == "0" else "N"
+            tau_str = ""
+            if applied is not None:
+                tau_str += f"  τ_app={applied[j]:+8.3f}"
+            if computed is not None:
+                tau_str += f"  τ_comp={computed[j]:+8.3f}"
+            if torque_err is not None:
+                tau_str += f"  τ_err={torque_err[j]:+8.3f}"
             print(
                 f"  {name:32s}  action={raw_action[j]:+7.4f}  "
                 f"q_cmd={q_cmd[j]:+8.4f}  q_act={q_act[j]:+8.4f}  q_vel={q_vel[j]:+8.4f}  err={q_err[j]:+8.4f}  "
                 f"cmd_dir={cmd_dir} act_dir={act_dir} vel_dir={vel_dir}  "
                 f"Δcmd={self._joint_delta_dir_label(d_cmd[j])} Δact={self._joint_delta_dir_label(d_act[j])}  "
-                f"vel~cmd={vel_matches_cmd}"
+                f"vel~cmd={vel_matches_cmd}{tau_str}"
             )
 
     def scale_smooth_action(self, action):
@@ -1193,7 +1297,7 @@ class AIRECEnv(DirectRLEnv):
             ),
             dim=-1,
         )
-
+        # print(f"prop: {prop[0]}")
         return prop
 
     def _get_gt(self):
@@ -1234,6 +1338,11 @@ class AIRECEnv(DirectRLEnv):
         return self.normalised_forces
 
     def _get_tactile(self):
+        if self._is_free_space_mode():
+            self.tactile.zero_()
+            self.normalised_forces.zero_()
+            self.unnormalised_forces.zero_()
+            return self.tactile
         # contact sensor data is [num_envs, 2, 3]
         forcesL_world, forcesR_world = self._read_force_matrix()
 
@@ -1293,6 +1402,17 @@ class AIRECEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
             
         super()._reset_idx(env_ids)
+
+        if self._is_free_space_mode():
+            self._reset_robot(env_ids)
+            # Call the parent implementation explicitly: subclass task intermediates
+            # depend on assets deliberately absent in free-space mode.
+            AIRECEnv._compute_intermediate_values(self, env_ids=env_ids)
+            self._policy_enabled = True
+            self._phase = "policy"
+            self._pregrasp_steps = 0
+            self._grip_latched_q = None
+            return
 
         if self.cfg.object_type == "none":
             self._reset_robot(env_ids)
@@ -1389,12 +1509,21 @@ class AIRECEnv(DirectRLEnv):
         self.object.write_root_state_to_sim(object_default_state, env_ids)
 
     def _reset_robot(self, env_ids):
-
         joint_pos = self.robot.data.default_joint_pos[env_ids]
+        # Residual reference = pose held when a=0 (reset / default).
+        self._residual_body_ref[env_ids] = joint_pos[:, self.actuated_dof_indices]
         # joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
         self.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+
+        # Keep command buffers consistent with reset pose (avoids EMA jump on first step).
+        self.joint_pos_cmd[env_ids] = joint_pos
+        self.prev_joint_pos_cmd[env_ids] = joint_pos
+        self.joint_pos_policy[env_ids] = joint_pos
+        self.actions[env_ids] = 0.0
+        self.prev_actions[env_ids] = 0.0
+        self._raw_actions[env_ids] = 0.0
         
         # Explicitly zero velocity for fixed finger joints
         if self._fixed_joint_indices:
@@ -1406,6 +1535,129 @@ class AIRECEnv(DirectRLEnv):
 
     def _reset_target_pose(self, env_ids):
         pass
+
+    @staticmethod
+    def _rim_local_idx_on_vertical_axis(rel: torch.Tensor, *, upward: bool) -> int | torch.Tensor:
+        """Rim-local index: vertex closest to +Z/−Z line through origin (minimize x²+y²).
+
+        ``rel`` shape ``(N, 3)`` returns ``int``; ``(B, N, 3)`` returns ``(B,)`` long indices.
+        """
+        lateral = rel[..., 0] ** 2 + rel[..., 1] ** 2
+        mask = rel[..., 2] >= 0.0 if upward else rel[..., 2] <= 0.0
+        if rel.dim() == 2:
+            if not bool(mask.any().item()):
+                mask = torch.ones_like(mask, dtype=torch.bool)
+            scores = torch.where(mask, lateral, torch.full_like(lateral, float("inf")))
+            return int(torch.argmin(scores).item())
+        mask = torch.where(mask.any(dim=-1, keepdim=True), mask, torch.ones_like(mask))
+        scores = lateral.masked_fill(~mask, float("inf"))
+        all_inf = torch.isinf(scores).all(dim=-1, keepdim=True)
+        scores = torch.where(all_inf, lateral, scores)
+        return torch.argmin(scores, dim=-1)
+
+    @staticmethod
+    def _rim_local_idx_on_inplane_short_axis(
+        rel: torch.Tensor,
+        e1: torch.Tensor,
+        e2: torch.Tensor,
+        *,
+        positive_e2: bool,
+    ) -> int | torch.Tensor:
+        """North/south on an elliptical opening ring in the ``(e1, e2)`` plane.
+
+        Prefer extremal ``e2`` (short / N–S axis) while penalizing ``e1`` offset so the pick
+        sits near the top/bottom of the ring (not a left/right wall corner).
+        """
+        if rel.dim() == 2:
+            pu = (rel * e1.unsqueeze(0)).sum(-1)
+            pv = (rel * e2.unsqueeze(0)).sum(-1)
+            if positive_e2:
+                mask = pv >= 0.0
+                scores = torch.where(mask, pv - pu**2, torch.full_like(pv, float("-inf")))
+            else:
+                mask = pv <= 0.0
+                scores = torch.where(mask, -pv - pu**2, torch.full_like(pv, float("-inf")))
+            if not bool(torch.isfinite(scores).any().item()):
+                return AIRECEnv._rim_local_idx_on_vertical_axis(rel, upward=positive_e2)
+            return int(torch.argmax(scores).item())
+        pu = (rel * e1.unsqueeze(1)).sum(-1)
+        pv = (rel * e2.unsqueeze(1)).sum(-1)
+        if positive_e2:
+            mask = pv >= 0.0
+            scores = pv - pu**2
+        else:
+            mask = pv <= 0.0
+            scores = -pv - pu**2
+        mask = torch.where(mask.any(dim=-1, keepdim=True), mask, torch.ones_like(mask))
+        scores = scores.masked_fill(~mask, float("-inf"))
+        best = torch.argmax(scores, dim=-1)
+        all_bad = torch.isinf(scores).all(dim=-1)
+        if bool(all_bad.any().item()):
+            vert = AIRECEnv._rim_local_idx_on_vertical_axis(rel, upward=positive_e2)
+            best = torch.where(all_bad, vert, best)
+        return best
+
+    @staticmethod
+    def _pca_frozen_axes_from_ring_positions(
+        p_row: torch.Tensor,
+        e1_ref: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """In-plane ``e1`` (wide), ``e2`` (narrow, +Z), normal ``n``, centered ``x`` from ring positions."""
+        mean = p_row.mean(dim=0, keepdim=True)
+        x = p_row - mean
+        k = int(x.shape[0])
+        cov = (x.T @ x) / max(k, 1)
+        _, evecs = torch.linalg.eigh(cov)
+        n = evecs[:, 0]
+        n = n / (torch.norm(n) + 1e-8)
+        e_big = evecs[:, 2]
+        e_big = e_big / (torch.norm(e_big) + 1e-8)
+        if e1_ref is not None:
+            ref = e1_ref.to(device=p_row.device, dtype=p_row.dtype)
+            flip = -1.0 if float((e_big * ref).sum().item()) < 0.0 else 1.0
+            e1 = e_big * flip
+        else:
+            e1 = e_big
+        e2 = torch.linalg.cross(n, e1)
+        e2 = e2 / (torch.norm(e2) + 1e-8)
+        up_ref = torch.tensor([0.0, 0.0, 1.0], device=p_row.device, dtype=p_row.dtype)
+        if torch.dot(e2, up_ref) < 0:
+            n = -n
+            e2 = -e2
+        return e1, e2, n, x
+
+    def _pick_nsew_global_indices_pca_frozen_ring(
+        self,
+        p_row: torch.Tensor,
+        rim_idx: torch.Tensor,
+        e1: torch.Tensor,
+        e2: torch.Tensor,
+        x_centered: torch.Tensor,
+        *,
+        k_extreme: int | None = None,
+    ) -> dict[str, int]:
+        """N/S/E/W global nodal indices on ``opening_ring`` (production ``pca_frozen`` rules)."""
+        k_ext = int(
+            k_extreme
+            if k_extreme is not None
+            else getattr(self.cfg, "deformable_bracelet_rim_world_axis_extreme_k", 8)
+        )
+        a = (x_centered * e1.unsqueeze(0)).sum(-1)
+        _, g_e = self._pick_representative_vertex_from_extreme_band(
+            p_row, a, rim_idx, largest=True, k_extreme=k_ext
+        )
+        _, g_w = self._pick_representative_vertex_from_extreme_band(
+            p_row, a, rim_idx, largest=False, k_extreme=k_ext
+        )
+        rel = p_row - p_row.mean(dim=0, keepdim=True)
+        nl = self._rim_local_idx_on_inplane_short_axis(rel, e1, e2, positive_e2=True)
+        sl = self._rim_local_idx_on_inplane_short_axis(rel, e1, e2, positive_e2=False)
+        return {
+            "east": g_e,
+            "west": g_w,
+            "north": int(rim_idx[nl].item()),
+            "south": int(rim_idx[sl].item()),
+        }
 
     @staticmethod
     def _pick_representative_vertex_from_extreme_band(
@@ -1726,6 +1978,11 @@ class AIRECEnv(DirectRLEnv):
         if hasattr(self, "scene") and self.scene is not None:
             origin0 = self.scene.env_origins[0].to(device=device, dtype=dtype)
         p_ring = P[idx_entry] - origin0.unsqueeze(0)
+        nsew_mode = str(getattr(self.cfg, "deformable_bracelet_nsew_geom_mode", "")).lower()
+        if nsew_mode in ("pca_frozen", "pca"):
+            e1_ref = getattr(self, "_bracelet_geom_e1_ref", None)
+            e1, e2, _, x = self._pca_frozen_axes_from_ring_positions(p_ring, e1_ref=e1_ref)
+            return self._pick_nsew_global_indices_pca_frozen_ring(p_ring, idx_entry, e1, e2, x)
         li_e, li_w, li_n, li_s = self._geom_world_axis_rim_extrema(p_ring)
         return {
             "north": int(idx_entry[li_n].item()),
@@ -1851,6 +2108,7 @@ class AIRECEnv(DirectRLEnv):
         vel_full = self.robot.data.joint_vel[env_ids]
         self.joint_pos[env_ids] = pos_full[:, self.actuated_idx]
         self.joint_vel[env_ids] = vel_full[:, self.actuated_idx]
+        # import ipdb; ipdb.set_trace()
         # Avoid mixed advanced indexing (env_ids, self.actuated_idx) which can broadcast env_ids and column
         # indices incorrectly; index rows then columns explicitly.
         self.joint_pos_error[env_ids] = (
@@ -1888,7 +2146,7 @@ class AIRECEnv(DirectRLEnv):
 
         # joint vel roughly between -2.5, 2.5, so dividing by 3.
         self.normalised_joint_vel[env_ids] = self.joint_vel[env_ids] / self.cfg.vel_max_magnitude
-        if self.cfg.object_type == "none":
+        if self.cfg.object_type == "none" or self._is_free_space_mode():
             self.ee_pos[env_ids] = (self.right_upper_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids]) / 2
             self.ee_distance[env_ids] = torch.abs(
                 self.right_upper_ee_pos[env_ids] - self.left_upper_ee_pos[env_ids]
@@ -1962,7 +2220,7 @@ class AIRECEnv(DirectRLEnv):
         # is_grasp_left = self.garment_left_ee_euclidean_distance > 0.045   # check
         is_grasp_right = self.garment_right_ee_euclidean_distance > 0.30 # check
         is_grasp_left = self.garment_left_ee_euclidean_distance > 0.30   # check
-        too_far = self.ee_euclidean_distance > 0.30 # 0.40 20
+        too_far = self.ee_euclidean_distance > 0.40 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
         termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
         # termination = too_far | out_of_reach

@@ -77,11 +77,13 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #: If False, use the glove-style **fixed** nodal indices from :meth:`AIRECEnv._choose_mouth_nodes_4dirs` (same as before).
     deformable_bracelet_geom_rim_goals: bool = True
     #: How N/S/E/W rim goals are computed (deformable glove):
-    #:   ``world_axes`` — each step: env-local axis extrema on the rim vertex set (deterministic geometry).
-    #:   ``world_axes_frozen`` — same rules once at init on rest pose; track fixed nodal indices.
-    #:   ``pca`` — each step: PCA on the deformed rim band (automatic in-plane axes).
+    #:   ``pca_frozen`` — **recommended**: opening-ring PCA on the rest mesh once; N/S on in-plane
+    #:   short axis ``e2`` (±Z stabilized); E/W on ``e1``; fixed nodal indices thereafter.
+    #:   ``world_axes`` — each step: env-local Y/Z extrema on the rim vertex set.
+    #:   ``world_axes_frozen`` — same world-axis rules once at init on rest pose; track fixed nodal indices.
+    #:   ``pca`` — each step: PCA on the deformed rim band (set ``geom_freeze_nsew_at_init=True`` to freeze instead).
     #:   ``mouth_auto`` — automatic cuff detection via :meth:`AIRECEnv._choose_mouth_nodes_4dirs_from_cfg`.
-    deformable_bracelet_nsew_geom_mode: str = "world_axes"
+    deformable_bracelet_nsew_geom_mode: str = "pca_frozen"
     #: Legacy alias; only when ``deformable_bracelet_nsew_geom_mode == "mouth_auto"``.
     deformable_bracelet_nsew_from_mouth_opening: bool = False
     #: Vertices whose distance to the bracelet centroid **axis** (first PC of the rest mesh) exceeds this quantile
@@ -123,9 +125,16 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     fine_decimation: int = 200
 
     #: Rim / fingertip ``VisualizationMarkers`` spheres. Requires GUI (do not use ``--headless``).
-    show_task_markers: bool = True
+    show_task_markers: bool = False
     #: Disable markers when ``scene.num_envs`` exceeds this (Fabric GPU OOM with 1k+ envs).
     show_task_markers_max_num_envs: int = 256
+    #: Geometric opening-rim PCA debug (``bracelet_opening_pca_viz``). Requires GUI for debug_draw.
+    debug_opening_pca_on_reset: bool = False
+    debug_opening_pca_refresh_each_step: bool = False
+    debug_opening_pca_arrow_scale: float = 0.08
+    debug_opening_pca_use_rest_pose: bool = False
+    #: Debug PCA uses production ``opening_ring`` + ``pca_frozen`` rules (matches ``goal_*``).
+    debug_opening_pca_use_opening_ring: bool = False
 
     #: Print policy action vs ``joint_pos_cmd`` vs sim ``joint_pos`` every ``debug_joint_print_interval`` steps.
     debug_joint_cmd_vs_actual: bool = False
@@ -164,6 +173,11 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     object_usd = os.path.join(
         _REPO_ROOT, "assets", "Bracelet", "deformable_bracelet_0.15.usd"
     )
+    # Must be a USD with PhysxDeformableBodyAPI on the mesh (see Isaac Lab DeformableObject).
+    # ``deformable_bracelet.usd`` (Jun 2026) spawns without deformable API → runtime resolve error.
+    # object_usd = os.path.join(
+    #     _REPO_ROOT, "assets", "Bracelet", "deformable_bracelet_new.usd"
+    # )
     object_usd_glove = os.path.join(
         _REPO_ROOT, "assets", "Glove", "GL_Gloves068", "GL_Gloves068_obj_revise.usd"
     )
@@ -493,6 +507,20 @@ class ReachDeformableBraceletEnv(AIRECEnv):
     cfg: ReachDeformableBraceletEnvCfg
 
     def __init__(self, cfg: ReachDeformableBraceletEnvCfg, render_mode: str | None = None, **kwargs):
+        self.free_space_dummy_observations = (
+            [
+                "gt.right_ee_thumb_distance",
+                "gt.right_ee_thumb_euclidean_distance",
+                "gt.left_ee_pinky_distance",
+                "gt.left_ee_pinky_euclidean_distance",
+                "gt.wrist_center_distance",
+                "gt.wrist_center_euclidean_distance",
+                "gt.per_finger_soft_inside",
+                "tactile (if configured)",
+            ]
+            if str(getattr(cfg, "scene_mode", "full")).lower() == "free_space"
+            else []
+        )
         # ``WearEnv`` forces ``object_type="none"`` when ``use_glove`` is False so the deformable glove
         # disappears. For this rigid-bracelet task, keep ``object_type="rigid"`` unless we explicitly
         # drop the scene object (no rigid/deformable object requested).
@@ -504,7 +532,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         tune_physx_gpu_buffers_for_vec_env(
             cfg.sim.physx,
             int(cfg.scene.num_envs),
-            deformable=True,
+            deformable=not (str(getattr(cfg, "scene_mode", "full")).lower() == "free_space"),
         )
         # Large vec-env: skip marker instancers (Fabric OOM). Do NOT gate on ``render_mode`` — play without
         # ``--video`` passes ``render_mode=None`` but can still have a viewport.
@@ -639,12 +667,18 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.task_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
-        self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
-        self._shadow_hand_finger_hold = torch.zeros(
-            (self.num_envs, len(self.finger_joint_ids)),
-            device=self.device,
-            dtype=self.hand.data.joint_pos.dtype,
-        )
+        if self._is_free_space_mode():
+            self.finger_joint_ids = []
+            self._shadow_hand_finger_hold = torch.zeros(
+                (self.num_envs, 0), device=self.device, dtype=torch.float32
+            )
+        else:
+            self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
+            self._shadow_hand_finger_hold = torch.zeros(
+                (self.num_envs, len(self.finger_joint_ids)),
+                device=self.device,
+                dtype=self.hand.data.joint_pos.dtype,
+            )
 
         self._bracelet_rim_idx: torch.Tensor | None = None
         self._bracelet_geom_e1_ref: torch.Tensor | None = None
@@ -652,7 +686,11 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self._frozen_geom_south_idx: int | None = None
         self._frozen_geom_east_idx: int | None = None
         self._frozen_geom_west_idx: int | None = None
-        if getattr(self.cfg, "deformable_bracelet_geom_rim_goals", False) and self.cfg.object_type == "deformable":
+        if (
+            not self._is_free_space_mode()
+            and getattr(self.cfg, "deformable_bracelet_geom_rim_goals", False)
+            and self.cfg.object_type == "deformable"
+        ):
             if str(getattr(self.cfg, "deformable_bracelet_rim_vertex_set", "opening_ring")).lower() == "opening_ring":
                 self._bracelet_rim_idx = self._build_opening_ring_node_indices()
             else:
@@ -667,15 +705,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 and getattr(self.cfg, "deformable_bracelet_freeze_nsew_use_world_axes", True)
             ):
                 self._freeze_geom_rim_nsew_labels_by_world_axes()
-                self.anchor_idx = {
-                    "north": self._frozen_geom_north_idx,
-                    "south": self._frozen_geom_south_idx,
-                    "east": self._frozen_geom_east_idx,
-                    "west": self._frozen_geom_west_idx,
-                }
-                self.prev_anchor_idx = self.anchor_idx
-            elif nsew_mode == "pca":
+                self._set_anchor_idx_from_frozen_geom_nsew()
+            elif nsew_mode in ("pca", "pca_frozen"):
                 self._bracelet_geom_e1_ref = self._reference_bracelet_rim_e1()
+                if nsew_mode == "pca_frozen" or bool(
+                    getattr(self.cfg, "deformable_bracelet_geom_freeze_nsew_at_init", True)
+                ):
+                    self._freeze_geom_rim_nsew_labels_from_rest()
+                    self._set_anchor_idx_from_frozen_geom_nsew()
             elif nsew_mode == "world_axes":
                 self.anchor_idx = self._geom_rim_nsew_indices_rest_env0()
                 self.prev_anchor_idx = self.anchor_idx
@@ -699,6 +736,8 @@ class ReachDeformableBraceletEnv(AIRECEnv):
 
     def _apply_action(self) -> None:
         super()._apply_action()
+        if self._is_free_space_mode():
+            return
         # hold finger targets
         finger_target_pos = self._shadow_hand_finger_hold
         zv = torch.zeros_like(finger_target_pos)
@@ -713,6 +752,17 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         # Parent enables upper-fingertip frame debug by default; it draws extra axes near the workspace.
         self.left_upper_ee_frame.set_debug_vis(False)
         self.right_upper_ee_frame.set_debug_vis(False)
+        if self._is_free_space_mode():
+            # Keep attributes stable for shared visualization/debug code, but do not
+            # create external physics assets or ShadowHand frame sensors.
+            self.goal_north_markers = None
+            self.goal_south_markers = None
+            self.goal_east_markers = None
+            self.goal_west_markers = None
+            self.goal_cent_markers = None
+            self.thumb_target_markers = None
+            self.pinky_target_markers = None
+            return
         # Rigid / deformable task object (bracelet) is added whenever ``object_type != "none"``.
         if self.cfg.object_type != "none":
             self._add_object_to_scene()
@@ -850,6 +900,9 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         else:
             e = self._normalize_env_ids(env_ids)
         self.prev_actions[e] = 0.0
+        if self._is_free_space_mode():
+            self._set_free_space_dummy_observations(e)
+            return
 
         if getattr(self.cfg, "deformable_bracelet_geom_rim_goals", False) and self.cfg.object_type == "deformable":
             nsew_mode = str(getattr(self.cfg, "deformable_bracelet_nsew_geom_mode", "world_axes")).lower()
@@ -864,8 +917,91 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             # Refresh transforms before aperture logic (thumb/pinky goal frames depend on ShadowHand pose).
             self._compute_intermediate_values(env_ids=e)
             self._reset_goal_aperture(e)
-    
+
+        if (
+            getattr(self.cfg, "debug_opening_pca_on_reset", False)
+            and self.cfg.object_type == "deformable"
+            and self.sim.has_gui()
+            and int(reset_ids.numel()) > 0
+            and bool((reset_ids == 0).any())
+        ):
+            self.compute_bracelet_opening_pca(env_id=0, draw=True)
+
+    def compute_bracelet_opening_pca(self, env_id: int = 0, draw: bool | None = None):
+        """Geometric opening rim + PCA (no fixed vertex indices). See ``bracelet_opening_pca_viz``."""
+        from bracelet_opening_pca_viz import compute_bracelet_opening_pca
+
+        if draw is None:
+            draw = bool(getattr(self.cfg, "debug_opening_pca_on_reset", False))
+        return compute_bracelet_opening_pca(
+            self,
+            env_id=env_id,
+            use_rest_pose=bool(getattr(self.cfg, "debug_opening_pca_use_rest_pose", True)),
+            draw=draw,
+            arrow_scale=float(getattr(self.cfg, "debug_opening_pca_arrow_scale", 0.08)),
+            cache_on_env=True,
+        )
+
+    def get_pca_frozen_nsew_snapshot(self, env_id: int = 0) -> dict | None:
+        """Rest-pose ``pca_frozen`` NSEW for debug comparison (env-local positions + global indices)."""
+        if any(
+            x is None
+            for x in (
+                self._frozen_geom_north_idx,
+                self._frozen_geom_south_idx,
+                self._frozen_geom_east_idx,
+                self._frozen_geom_west_idx,
+            )
+        ):
+            return None
+        origin = self.scene.env_origins[env_id].to(device=self.device, dtype=torch.float32)
+        p_all = self.object.data.default_nodal_state_w[env_id, :, :3].to(
+            device=self.device, dtype=torch.float32
+        )
+        indices = {
+            "north": int(self._frozen_geom_north_idx),
+            "south": int(self._frozen_geom_south_idx),
+            "east": int(self._frozen_geom_east_idx),
+            "west": int(self._frozen_geom_west_idx),
+        }
+        positions = {name: p_all[gidx] - origin for name, gidx in indices.items()}
+        center = None
+        e1 = e2 = None
+        r = self._compute_rest_rim_pca_frame()
+        if r is not None and self._bracelet_rim_idx is not None:
+            _, e1, e2, _ = r
+            p_ring = p_all[self._bracelet_rim_idx] - origin.unsqueeze(0)
+            center = p_ring.mean(dim=0)
+        return {
+            "indices": indices,
+            "positions_env_local": positions,
+            "rim_vertex_count": int(self._bracelet_rim_idx.numel()) if self._bracelet_rim_idx is not None else 0,
+            "center": center,
+            "e1": e1,
+            "e2": e2,
+            "rim_vertex_set": str(getattr(self.cfg, "deformable_bracelet_rim_vertex_set", "opening_ring")),
+        }
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._is_free_space_mode():
+            self._compute_intermediate_values()
+            termination = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+            time_out = self.episode_length_buf >= self.max_episode_length - 1
+            self.task_success.zero_()
+            self._term_log = {
+                "term_external_contact": torch.zeros(
+                    (self.num_envs,), dtype=torch.float32, device=self.device
+                ),
+                "term_any": termination.float(),
+            }
+            self._episode_end_per_finger_soft_inside = self.per_finger_soft_inside.clone()
+            self._episode_end_per_finger_insert_margin = self.per_finger_insert_margin.clone()
+            self._episode_end_per_finger_height_z = self.per_finger_height_z.clone()
+            self._episode_end_per_finger_ellipse_value = self.per_finger_ellipse_value.clone()
+            self._episode_end_per_finger_inside_ellipse = self.per_finger_inside_ellipse.clone()
+            self._episode_end_task_success = self.task_success.clone()
+            return termination, time_out
+
         # Parent calls ``_compute_intermediate_values()`` and writes ``self._term_log`` for wandb.
         termination, time_out = super()._get_dones()
 
@@ -899,6 +1035,16 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         return termination, time_out
 
     def _get_rewards(self) -> torch.Tensor:
+        if self._is_free_space_mode():
+            rewards = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+            self.extras["log"] = {
+                "free_space_reward": rewards,
+                "external_contact_count": rewards,
+            }
+            self.extras["counters"] = {}
+            self._debug_print_joint_cmd_vs_actual()
+            return rewards
+
         if self.cfg.use_geometryrl_b7_reward:
             rewards, b7_log = geometryrl_b7_cloth_hanging_reward(self)
             self.extras["log"] = dict(b7_log)
@@ -1013,93 +1159,93 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
-    def _reset_target_pose(self, env_ids):
-        default_state = self.hand.data.default_root_state.clone()[env_ids]
-
-        num_envs = len(env_ids)
-
-        # x, y: ±0.02 m, z: ±0.01 m
-        pos_noise = torch.empty((num_envs, 3), device=self.device)
-        pos_noise[:, 0] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # x
-        pos_noise[:, 1] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # y
-        pos_noise[:, 2] = sample_uniform(-0.01, 0.01, (num_envs,), device=self.device)  # z
-
-        init_pos = default_state[0, 0:3].unsqueeze(0).repeat(num_envs, 1)
-
-        default_state[:, 0:3] = (
-            init_pos
-            + pos_noise 
-            + self.scene.env_origins[env_ids]
-        )
-
-        init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
-
-        # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
-        B = int(len(env_ids))
-        # pitch_rad = sample_uniform(
-        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-        #     (B,),
-        #     device=self.device,
-        # )
-        yaw_rad = sample_uniform(
-            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
-            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
-            (B,),
-            device=self.device,
-        )
-        zero = torch.zeros_like(yaw_rad)
-        q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
-        # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
-        # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
-        default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
-
-        default_state[:, 7:] = 0.0
-
-        joint_pos = self.hand.data.default_joint_pos[env_ids]
-        joint_vel = torch.zeros_like(joint_pos)
-
-        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
-        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-        self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-        # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
-        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
-        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
-        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
-    
     # def _reset_target_pose(self, env_ids):
-    #     # Default root state for selected envs
     #     default_state = self.hand.data.default_root_state.clone()[env_ids]
 
-    #     # No randomization for position
+    #     num_envs = len(env_ids)
+
+    #     # x, y: ±0.02 m, z: ±0.01 m
+    #     pos_noise = torch.empty((num_envs, 3), device=self.device)
+    #     pos_noise[:, 0] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # x
+    #     pos_noise[:, 1] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # y
+    #     pos_noise[:, 2] = sample_uniform(-0.01, 0.01, (num_envs,), device=self.device)  # z
+
+    #     init_pos = default_state[0, 0:3].unsqueeze(0).repeat(num_envs, 1)
+
     #     default_state[:, 0:3] = (
-    #         self.hand.data.default_root_state[env_ids, 0:3]
+    #         init_pos
+    #         + pos_noise 
     #         + self.scene.env_origins[env_ids]
     #     )
 
-    #     # No randomization for rotation
-    #     default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+    #     init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
 
-    #     # Reset root velocity
+    #     # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
+    #     B = int(len(env_ids))
+    #     # pitch_rad = sample_uniform(
+    #     #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+    #     #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+    #     #     (B,),
+    #     #     device=self.device,
+    #     # )
+    #     yaw_rad = sample_uniform(
+    #         torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+    #         torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+    #         (B,),
+    #         device=self.device,
+    #     )
+    #     zero = torch.zeros_like(yaw_rad)
+    #     q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
+    #     # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
+    #     # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
+    #     default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
+
     #     default_state[:, 7:] = 0.0
 
-    #     # Reset joints
     #     joint_pos = self.hand.data.default_joint_pos[env_ids]
     #     joint_vel = torch.zeros_like(joint_pos)
 
     #     self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
     #     self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
     #     self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-
-    #     # Cache root pose actually written
-    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
-    #         dtype=self.goal_hand_root_pos.dtype
-    #     )
-    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
-    #         dtype=self.goal_hand_root_quat.dtype
-    #     )
-
+    #     # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
+    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
+    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
     #     self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+    
+    def _reset_target_pose(self, env_ids):
+        # Default root state for selected envs
+        default_state = self.hand.data.default_root_state.clone()[env_ids]
+
+        # No randomization for position
+        default_state[:, 0:3] = (
+            self.hand.data.default_root_state[env_ids, 0:3]
+            + self.scene.env_origins[env_ids]
+        )
+
+        # No randomization for rotation
+        default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+
+        # Reset root velocity
+        default_state[:, 7:] = 0.0
+
+        # Reset joints
+        joint_pos = self.hand.data.default_joint_pos[env_ids]
+        joint_vel = torch.zeros_like(joint_pos)
+
+        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
+        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+        self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+
+        # Cache root pose actually written
+        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
+            dtype=self.goal_hand_root_pos.dtype
+        )
+        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
+            dtype=self.goal_hand_root_quat.dtype
+        )
+
+        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
 
     def _update_goal_aperture_targets(self, env_ids, thumb_offset=0.03, pinky_offset=0.02) -> None:
         """Recompute outward reach targets and stretch scalars from **current** ShadowHand geometry.
@@ -1250,31 +1396,50 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             for name, gidx in mouths.items():
                 print(f"  {name}: global_idx={gidx}, world={p_w[gidx].detach().cpu().tolist()}")
 
+    def _set_anchor_idx_from_frozen_geom_nsew(self) -> None:
+        """Mirror frozen N/S/E/W nodal indices into ``anchor_idx`` for legacy / debug paths."""
+        self.anchor_idx = {
+            "north": self._frozen_geom_north_idx,
+            "south": self._frozen_geom_south_idx,
+            "east": self._frozen_geom_east_idx,
+            "west": self._frozen_geom_west_idx,
+        }
+        self.prev_anchor_idx = self.anchor_idx
+
     def _freeze_geom_rim_nsew_labels_from_rest(self) -> None:
-        """Legacy: N/S/E/W from rim PCA extrema on the rest mesh (evaluated once at init)."""
+        """N/S/E/W from opening-ring PCA on the **rest** mesh (``default_nodal_state_w``), evaluated once.
+
+        E/W: top-``k`` extreme band along in-plane ``e1`` (wide axis).
+        N/S: extremal ``e2`` (short axis) with minimum ``e1`` offset (top/bottom of opening ellipse).
+        """
+        if self._bracelet_rim_idx is None:
+            return
+        if self._bracelet_geom_e1_ref is None:
+            self._bracelet_geom_e1_ref = self._reference_bracelet_rim_e1()
         r = self._compute_rest_rim_pca_frame()
         if r is None:
             return
         _, e1, e2, x = r
         idx = self._bracelet_rim_idx
-        assert idx is not None
-        a = (x * e1.unsqueeze(0)).sum(-1)
-        b = (x * e2.unsqueeze(0)).sum(-1)
-        ie = int(torch.argmax(a).item())
-        iw = int(torch.argmin(a).item())
-        inorth = int(torch.argmax(b).item())
-        isouth = int(torch.argmin(b).item())
-        self._frozen_geom_east_idx = int(idx[ie].item())
-        self._frozen_geom_west_idx = int(idx[iw].item())
-        self._frozen_geom_north_idx = int(idx[inorth].item())
-        self._frozen_geom_south_idx = int(idx[isouth].item())
+        p_w = self.object.data.default_nodal_state_w[0, idx, :3].to(device=self.device, dtype=torch.float32)
+        origin0 = self.scene.env_origins[0].to(dtype=p_w.dtype)
+        p_row = p_w - origin0.unsqueeze(0)
+        mouths = self._pick_nsew_global_indices_pca_frozen_ring(p_row, idx, e1, e2, x)
+        self._frozen_geom_east_idx = mouths["east"]
+        self._frozen_geom_west_idx = mouths["west"]
+        self._frozen_geom_north_idx = mouths["north"]
+        self._frozen_geom_south_idx = mouths["south"]
 
         if self.cfg.show_task_markers:
-            print("[PCA-axis NSEW rim labels]")
-            p_w = self.object.data.default_nodal_state_w[0, idx, :3].to(device=self.device, dtype=torch.float32)
-            for name, li in (("N", inorth), ("S", isouth), ("E", ie), ("W", iw)):
-                gidx = int(idx[li].item())
-                print(f"  {name}: global_idx={gidx}, rim_local={li}, world={p_w[li].detach().cpu().tolist()}")
+            print("[PCA-frozen NSEW rim labels on rest opening ring]")
+            p_all = self.object.data.default_nodal_state_w[0, :, :3].to(device=self.device, dtype=torch.float32)
+            for name, gidx in (
+                ("north", self._frozen_geom_north_idx),
+                ("south", self._frozen_geom_south_idx),
+                ("east", self._frozen_geom_east_idx),
+                ("west", self._frozen_geom_west_idx),
+            ):
+                print(f"  {name}: global_idx={gidx}, world={p_all[gidx].detach().cpu().tolist()}")
 
     def _geom_rim_nsew_indices_rest_env0(self) -> dict[str, int]:
         """N/S/E/W nodal indices on the rest rim (env 0) using explicit env-local world axes."""
@@ -1314,7 +1479,10 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             return
 
         origins = self.scene.env_origins[env_ids]
-        if getattr(self.cfg, "deformable_bracelet_geom_freeze_nsew_at_init", True):
+        freeze_labels = nsew_mode != "pca" or bool(
+            getattr(self.cfg, "deformable_bracelet_geom_freeze_nsew_at_init", True)
+        )
+        if freeze_labels:
             if (
                 self._frozen_geom_north_idx is None
                 or self._frozen_geom_south_idx is None
@@ -1353,11 +1521,10 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         e2 = torch.linalg.cross(n, e1, dim=-1)
         e2 = e2 / (torch.norm(e2, dim=-1, keepdim=True) + 1e-8)
         a = (x * e1.unsqueeze(1)).sum(-1)
-        b = (x * e2.unsqueeze(1)).sum(-1)
         ie = torch.argmax(a, dim=1)
         iw = torch.argmin(a, dim=1)
-        inorth = torch.argmax(b, dim=1)
-        isouth = torch.argmin(b, dim=1)
+        inorth = self._rim_local_idx_on_inplane_short_axis(x, e1, e2, positive_e2=True)
+        isouth = self._rim_local_idx_on_inplane_short_axis(x, e1, e2, positive_e2=False)
         b_range = torch.arange(p.shape[0], device=p.device, dtype=torch.long)
         self.goal_east_pos[env_ids] = p[b_range, ie]
         self.goal_west_pos[env_ids] = p[b_range, iw]
@@ -1469,9 +1636,30 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         return (dy / radius_y.unsqueeze(1)).pow(2) + (dz / radius_z.unsqueeze(1)).pow(2)
 
     def _compute_intermediate_values(self, reset=False, env_ids: torch.Tensor | None = None):
+        if self._is_free_space_mode():
+            # Robot proprioception / EE kinematics remain real. Task-object,
+            # ShadowHand and contact-derived terms are deterministic neutral tensors.
+            AIRECEnv._compute_intermediate_values(self, env_ids=env_ids)
+            if env_ids is None:
+                env_ids = self.robot._ALL_INDICES
+            else:
+                env_ids = self._normalize_env_ids(env_ids)
+            self._set_free_space_dummy_observations(env_ids)
+            return
+
         super()._compute_intermediate_values()
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
+
+        if (
+            getattr(self.cfg, "debug_opening_pca_on_reset", False)
+            and getattr(self, "_opening_pca_viz", None) is not None
+            and bool(getattr(self.cfg, "debug_opening_pca_refresh_each_step", True))
+            and self.sim.has_gui()
+        ):
+            from bracelet_opening_pca_viz import refresh_opening_pca_debug_draw
+
+            refresh_opening_pca_debug_draw(self)
 
         if self._use_glove:
             if getattr(self.cfg, "deformable_bracelet_geom_rim_goals", False) and self.cfg.object_type == "deformable":
@@ -1604,6 +1792,8 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.wrist_center_distance[env_ids] = self.goal_wrist_pos[env_ids] - self.goal_cent_pos[env_ids]
         self.wrist_center_euclidean_distance[env_ids] = torch.norm(self.wrist_center_distance[env_ids], dim=1)
         # print(f"wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
+        # print(f"right_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
+        # print(f"left_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]}")
 
         if self._use_glove or self.cfg.object_type == "rigid":
             desired = torch.as_tensor(
@@ -1699,8 +1889,45 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             self.pinky_radial_normalized[env_ids] = 0.0
         
         # print(f"wrist_pos: {self.goal_wrist_pos[0]} pinky_target: {self.pinky_target[0]} thumb_target: {self.thumb_target[0]}")
+        # print(f"thumb_goal_pos: {self.thumb_goal_pos[0]} fore_goal_pos: {self.fore_goal_pos[0]} middle_goal_pos: {self.middle_goal_pos[0]} ring_goal_pos: {self.ring_goal_pos[0]} pinky_goal_pos: {self.pinky_goal_pos[0]}")
 
-  
+    def _set_free_space_dummy_observations(self, env_ids: torch.Tensor) -> None:
+        """Fill external-asset observation sources without changing policy schema."""
+        env_ids = self._normalize_env_ids(env_ids)
+
+        # ``gt`` fields sourced from ShadowHand / bracelet.
+        self.right_ee_thumb_distance[env_ids] = 0.0
+        self.right_ee_thumb_euclidean_distance[env_ids] = 0.0
+        self.left_ee_pinky_distance[env_ids] = 0.0
+        self.left_ee_pinky_euclidean_distance[env_ids] = 0.0
+        self.wrist_center_distance[env_ids] = 0.0
+        self.wrist_center_euclidean_distance[env_ids] = 0.0
+        self.per_finger_soft_inside[env_ids] = 0.0
+
+        # Related task/reward/debug buffers are kept neutral as well.
+        for value in (
+            self.goal_north_pos,
+            self.goal_south_pos,
+            self.goal_east_pos,
+            self.goal_west_pos,
+            self.goal_cent_pos,
+            self.goal_wrist_pos,
+            self.thumb_goal_pos,
+            self.pinky_goal_pos,
+            self.fore_goal_pos,
+            self.middle_goal_pos,
+            self.ring_goal_pos,
+            self.thumb_target,
+            self.pinky_target,
+            self.per_finger_insert_margin,
+            self.per_finger_height_z,
+            self.per_finger_ellipse_value,
+            self.per_finger_inside_ellipse,
+        ):
+            value[env_ids] = 0.0
+        self.fingers_inside_soft_gate[env_ids] = 0.0
+        self.task_success[env_ids] = False
+
 
 def compute_rewards(
     reaching_object_goal_scale: float,
@@ -1742,6 +1969,17 @@ def compute_rewards(
     left_ee_pinky_angular_threshold = 0.8
     ######## conditions for rewards ########
     ee_near_condition = (ee_euclidean_distance < ee_distance_threshold) #& (right_ee_thumb_angular_distance < ee_angular_thretholds["right_ee_thumb"])
+    safe_ee_distance = 0.25
+    too_far_threshold = 0.30
+
+    ee_width_warning_ratio = torch.clamp(
+        (ee_euclidean_distance - safe_ee_distance)
+        / (too_far_threshold - safe_ee_distance),
+        min=0.0,
+        max=1.0,
+    )
+
+    ee_width_soft_gate = 1.0 - ee_width_warning_ratio
     right_ee_thumb_angular_condition = (right_ee_thumb_angular_distance < right_ee_thumb_angular_threshold)
     left_ee_pinky_angular_condition = (left_ee_pinky_angular_distance < left_ee_pinky_angular_threshold)
     wrist_between_height_condition = (top_height > wrist_height) & (wrist_height > bottom_height)
@@ -1751,8 +1989,8 @@ def compute_rewards(
     ######## rewards for reaching ########
     reaching_right_ee_thumb_scale = 2.0
     reaching_left_ee_pinky_scale = 1.0
-    right_ee_thumb_condition = (ee_near_condition) & thumb_between_height_condition
-    left_ee_pinky_condition = (ee_near_condition) & pinky_between_height_condition 
+    right_ee_thumb_condition = (ee_width_soft_gate) * thumb_between_height_condition
+    left_ee_pinky_condition = (ee_width_soft_gate) * pinky_between_height_condition 
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")
     r_right_ee_thumb_distance = (
         distance_reward(right_ee_thumb_euclidean_distance, std=0.14) 
@@ -1768,11 +2006,11 @@ def compute_rewards(
     )
 
     ######## rewards for insert ########
-    reaching_wrist_center_scale = 20.0
-    wrist_center_condition = ee_near_condition 
+    reaching_wrist_center_scale = 5.0
+    wrist_center_condition = ee_width_soft_gate 
     
     r_wrist_center_distance = (
-        distance_reward(wrist_center_euclidean_distance, std=0.26)
+        distance_reward(wrist_center_euclidean_distance, std=0.16)
         * reaching_wrist_center_scale 
         * wrist_center_condition
         * fingers_inside_soft_gate

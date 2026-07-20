@@ -125,6 +125,11 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     bracelet_success_threshold: float = 0.01  # 1 cm
     task_success_bonus: float = 10000.0
 
+    #: Print policy action vs ``joint_pos_cmd`` vs sim ``joint_pos`` every ``debug_joint_print_interval`` steps.
+    debug_joint_cmd_vs_actual: bool = False
+    debug_joint_print_env_id: int = 0
+    debug_joint_print_interval: int = 1
+
     #: When cumulative episode success rate exceeds :attr:`adaptive_physics_success_threshold`, switch from
     #: coarse (:attr:`~tasks.airec.airec2_finger.AIRECEnvCfg.physics_dt` / :attr:`~tasks.airec.airec2_finger.AIRECEnvCfg.decimation`)
     #: to fine PhysX (``fine_physics_dt`` / ``fine_decimation``). RL control step stays ``1/10`` s in both cases.
@@ -153,8 +158,8 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
                 collision_enabled=True,
                 # contact_offset=0.006, # default 0.005
                 # rest_offset=0.003, # default 0.003
-                contact_offset=0.006, # default 0.005
-                rest_offset=0.003, # default 0.003
+                contact_offset=0.01, # default 0.005
+                rest_offset=0.005, # default 0.003
             ),
 
 
@@ -162,9 +167,9 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
             rigid_props=RigidBodyPropertiesCfg(
                 kinematic_enabled=False,
                 disable_gravity=False,
-                solver_position_iteration_count=32,
-                solver_velocity_iteration_count=1,
-                max_depenetration_velocity=0.5,
+                solver_position_iteration_count=64,
+                solver_velocity_iteration_count=32,
+                max_depenetration_velocity=1.0,
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(
             diffuse_color=(0.8, 0.2, 0.2),
@@ -728,16 +733,7 @@ class ReachBraceletEnv(AIRECEnv):
                 self.left_ee_pinky_distance,
                 # euclidean distances (1,)
                 self.left_ee_pinky_euclidean_distance.unsqueeze(1),
-                # angular distances (1,)
-                # self.right_ee_thumb_angular_distance.unsqueeze(1),
-                # angular distances (1,)
-                # self.left_ee_pinky_angular_distance.unsqueeze(1),
-                # xyz diffs (3,)
-                # self.depth_distance.unsqueeze(1),
-                # # # xyz diffs (3,)
-                # self.depth_thumb_distance.unsqueeze(1),
-                # # # xyz diffs (3,)
-                # self.depth_pinky_distance.unsqueeze(1),
+    
                 # xyz diffs (3,)
                 self.wrist_center_distance,
                 # euclidean distance (1,)
@@ -821,9 +817,10 @@ class ReachBraceletEnv(AIRECEnv):
         if self.cfg.terminate_on_task_success:
             termination = termination | self.task_success
             self._term_log["term_any"] = termination.float()
-        
-        # if termination.any():
-        #     print(f"termination (env0): {termination[0]}")
+
+        self._episode_end_per_finger_soft_inside = self.per_finger_soft_inside.clone()
+        self._episode_end_task_success = self.task_success.clone()
+        self._episode_end_wrist_center_euclidean_distance = self.wrist_center_euclidean_distance.clone()
 
         return termination, time_out
 
@@ -934,6 +931,7 @@ class ReachBraceletEnv(AIRECEnv):
             self.extras["log"].update(term_log)
 
         self.extras["counters"] = {}
+        self._debug_print_joint_cmd_vs_actual()
         return rewards
     
     def _normalize_env_ids(self, env_ids):
@@ -941,93 +939,93 @@ class ReachBraceletEnv(AIRECEnv):
             return torch.tensor([env_ids], dtype=torch.long, device=self.device)
         return torch.as_tensor(env_ids, dtype=torch.long, device=self.device).reshape(-1)
     
-    def _reset_target_pose(self, env_ids):
-        default_state = self.hand.data.default_root_state.clone()[env_ids]
-
-        num_envs = len(env_ids)
-
-        # x, y: ±0.02 m, z: ±0.01 m
-        pos_noise = torch.empty((num_envs, 3), device=self.device)
-        pos_noise[:, 0] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # x
-        pos_noise[:, 1] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # y
-        pos_noise[:, 2] = sample_uniform(-0.01, 0.01, (num_envs,), device=self.device)  # z
-
-        init_pos = default_state[0, 0:3].unsqueeze(0).repeat(num_envs, 1)
-
-        default_state[:, 0:3] = (
-            init_pos
-            + pos_noise
-            + self.scene.env_origins[env_ids]
-        )
-
-        init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
-
-        # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
-        B = int(len(env_ids))
-        # pitch_rad = sample_uniform(
-        #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
-        #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
-        #     (B,),
-        #     device=self.device,
-        # )
-        yaw_rad = sample_uniform(
-            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
-            torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
-            (B,),
-            device=self.device,
-        )
-        zero = torch.zeros_like(yaw_rad)
-        q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
-        # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
-        # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
-        default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
-
-        default_state[:, 7:] = 0.0
-
-        joint_pos = self.hand.data.default_joint_pos[env_ids]
-        joint_vel = torch.zeros_like(joint_pos)
-
-        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
-        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-        self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-        # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
-        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
-        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
-        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
-    
     # def _reset_target_pose(self, env_ids):
-    #     # Default root state for selected envs
     #     default_state = self.hand.data.default_root_state.clone()[env_ids]
 
-    #     # No randomization for position
+    #     num_envs = len(env_ids)
+
+    #     # x, y: ±0.02 m, z: ±0.01 m
+    #     pos_noise = torch.empty((num_envs, 3), device=self.device)
+    #     pos_noise[:, 0] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # x
+    #     pos_noise[:, 1] = sample_uniform(-0.02, 0.02, (num_envs,), device=self.device)  # y
+    #     pos_noise[:, 2] = sample_uniform(-0.01, 0.01, (num_envs,), device=self.device)  # z
+
+    #     init_pos = default_state[0, 0:3].unsqueeze(0).repeat(num_envs, 1)
+
     #     default_state[:, 0:3] = (
-    #         self.hand.data.default_root_state[env_ids, 0:3]
+    #         init_pos
+    #         + pos_noise
     #         + self.scene.env_origins[env_ids]
     #     )
 
-    #     # No randomization for rotation
-    #     default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+    #     init_rot = default_state[0, 3:7].unsqueeze(0).repeat(len(env_ids), 1)
 
-    #     # Reset root velocity
+    #     # Randomize pitch (Y-axis rotation) by ±5° in world frame, applied on top of the default root orientation.
+    #     B = int(len(env_ids))
+    #     # pitch_rad = sample_uniform(
+    #     #     torch.deg2rad(torch.tensor(-5.0, device=self.device, dtype=torch.float32)),
+    #     #     torch.deg2rad(torch.tensor(5.0, device=self.device, dtype=torch.float32)),
+    #     #     (B,),
+    #     #     device=self.device,
+    #     # )
+    #     yaw_rad = sample_uniform(
+    #         torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+    #         torch.deg2rad(torch.tensor(0.0, device=self.device, dtype=torch.float32)),
+    #         (B,),
+    #         device=self.device,
+    #     )
+    #     zero = torch.zeros_like(yaw_rad)
+    #     q_yaw = quat_from_euler_xyz(zero, zero, yaw_rad)  # (B, 4) wxyz
+    #     # q_pitch = quat_from_euler_xyz(zero, pitch_rad, zero)  # (B, 4) wxyz
+    #     # q_yaw_pitch = quat_mul(q_yaw, q_pitch)
+    #     default_state[:, 3:7] = quat_mul(q_yaw, init_rot)
+
     #     default_state[:, 7:] = 0.0
 
-    #     # Reset joints
     #     joint_pos = self.hand.data.default_joint_pos[env_ids]
     #     joint_vel = torch.zeros_like(joint_pos)
 
     #     self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
     #     self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
     #     self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
-
-    #     # Cache root pose actually written
-    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
-    #         dtype=self.goal_hand_root_pos.dtype
-    #     )
-    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
-    #         dtype=self.goal_hand_root_quat.dtype
-    #     )
-
+    #     # Cache root pose actually written (world pos + world quat) for aperture / frame logic.
+    #     self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(dtype=self.goal_hand_root_pos.dtype)
+    #     self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(dtype=self.goal_hand_root_quat.dtype)
     #     self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+    
+    def _reset_target_pose(self, env_ids):
+        # Default root state for selected envs
+        default_state = self.hand.data.default_root_state.clone()[env_ids]
+
+        # No randomization for position
+        default_state[:, 0:3] = (
+            self.hand.data.default_root_state[env_ids, 0:3]
+            + self.scene.env_origins[env_ids]
+        )
+
+        # No randomization for rotation
+        default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+
+        # Reset root velocity
+        default_state[:, 7:] = 0.0
+
+        # Reset joints
+        joint_pos = self.hand.data.default_joint_pos[env_ids]
+        joint_vel = torch.zeros_like(joint_pos)
+
+        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
+        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+        self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+
+        # Cache root pose actually written
+        self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
+            dtype=self.goal_hand_root_pos.dtype
+        )
+        self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
+            dtype=self.goal_hand_root_quat.dtype
+        )
+
+        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
     
     def _update_goal_aperture_targets(self, env_ids, thumb_offset=0.03, pinky_offset=0.02) -> None:
         """Recompute outward reach targets and stretch scalars from **current** ShadowHand geometry.
@@ -1350,7 +1348,7 @@ class ReachBraceletEnv(AIRECEnv):
         self.wrist_inside_ellipse[env_ids] = _wrist_inside_ellipse
 
         # print(f"left_ee_pinky_angular_distance: {self.left_ee_pinky_angular_distance[0]}")
-        # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
+        print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
         finger_heights = torch.stack([
