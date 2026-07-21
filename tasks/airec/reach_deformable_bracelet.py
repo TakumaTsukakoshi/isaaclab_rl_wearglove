@@ -120,7 +120,9 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     eval_opening_ellipse_threshold: float = 1.0
 
     # Sparse task-success: wrist goal within ``bracelet_success_threshold`` (env-local, m).
-    terminate_on_task_success: bool = True
+    # When False (default), success does not end the episode; only failure terms / time-out do.
+    # ``task_success_bonus`` is awarded once per episode on the first success step.
+    terminate_on_task_success: bool = False
     bracelet_success_threshold: float = 0.01  # 1 cm
     task_success_bonus: float = 10000.0
 
@@ -674,6 +676,10 @@ class ReachDeformableBraceletEnv(AIRECEnv):
 
         # debugging
         self.task_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        # One-shot gate so success bonus is not re-awarded every step while success holds.
+        self._task_success_bonus_awarded = torch.zeros(
+            (self.num_envs,), dtype=torch.bool, device=self.device
+        )
 
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         if self._is_free_space_mode():
@@ -994,13 +1000,18 @@ class ReachDeformableBraceletEnv(AIRECEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self._is_free_space_mode():
             self._compute_intermediate_values()
-            termination = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+            com_tip = (self.com_pos_b[:, 0] < float(self.cfg.com_tip_x_min)) | (
+                self.com_pos_b[:, 0] > float(self.cfg.com_tip_x_max)
+            )
+            termination = com_tip
             time_out = self.episode_length_buf >= self.max_episode_length - 1
             self.task_success.zero_()
             self._term_log = {
                 "term_external_contact": torch.zeros(
                     (self.num_envs,), dtype=torch.float32, device=self.device
                 ),
+                "term_com_tip": com_tip.float(),
+                "com_pos_b_x": self.com_pos_b[:, 0].clone(),
                 "term_any": termination.float(),
             }
             self._episode_end_per_finger_soft_inside = self.per_finger_soft_inside.clone()
@@ -1050,6 +1061,9 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 "free_space_reward": rewards,
                 "external_contact_count": rewards,
             }
+            term_log = getattr(self, "_term_log", None)
+            if term_log is not None:
+                self.extras["log"].update(term_log)
             self.extras["counters"] = {}
             self._debug_print_joint_cmd_vs_actual()
             return rewards
@@ -1134,9 +1148,12 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 }
             )
         
-        # Sparse task-success bonus: bracelet within ``bracelet_success_threshold`` (m) of wrist goal.
+        # Sparse task-success bonus (one-shot): bracelet within ``bracelet_success_threshold`` (m).
         # ``_get_dones`` runs before ``_get_rewards`` each control step, so ``self.task_success`` is current.
-        success_bonus = self.task_success.float() * float(self.cfg.task_success_bonus)
+        # Without one-shot gating, continuing past success until time-out would re-award every step.
+        newly_successful = self.task_success & ~self._task_success_bonus_awarded
+        success_bonus = newly_successful.float() * float(self.cfg.task_success_bonus)
+        self._task_success_bonus_awarded |= newly_successful
         rewards = rewards + success_bonus
         self.extras["log"]["task_success_bonus"] = success_bonus
         self.extras["log"]["task_success"] = self.task_success.float()
@@ -1958,6 +1975,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             value[env_ids] = 0.0
         self.fingers_inside_soft_gate[env_ids] = 0.0
         self.task_success[env_ids] = False
+        self._task_success_bonus_awarded[env_ids] = False
 
 
 def compute_rewards(

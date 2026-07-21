@@ -18,7 +18,7 @@ from isaaclab.app import AppLauncher
 # Parse command-line arguments
 parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent from skrl.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during playback.")
-parser.add_argument("--video_length", type=int, default=500, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_length", type=int, default=100, help="Length of the recorded video (in steps).")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -53,6 +53,19 @@ parser.add_argument(
         "Show N/S/E/W/C rim goal spheres (+ thumb/pinky targets). "
         "Requires a GUI viewport (do not use --headless). Also prints frozen NSEW indices at init."
     ),
+)
+parser.add_argument(
+    "--show-com-marker",
+    action="store_true",
+    help=(
+        "Show a large sphere at the robot full-body CoM. "
+        "Requires a GUI viewport (do not use --headless)."
+    ),
+)
+parser.add_argument(
+    "--debug-com",
+    action="store_true",
+    help="Periodically print com_pos_b / tip-band status (for tuning com_tip_x_min/max).",
 )
 parser.add_argument(
     "--debug-opening-pca",

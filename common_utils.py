@@ -295,6 +295,18 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
                 "--show-task-markers requested, but env_cfg has no show_task_markers field"
             )
         env_cfg.show_task_markers = True
+    if bool(getattr(args_cli, "show_com_marker", False)):
+        if not hasattr(env_cfg, "show_com_marker"):
+            raise AttributeError(
+                "--show-com-marker requested, but env_cfg has no show_com_marker field"
+            )
+        env_cfg.show_com_marker = True
+    if bool(getattr(args_cli, "debug_com", False)):
+        if not hasattr(env_cfg, "debug_com_print"):
+            raise AttributeError(
+                "--debug-com requested, but env_cfg has no debug_com_print field"
+            )
+        env_cfg.debug_com_print = True
     if bool(getattr(args_cli, "debug_opening_pca", False)):
         if not hasattr(env_cfg, "debug_opening_pca_on_reset"):
             raise AttributeError(

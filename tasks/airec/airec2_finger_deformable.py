@@ -44,6 +44,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import (
     quat_apply,
+    quat_apply_inverse,
     quat_conjugate,
     quat_from_angle_axis,
     quat_mul,
@@ -51,6 +52,7 @@ from isaaclab.utils.math import (
     saturate,
 )
 import isaaclab.utils.math as math_utils
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from assets_cfg.airec_finger import AIREC_CFG  
 from assets_cfg.shadow_hand import SHADOW_HAND_CFG
@@ -118,6 +120,28 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     debug_joint_cmd_vs_actual: bool = False
     debug_joint_print_env_id: int = 0
     debug_joint_print_interval: int = 10
+
+    #: CoM tip termination: base-frame X outside ``[com_tip_x_min, com_tip_x_max]`` ends the episode.
+    com_tip_x_min: float = -0.1
+    com_tip_x_max: float = 0.1
+    #: Body used as the CoM base frame. ``None`` = auto-pick among planar-move / legacy names.
+    com_base_body_name: str | None = None
+    #: Large blue sphere at full-body CoM (world). Requires GUI; enable via ``--show-com-marker``.
+    show_com_marker: bool = False
+    #: Periodic stdout of ``com_pos_b`` (for tuning tip thresholds during play).
+    debug_com_print: bool = False
+    debug_com_print_env_id: int = 0
+    debug_com_print_interval: int = 10
+
+    com_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/com_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.2,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.35, 1.0), opacity=0.85),
+            ),
+        },
+    )
     minimal_angular = 10.0 # degree
     minimal_dense = 0.02 # added for dense reward 10/20
     reaching_object_goal_scale = 10.0
@@ -362,7 +386,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # currently 28
     # actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_lhand_joints + actuated_rhand_joints
-    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints 
+    actuated_joint_names =  actuated_larm_joints + actuated_rarm_joints + actuated_torso_joints
     manual_joint_names = actuated_lhand_joints + actuated_rhand_joints
     # policy output
     num_actions = len(actuated_joint_names)
@@ -801,6 +825,21 @@ class AIRECEnv(DirectRLEnv):
 
         # for residual body tracking
         self._residual_body_ref = self.robot.data.default_joint_pos[:, self.actuated_dof_indices].clone()
+
+        # Full-body CoM (world + chassis frame) for tip termination / marker.
+        # Planar-move USD often has no ``base_link`` body (uses ``world`` / ``base_link_rot_yaw``).
+        self.base_link_body_idx, self._com_base_body_name = self._resolve_com_base_body_idx()
+        self.com_pos_w = torch.zeros((self.num_envs, 3), dtype=self.dtype, device=self.device)
+        self.com_pos_b = torch.zeros((self.num_envs, 3), dtype=self.dtype, device=self.device)
+        self.com_markers: VisualizationMarkers | None = None
+        if bool(getattr(self.cfg, "show_com_marker", False)):
+            if not self.sim.has_gui():
+                print(
+                    "[AIRECEnv] show_com_marker=True but no GUI "
+                    "(use without --headless). Marker disabled."
+                )
+            else:
+                self.com_markers = VisualizationMarkers(self.cfg.com_marker_cfg)
             
         self.extras["log"] = {
             "right_reach_reward": None,
@@ -2202,6 +2241,10 @@ class AIRECEnv(DirectRLEnv):
 
         # joint vel roughly between -2.5, 2.5, so dividing by 3.
         self.normalised_joint_vel[env_ids] = self.joint_vel[env_ids] / self.cfg.vel_max_magnitude
+
+        # CoM before free-space early return so tip / marker work in all scene modes.
+        self._update_robot_com(env_ids)
+
         if self.cfg.object_type == "none" or self._is_free_space_mode():
             self.ee_pos[env_ids] = (self.right_upper_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids]) / 2
             self.ee_distance[env_ids] = torch.abs(
@@ -2267,6 +2310,77 @@ class AIRECEnv(DirectRLEnv):
         # print(f"self.left_ee_object_euclidean_distance:{self.left_ee_object_euclidean_distance}")
         # self.left_ee_object_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.east_edge_rot[env_ids]))
         # self.left_ee_object_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.east_edge_rot[env_ids])
+
+    def _resolve_com_base_body_idx(self) -> tuple[int, str]:
+        """Pick the chassis body for ``com_pos_b`` (legacy ``base_link`` or planar-move USD).
+
+        Planar-move URDF→USD often exposes ``world`` / ``base_link_trans_*`` / ``base_link_rot_yaw``
+        and does **not** keep ``base_link`` as a rigid body (see ``airec_finger.AIREC_CFG``).
+        Prefer the yawed chassis when present so tip X follows base heading.
+        """
+        names = list(self.robot.data.body_names)
+        override = getattr(self.cfg, "com_base_body_name", None)
+        candidates: list[str] = []
+        if override:
+            candidates.append(str(override))
+        candidates.extend(
+            [
+                "base_link",
+                "base_link_rot_yaw",
+                "base_link_trans_y",
+                "base_link_trans_x",
+                "world",
+            ]
+        )
+        for name in candidates:
+            if name in names:
+                idx = names.index(name)
+                print(f"[AIRECEnv] CoM base body: {name!r} (idx={idx})")
+                return idx, name
+        raise RuntimeError(
+            "Could not resolve CoM base body. Tried "
+            f"{candidates}. Available body_names={names}"
+        )
+
+    def _update_robot_com(self, env_ids: torch.Tensor) -> None:
+        """Mass-weighted body CoM in world, then expressed relative to the chassis body."""
+        body_com_pos = self.robot.data.body_com_pose_w[..., :3]
+        mass = self.robot.data.default_mass.to(device=self.device)
+        total_mass = mass.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        self.com_pos_w[env_ids] = (
+            body_com_pos[env_ids] * mass[env_ids].unsqueeze(-1)
+        ).sum(dim=1) / total_mass[env_ids]
+
+        base_link_pos_w = self.robot.data.body_link_pose_w[:, self.base_link_body_idx, :3]
+        base_quat = self.robot.data.body_link_pose_w[:, self.base_link_body_idx, 3:7]
+        com_to_base_w = self.com_pos_w[env_ids] - base_link_pos_w[env_ids]
+        self.com_pos_b[env_ids] = quat_apply_inverse(base_quat[env_ids], com_to_base_w)
+
+        if self.com_markers is not None:
+            self.com_markers.visualize(translations=self.com_pos_w)
+
+        self._debug_print_com()
+
+    def _debug_print_com(self) -> None:
+        if not bool(getattr(self.cfg, "debug_com_print", False)):
+            return
+        interval = max(int(getattr(self.cfg, "debug_com_print_interval", 10)), 1)
+        eid = int(getattr(self.cfg, "debug_com_print_env_id", 0))
+        eid = max(0, min(eid, self.num_envs - 1))
+        step = int(self.episode_length_buf[eid].item())
+        if step % interval != 0:
+            return
+        cb = self.com_pos_b[eid]
+        cw = self.com_pos_w[eid]
+        x_min = float(self.cfg.com_tip_x_min)
+        x_max = float(self.cfg.com_tip_x_max)
+        tip = bool(cb[0].item() < x_min or cb[0].item() > x_max)
+        print(
+            f"[CoM env={eid} t={step} base={self._com_base_body_name}] "
+            f"com_pos_b=({cb[0].item():+.4f}, {cb[1].item():+.4f}, {cb[2].item():+.4f}) "
+            f"com_pos_w=({cw[0].item():+.4f}, {cw[1].item():+.4f}, {cw[2].item():+.4f}) "
+            f"tip_band=[{x_min:.2f}, {x_max:.2f}] tip={tip}"
+        )
         
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._compute_intermediate_values()
@@ -2278,7 +2392,13 @@ class AIRECEnv(DirectRLEnv):
         is_grasp_left = self.garment_left_ee_euclidean_distance > 0.30   # check
         too_far = self.ee_euclidean_distance > 0.40 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
-        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
+        # CoM behind / too far forward of base (X in base_link frame) = tipping.
+        com_tip = (self.com_pos_b[:, 0] < float(self.cfg.com_tip_x_min)) | (
+            self.com_pos_b[:, 0] > float(self.cfg.com_tip_x_max)
+        )
+        # print(f"com_pos_b: {self.com_pos_b[:, 0]}")
+
+        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left | com_tip
         # termination = too_far | out_of_reach
         # termination = too_far | is_grasp_right | is_grasp_left
        
@@ -2289,6 +2409,8 @@ class AIRECEnv(DirectRLEnv):
             "term_grasp_left": is_grasp_left.float(),
             "term_too_far": too_far.float(),
             "term_out_of_reach": out_of_reach.float(),
+            "term_com_tip": com_tip.float(),
+            "com_pos_b_x": self.com_pos_b[:, 0].clone(),
             "term_any": termination.float(),
         }
 
