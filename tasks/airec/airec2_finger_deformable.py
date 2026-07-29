@@ -1346,6 +1346,8 @@ class AIRECEnv(DirectRLEnv):
                 self.ee_distance,
                 # euclidean distance (1,)
                 self.ee_euclidean_distance.unsqueeze(1),
+                # xyz com_b (3,)
+                self.com_pos_b,
             ),
             dim=-1,
         )
@@ -2355,7 +2357,7 @@ class AIRECEnv(DirectRLEnv):
         base_quat = self.robot.data.body_link_pose_w[:, self.base_link_body_idx, 3:7]
         com_to_base_w = self.com_pos_w[env_ids] - base_link_pos_w[env_ids]
         self.com_pos_b[env_ids] = quat_apply_inverse(base_quat[env_ids], com_to_base_w)
-
+        # print(f"com_pos_b: {self.com_pos_b[:, 0]}")
         if self.com_markers is not None:
             self.com_markers.visualize(translations=self.com_pos_w)
 
