@@ -80,10 +80,10 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 500  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
+    physics_dt = 1 / 300  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation ≈ 0.05 s)
-    decimation =50
+    decimation = 30
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
@@ -202,8 +202,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             bounce_threshold_velocity=0.2,
 
             min_position_iteration_count=4,
-            # max_position_iteration_count=32, # deformable bracelet
-            max_position_iteration_count=32, # deformable glove
+            max_position_iteration_count=16, # deformable bracelet
+            # max_position_iteration_count=32, # deformable glove
             max_velocity_iteration_count=1,
 
             ### GPU Buffer Management: 
@@ -232,7 +232,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = False
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=512, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=2500, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
@@ -1332,7 +1332,7 @@ class AIRECEnv(DirectRLEnv):
                 # self.right_thumb_rot,
                 # self.left_thumb_pos,
                 # self.left_thumb_rot,
-                self.ee_pos,
+                # self.ee_pos,
                 # self.ee_rot,
                 self.actions,
             ),

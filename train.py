@@ -42,6 +42,22 @@ parser.add_argument(
         "(terminated/truncated). Off by default to avoid log spam."
     ),
 )
+parser.add_argument(
+    "--show-task-markers",
+    action="store_true",
+    help=(
+        "Show N/S/E/W/C rim goal spheres (+ thumb/pinky targets). "
+        "Requires a GUI viewport (do not use --headless). Also prints frozen NSEW indices at init."
+    ),
+)
+parser.add_argument(
+    "--debug-opening-pca",
+    action="store_true",
+    help=(
+        "Draw opening-ring PCA axes (e1/e2/n) on reset via debug_draw. "
+        "Requires GUI; useful to inspect how NSEW axes are chosen."
+    ),
+)
 # Rendering options (useful for RTX5090 and similar GPUs)
 parser.add_argument(
     "--renderer", type=str, default="PathTracing", choices=["RayTracedLighting", "PathTracing"], help="Renderer to use."

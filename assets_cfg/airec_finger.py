@@ -192,18 +192,9 @@ IMITATION_DEFAULT_JOINT_NAMES: tuple[str, ...] = (
 )
 
 robot_articulation_settings = sim_utils.ArticulationRootPropertiesCfg(
-            # 2026-07-19: self-collision disabled. The wrist/hand collision meshes
-            # interpenetrate permanently (joint-6 hold torque +442 Nm with
-            # self-collision ON vs +0.3 Nm OFF, measured in free_space with effort
-            # limits lifted; even a 0 deg target could not be held). This pushed
-            # arm joints 5-7 into 100% torque saturation and ~2.5 rad tracking
-            # error. Gravity itself needs <10 Nm at the wrist, so the configured
-            # effort limits (50/30 Nm) are fine. Re-enable only after fixing the
-            # asset collision geometry or adding USD filtered pairs for the
-            # overlapping wrist/hand links.
             enabled_self_collisions=False,
-            solver_position_iteration_count=24, # default 8
-            solver_velocity_iteration_count=12,
+            solver_position_iteration_count=12, # default 8
+            solver_velocity_iteration_count=1,
             sleep_threshold=0.00001,
             stabilization_threshold=0.00001,
             fix_root_link=True,
@@ -381,7 +372,7 @@ AIREC_CFG = ArticulationCfg(
     #     "left_arm_joint_5": radians(26),
     #     # "left_arm_joint_6": radians(45),
     #     "left_arm_joint_6": radians(65),
-    #     "left_arm_joint_7": radians(-17),
+    #     "left_arm_joint_7": radians(17),
     #     # "right_arm_joint_1": radians(33),
     #     "right_arm_joint_1": radians(20),
     #     # "right_arm_joint_2": radians(-14),
@@ -506,34 +497,34 @@ AIREC_CFG = ArticulationCfg(
         pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
         joint_pos={
      
-        "torso_joint_1": radians(-30),
-        "torso_joint_2": radians(60),
+        "torso_joint_1": radians(-40),
+        "torso_joint_2": radians(70),
         "torso_joint_3": radians(0),
         "head_joint_1": radians(0),
         "head_joint_2": radians(0),
         "head_joint_3": radians(0),
-        "left_arm_joint_1": radians(20),
+        "left_arm_joint_1": radians(18),
         # "left_arm_joint_2": radians(-14),
         # "left_arm_joint_2": radians(-20), default
         "left_arm_joint_2": radians(-11),
         "left_arm_joint_3": radians(-9), # for real
         # "left_arm_joint_3": radians(-14), # default
         # "left_arm_joint_4": radians(100),
-        "left_arm_joint_4": radians(101), # for real
+        "left_arm_joint_4": radians(108), # for real
         # "left_arm_joint_4": radians(105), # default
         "left_arm_joint_5": radians(26),
         # "left_arm_joint_6": radians(45),
         "left_arm_joint_6": radians(65),
         "left_arm_joint_7": radians(20),
         # "right_arm_joint_1": radians(33),
-        "right_arm_joint_1": radians(20),
+        "right_arm_joint_1": radians(18),
         # "right_arm_joint_2": radians(-14),
         # "right_arm_joint_2": radians(-20),default
         "right_arm_joint_2": radians(-11),
         "right_arm_joint_3": radians(-9), # for real
         # "right_arm_joint_3": radians(-14), # default
         # "right_arm_joint_4": radians(100),
-        "right_arm_joint_4": radians(101), # for real
+        "right_arm_joint_4": radians(108), # for real
         # "right_arm_joint_4": radians(105), # default
         "right_arm_joint_5": radians(26),
         # "right_arm_joint_6": radians(45),
