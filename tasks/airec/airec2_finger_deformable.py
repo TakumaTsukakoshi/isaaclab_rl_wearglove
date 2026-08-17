@@ -80,10 +80,10 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     # physics sim
     # 240 500 1000
-    physics_dt = 1 / 300  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
+    physics_dt = 1 / 500  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
 
     # number of physics step per control step (RL step_dt = physics_dt * decimation ≈ 0.05 s)
-    decimation = 30
+    decimation = 10
 
     # the number of physics simulation steps per rendering steps (default=1)
     render_interval = 2
