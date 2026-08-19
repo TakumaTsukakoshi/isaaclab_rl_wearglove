@@ -261,6 +261,7 @@ def build_play_metadata(
     wandb_run_id: str | None,
     wandb_run_id_source: str | None,
     seed: int | None,
+    joint_tracking_plot_paths: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     physics_dt = float(getattr(env_cfg, "physics_dt", env_cfg.sim.dt))
     decimation = int(getattr(env_cfg, "decimation", 1))
@@ -277,6 +278,7 @@ def build_play_metadata(
             "video_length": int(args_cli.video_length),
             "seed": seed,
             "record_joint_tracking": bool(args_cli.record_joint_tracking),
+            "joint_tracking_no_plots": bool(getattr(args_cli, "joint_tracking_no_plots", False)),
             "joint_tracking_max_episodes": int(args_cli.joint_tracking_max_episodes),
         },
         "checkpoint": {
@@ -332,8 +334,11 @@ def build_play_metadata(
             "metadata_file": str(output_paths.metadata_file),
             "video_file": output_paths.video_file.name if output_paths.video_file else None,
             "wandb_id_file": str(output_paths.wandb_id_file),
+            "joint_tracking_dir": str(default_joint_tracking_dir(output_paths.evaluation_dir)),
         },
     }
+    if joint_tracking_plot_paths:
+        metadata["output"]["joint_tracking_plots"] = joint_tracking_plot_paths
     return metadata
 
 
@@ -378,3 +383,57 @@ def finalize_recorded_video(evaluation_dir: Path, executed_at: str) -> Path | No
     if recorded != target:
         recorded.rename(target)
     return target
+
+
+def control_dt_from_env_cfg(env_cfg) -> float:
+    physics_dt = float(getattr(env_cfg, "physics_dt", env_cfg.sim.dt))
+    decimation = int(getattr(env_cfg, "decimation", 1))
+    return physics_dt * decimation
+
+
+def default_joint_tracking_dir(evaluation_dir: Path) -> Path:
+    return evaluation_dir / "joint_tracking"
+
+
+def render_joint_tracking_plots(
+    traces: list[Any],
+    out_dir: str | Path,
+    *,
+    control_dt: float,
+    angle_unit: str = "deg",
+) -> dict[str, str]:
+    """Save left/right/torso arm PNGs (PDF-style layout) for each recorded episode."""
+    from joint_tracking_debug import plot_left_right_arm_joint_states
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths: dict[str, str] = {}
+    for trace in traces:
+        if not getattr(trace, "steps", None):
+            continue
+        episode_paths = plot_left_right_arm_joint_states(
+            trace,
+            str(out),
+            dt=float(control_dt),
+            angle_unit=angle_unit,
+        )
+        ep = int(getattr(trace, "episode_index", 0))
+        for key, path in episode_paths.items():
+            paths[f"episode_{ep:03d}_{key}"] = path
+    return paths
+
+
+def render_joint_tracking_plots_from_json_dir(
+    joint_tracking_dir: str | Path,
+    *,
+    control_dt: float,
+    angle_unit: str = "deg",
+) -> dict[str, str]:
+    """Regenerate arm PNGs from saved ``episode_*_joint_tracking.json`` files."""
+    from joint_tracking_debug import load_joint_tracking_json
+
+    out = Path(joint_tracking_dir)
+    traces = []
+    for json_path in sorted(out.glob("episode_*_joint_tracking.json")):
+        traces.append(load_joint_tracking_json(str(json_path)))
+    return render_joint_tracking_plots(traces, out, control_dt=control_dt, angle_unit=angle_unit)

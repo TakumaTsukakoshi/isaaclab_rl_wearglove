@@ -234,6 +234,8 @@ from joint_tracking_debug import (
 from play_output_utils import (
     build_eval_output_paths,
     build_play_metadata,
+    control_dt_from_env_cfg,
+    default_joint_tracking_dir,
     ensure_wandb_id_file,
     execution_timestamp,
     finalize_recorded_video,
@@ -248,7 +250,7 @@ def _resolve_default_record_dir(record_arg: str | None, default_name: str, evalu
     if not record_arg:
         return None
     if record_arg == default_name:
-        return str(evaluation_dir / "joint_tracking")
+        return str(default_joint_tracking_dir(evaluation_dir))
     return record_arg
 
 
@@ -487,10 +489,12 @@ def main():
         output_paths.evaluation_dir,
     )
     joint_track_save_plots = joint_track_dir is not None and not bool(args_cli.joint_tracking_no_plots)
+    joint_track_control_dt = control_dt_from_env_cfg(env_cfg)
     joint_track_env_id = int(args_cli.joint_tracking_env_id)
     joint_track_traces: list = []
     joint_track_current: JointTrackingEpisodeTrace | None = None
     joint_track_episode_cap = int(args_cli.joint_tracking_max_episodes)
+    joint_tracking_plot_paths: dict[str, str] = {}
     if joint_track_dir:
         joint_track_dir = os.path.abspath(joint_track_dir)
         os.makedirs(joint_track_dir, exist_ok=True)
@@ -536,7 +540,7 @@ def main():
         )
 
     def _finalize_joint_track_episode(*, terminated: bool, truncated: bool) -> None:
-        nonlocal joint_track_current
+        nonlocal joint_track_current, joint_tracking_plot_paths
         if joint_track_current is None or not joint_track_current.steps:
             joint_track_current = JointTrackingEpisodeTrace(
                 episode_index=len(joint_track_traces), env_id=joint_track_env_id
@@ -550,7 +554,12 @@ def main():
             joint_track_dir,
             save_plots=joint_track_save_plots,
             max_joints=args_cli.joint_tracking_max_joints,
+            dt=joint_track_control_dt,
+            angle_unit="deg",
         )
+        for key in ("left_png", "right_png", "torso_png"):
+            if paths.get(key):
+                joint_tracking_plot_paths[f"episode_{ep:03d}_{key.replace('_png', '')}"] = paths[key]
         print(
             f"[play] joint tracking episode {ep}: {len(joint_track_current.steps)} steps -> "
             f"{paths.get('right_png', '')}, {paths.get('left_png', '')}"
@@ -706,6 +715,12 @@ def main():
         combined = os.path.join(joint_track_dir, "all_episodes_joint_tracking.csv")
         save_all_joint_tracking_csv(joint_track_traces, combined)
         print(f"[play] combined joint tracking CSV ({len(joint_track_traces)} episode(s)): {combined}")
+        if joint_tracking_plot_paths:
+            print(
+                "[play] joint tracking plots -> "
+                f"{joint_track_dir}/left_arm_joint_states.png, "
+                f"{joint_track_dir}/right_arm_joint_states.png"
+            )
 
     if args_cli.video:
         finalized = finalize_recorded_video(output_paths.evaluation_dir, executed_at)
@@ -721,6 +736,7 @@ def main():
         wandb_run_id=wandb_run_id,
         wandb_run_id_source=wandb_run_id_source,
         seed=agent_cfg["seed"],
+        joint_tracking_plot_paths=joint_tracking_plot_paths or None,
     )
     write_metadata_json(metadata, output_paths.metadata_file)
     print(f"[play] saved metadata -> {output_paths.metadata_file}")
