@@ -115,7 +115,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     bracelet_desired_insert_depth: float = 0.0
     bracelet_inside_opening_std: float = 0.15
     #: ``soft`` = mean(sigmoid(m_i / k)); ``hard`` = mean(1[m_i > 0]). Reward uses ``fingers_inside_soft_gate``.
-    insertion_gate_mode: str = "hard"
+    insertion_gate_mode: str = "soft"
     #: Temperature ``k`` in ``g_i = sigmoid(m_i / k)`` for soft per-finger insertion gates (m = margin to opening rims).
     insertion_gate_temperature: float = 0.01
     #: Normalized opening ellipse in Y-Z: inside when ``ellipse_value <= eval_opening_ellipse_threshold``.
@@ -265,7 +265,7 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
                 # collision_simplification_remeshing=True,
                 # collision_simplification_remeshing_resolution=8,
                 # collision_simplification_target_triangle_count=0,
-                # collision_simplification_force_conforming=True,
+                # collision_simplification_force_conformwing=True,
                 # solver_position_iteration_count=16,
                 simulation_hexahedral_resolution=12,
                 collision_simplification=True,
@@ -1269,13 +1269,13 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         )
 
         pos_noise[:, 0] = sample_uniform(
-            -0.075, 0.075, (num_envs,), device=self.device
+            -0.05, 0.05, (num_envs,), device=self.device
         )   
         pos_noise[:, 1] = sample_uniform(
-            -0.075, 0.075, (num_envs,), device=self.device
+            -0.05, 0.05, (num_envs,), device=self.device
         )
         pos_noise[:, 2] = sample_uniform(
-            -0.075, 0.075, (num_envs,), device=self.device
+            -0.05, 0.05, (num_envs,), device=self.device
         )
 
         # 各環境のdefault位置を使用
@@ -1298,14 +1298,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         yaw_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -15.0,
+                    -10.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    15.0,
+                    10.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1318,14 +1318,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         pitch_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -15.0,
+                    -10.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    15.0,
+                    10.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1337,14 +1337,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         roll_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -15.0,
+                    -10.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    15.0,
+                    10.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )

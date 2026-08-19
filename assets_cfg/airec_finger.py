@@ -192,7 +192,7 @@ IMITATION_DEFAULT_JOINT_NAMES: tuple[str, ...] = (
 )
 
 robot_articulation_settings = sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False,
+            enabled_self_collisions=True,
             solver_position_iteration_count=12, # default 8
             solver_velocity_iteration_count=1,
             sleep_threshold=0.00001,
@@ -340,7 +340,7 @@ AIREC_CFG = ArticulationCfg(
     articulation_root_prim_path="/world",
     spawn=sim_utils.UsdFileCfg(
         # usd_path=os.path.join(PARENT_DIR, "assets/airec/dry-airec_collision_filtered-new.usd"),
-        usd_path=os.path.join(PARENT_DIR, "assets/airec2_finger_v5/airec2_finger.usd"),
+        usd_path=os.path.join(PARENT_DIR, "assets/airec2_finger_v6/airec2_finger.usd"),
         activate_contact_sensors=False,
         #to fix self collision, look up collision filtering in isaac sim docs
         articulation_props=robot_articulation_settings,
