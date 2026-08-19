@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import re
 import shlex
@@ -220,6 +222,128 @@ def _spawn_section(cfg_obj: Any, attr: str) -> dict[str, Any] | None:
     return _cfg_section(getattr(spawn, attr, None))
 
 
+def _unwrap_env(env) -> Any:
+    current = env
+    seen = set()
+    while id(current) not in seen:
+        seen.add(id(current))
+        next_env = getattr(current, "env", None)
+        if next_env is None:
+            break
+        current = next_env
+    return getattr(current, "unwrapped", current)
+
+
+def _cfg_named(env_cfg, names: tuple[str, ...]) -> dict[str, Any]:
+    return {name: getattr(env_cfg, name, None) for name in names}
+
+
+def _cfg_scale_fields(env_cfg) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name in dir(env_cfg):
+        if name.startswith("_"):
+            continue
+        if not (name.endswith("_scale") or name.endswith("_bonus")):
+            continue
+        value = getattr(env_cfg, name, None)
+        if callable(value):
+            continue
+        out[name] = value
+    return out
+
+
+def _compute_rewards_literal_scales(env) -> dict[str, Any] | None:
+    """Numeric ``*_scale`` assignments inside the task ``compute_rewards`` function."""
+    raw = _unwrap_env(env)
+    fn = getattr(inspect.getmodule(type(raw)), "compute_rewards", None)
+    if fn is None:
+        return None
+    try:
+        src = inspect.getsource(fn)
+        tree = ast.parse(src)
+    except (OSError, TypeError, SyntaxError):
+        return None
+
+    scales: dict[str, Any] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name) or not target.id.endswith("_scale"):
+            continue
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, (int, float)):
+            scales[target.id] = node.value.value
+    return scales or None
+
+
+def _ast_numeric(node: ast.AST) -> float | int | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        value = _ast_numeric(node.operand)
+        return None if value is None else -value
+    if isinstance(node, ast.Call):
+        args = list(node.args)
+        if not args:
+            return None
+        return _ast_numeric(args[0])
+    return None
+
+
+def _ast_call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _reset_target_pose_randomization(env) -> dict[str, Any] | None:
+    """Ranges actually used in ``_reset_target_pose`` (Shadow Hand goal pose)."""
+    raw = _unwrap_env(env)
+    fn = getattr(raw, "_reset_target_pose", None)
+    if fn is None or not callable(fn):
+        return None
+    try:
+        src = inspect.getsource(fn)
+        tree = ast.parse(src)
+    except (OSError, TypeError, SyntaxError):
+        return None
+
+    position_m: dict[str, Any] = {}
+    orientation_deg: dict[str, Any] = {}
+    xyz = ("x", "y", "z")
+    rpy = {"yaw_rad": "yaw", "pitch_rad": "pitch", "roll_rad": "roll"}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        if not isinstance(node.value, ast.Call) or _ast_call_name(node.value) != "sample_uniform":
+            continue
+        if len(node.value.args) < 2:
+            continue
+        low = _ast_numeric(node.value.args[0])
+        high = _ast_numeric(node.value.args[1])
+        if low is None or high is None:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in rpy:
+            orientation_deg[rpy[target.id]] = {"low_deg": low, "high_deg": high}
+            continue
+        if isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Tuple) and len(target.slice.elts) >= 2:
+            idx = _ast_numeric(target.slice.elts[1])
+            if isinstance(idx, int) and 0 <= idx < 3:
+                position_m[xyz[idx]] = {"low_m": low, "high_m": high}
+
+    if not position_m and not orientation_deg:
+        return None
+    return {
+        "source": f"{type(raw).__name__}._reset_target_pose",
+        "position_m": position_m or None,
+        "orientation_deg": orientation_deg or None,
+    }
+
+
 def _collect_robot_runtime(env) -> dict[str, Any] | None:
     raw = env
     while getattr(raw, "env", None) is not None:
@@ -310,6 +434,23 @@ def build_play_metadata(
             "adaptive_physics_on_success": getattr(env_cfg, "adaptive_physics_on_success", None),
             "fine_physics_dt": getattr(env_cfg, "fine_physics_dt", None),
             "fine_decimation": getattr(env_cfg, "fine_decimation", None),
+        },
+        "insertion_gate": _cfg_named(
+            env_cfg,
+            (
+                "insertion_gate_mode",
+                "insertion_gate_temperature",
+                "eval_opening_ellipse_threshold",
+                "bracelet_desired_insert_depth",
+                "bracelet_inside_opening_std",
+            ),
+        ),
+        "randomization": {
+            "reset_target_pose": _reset_target_pose_randomization(env),
+        },
+        "reward_scales": {
+            "from_env_cfg": _cfg_scale_fields(env_cfg),
+            "from_compute_rewards": _compute_rewards_literal_scales(env),
         },
         "physx": _cfg_section(getattr(env_cfg.sim, "physx", None)),
         "materials": {
