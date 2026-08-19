@@ -68,7 +68,7 @@ def make_aux(env, rl_memory, encoder, value, value_preprocessor, env_cfg, agent_
     )
 
 
-def make_env(agent_cfg, env_cfg, writer, args_cli):
+def make_env(agent_cfg, env_cfg, writer, args_cli, *, video_name_prefix: str | None = None):
     """Create and wrap the Isaac Lab environment with gym + writer utilities.
 
     Args:
@@ -126,13 +126,15 @@ def make_env(agent_cfg, env_cfg, writer, args_cli):
 
     # Wrap for video recording
     if args_cli.video:
+        prefix = video_name_prefix if video_name_prefix is not None else "rl-video"
         video_kwargs = {
             "video_folder": writer.video_dir,
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
+            "name_prefix": prefix,
             "disable_logger": True,
         }
-        print("[INFO] Recording videos during training to", writer.video_dir)
+        print("[INFO] Recording videos during playback to", writer.video_dir)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     # Apply frame stacking if needed

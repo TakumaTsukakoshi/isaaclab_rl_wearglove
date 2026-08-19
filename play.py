@@ -12,6 +12,7 @@ Author: Elle Miller
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -230,8 +231,25 @@ from joint_tracking_debug import (
     read_joint_tracking_from_env,
     save_all_joint_tracking_csv,
 )
+from play_output_utils import (
+    build_eval_output_paths,
+    build_play_metadata,
+    ensure_wandb_id_file,
+    execution_timestamp,
+    finalize_recorded_video,
+    parse_checkpoint_path,
+    write_metadata_json,
+)
 from multimodal_rl.rl.ppo import PPO, PPO_DEFAULT_CONFIG
 from multimodal_rl.tools.writer import Writer
+
+
+def _resolve_default_record_dir(record_arg: str | None, default_name: str, evaluation_dir: Path) -> str | None:
+    if not record_arg:
+        return None
+    if record_arg == default_name:
+        return str(evaluation_dir / "joint_tracking")
+    return record_arg
 
 
 def _raw_env(env):
@@ -331,6 +349,38 @@ def main():
 
     Loads a checkpoint and runs the agent in the environment, optionally recording videos.
     """
+    if not args_cli.checkpoint:
+        parser.error(
+            "Missing checkpoint path. Use --checkpoint /path/to/best_agent.pt "
+            "(not --checkpoints unless you use the plural alias we accept)."
+        )
+    try:
+        resume_path = resolve_checkpoint_path(args_cli.checkpoint)
+    except (ValueError, FileNotFoundError) as err:
+        parser.error(str(err))
+
+    executed_at = execution_timestamp()
+    checkpoint_info = parse_checkpoint_path(resume_path)
+    output_paths = build_eval_output_paths(
+        checkpoint_info,
+        executed_at=executed_at,
+        repo_root=LOG_PATH,
+        record_video=bool(args_cli.video),
+    )
+    if output_paths.evaluation_dir.exists():
+        raise FileExistsError(
+            f"Evaluation output directory already exists: {output_paths.evaluation_dir}. "
+            "Wait one second and rerun to get a new timestamp, or remove the existing directory."
+        )
+    output_paths.evaluation_dir.mkdir(parents=True, exist_ok=True)
+
+    wandb_run_id, wandb_run_id_source = ensure_wandb_id_file(
+        output_paths.wandb_id_file,
+        training_run=checkpoint_info.training_run,
+        search_roots=[LOG_PATH, checkpoint_info.training_run_dir or LOG_PATH],
+    )
+    print(f"[play] evaluation output -> {output_paths.evaluation_dir}")
+
     # Parse configuration
     env_cfg, agent_cfg = register_task_to_hydra(args_cli.task, "skrl_cfg_entry_point")
 
@@ -343,7 +393,9 @@ def main():
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     set_seed(agent_cfg["seed"])
     agent_cfg["log_path"] = LOG_PATH
-    if args_cli.video_dir is None:
+    if args_cli.video:
+        args_cli.video_dir = str(output_paths.evaluation_dir)
+    elif args_cli.video_dir is None:
         args_cli.video_dir = agent_cfg["experiment"].get("video_dir") or os.path.join(LOG_PATH, "videos")
     agent_cfg["experiment"]["video_dir"] = args_cli.video_dir
 
@@ -360,7 +412,13 @@ def main():
     writer = Writer(agent_cfg, play=True)
 
     # Make environment (order: gymnasium Env -> FrameStack -> IsaacLab)
-    env = make_env(agent_cfg, env_cfg, writer, args_cli)
+    env = make_env(
+        agent_cfg,
+        env_cfg,
+        writer,
+        args_cli,
+        video_name_prefix=executed_at if args_cli.video else None,
+    )
 
     # Setup models
     policy, value, encoder, value_preprocessor = make_models(env, env_cfg, agent_cfg, dtype)
@@ -386,15 +444,6 @@ def main():
     )
 
     # Load checkpoint
-    if not args_cli.checkpoint:
-        parser.error(
-            "Missing checkpoint path. Use --checkpoint /path/to/best_agent.pt "
-            "(not --checkpoints unless you use the plural alias we accept)."
-        )
-    try:
-        resume_path = resolve_checkpoint_path(args_cli.checkpoint)
-    except (ValueError, FileNotFoundError) as err:
-        parser.error(str(err))
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
     load_play_checkpoint(agent, resume_path)
     _print_runtime_diagnostics(env, env_cfg, resume_path)
@@ -432,7 +481,11 @@ def main():
             f"[play] recording finger insertion soft gate: env_id={finger_gate_env_id} -> {finger_gate_dir}"
         )
 
-    joint_track_dir = args_cli.record_joint_tracking
+    joint_track_dir = _resolve_default_record_dir(
+        args_cli.record_joint_tracking,
+        "joint_tracking_plots",
+        output_paths.evaluation_dir,
+    )
     joint_track_save_plots = joint_track_dir is not None and not bool(args_cli.joint_tracking_no_plots)
     joint_track_env_id = int(args_cli.joint_tracking_env_id)
     joint_track_traces: list = []
@@ -653,6 +706,24 @@ def main():
         combined = os.path.join(joint_track_dir, "all_episodes_joint_tracking.csv")
         save_all_joint_tracking_csv(joint_track_traces, combined)
         print(f"[play] combined joint tracking CSV ({len(joint_track_traces)} episode(s)): {combined}")
+
+    if args_cli.video:
+        finalized = finalize_recorded_video(output_paths.evaluation_dir, executed_at)
+        if finalized is not None:
+            print(f"[play] saved video -> {finalized}")
+
+    metadata = build_play_metadata(
+        args_cli=args_cli,
+        env=env,
+        env_cfg=env_cfg,
+        checkpoint_info=checkpoint_info,
+        output_paths=output_paths,
+        wandb_run_id=wandb_run_id,
+        wandb_run_id_source=wandb_run_id_source,
+        seed=agent_cfg["seed"],
+    )
+    write_metadata_json(metadata, output_paths.metadata_file)
+    print(f"[play] saved metadata -> {output_paths.metadata_file}")
 
     # Close the simulator
     env.close()
