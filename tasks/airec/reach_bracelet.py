@@ -51,6 +51,7 @@ from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 import sys
 sys.path.append("tasks/airec")
 from insert_rew import InsertReward
+from tasks.airec.physics import tune_physx_gpu_buffers_for_vec_env
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -107,6 +108,12 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     bracelet_desired_insert_depth: float = 0.0
     #: Soft in-opening gate ``exp(-max(0, radial^2-1)/std)``; larger = more lenient outside the ellipse.
     bracelet_inside_opening_std: float = 0.15
+    #: ``soft`` = mean(sigmoid(m_i / k)); ``hard`` = mean(1[m_i > 0]). Reward uses ``fingers_inside_soft_gate``.
+    insertion_gate_mode: str = "soft"
+    #: Temperature ``k`` in ``g_i = sigmoid(m_i / k)`` for soft per-finger insertion gates (m = margin to opening rims).
+    insertion_gate_temperature: float = 0.01
+    #: Normalized opening ellipse in Y-Z: inside when ``ellipse_value <= eval_opening_ellipse_threshold``.
+    eval_opening_ellipse_threshold: float = 1.0
 
     #: Thumb deep-inside gate (Y–Z ``ev`` from ``thumb_target``): peaks when ``ev << 1`` (center), zero at rim/outside.
     #: ``sigmoid(sharpness * (margin - ev))`` with ``margin < 1`` avoids rewarding ``ev ≈ 1`` (on edge).
@@ -118,12 +125,15 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: thumb reach gate is zero (post-insert / success phase does not need a high gate).
     thumb_gate_active_before_wrist_success: bool = False
 
-    # Sparse "task success" signal: bracelet root within ``bracelet_success_threshold`` (m) of the wrist
-    # goal position (env-local). Used both as an episode-termination condition (when
-    # ``terminate_on_task_success`` is True) and as a one-shot bonus added in ``_get_rewards``.
-    terminate_on_task_success: bool = True
+    # Sparse task-success: wrist goal within ``bracelet_success_threshold`` (env-local, m).
+    # When False (default), success does not end the episode; only failure terms / time-out do.
+    # ``task_success_bonus`` is awarded once per episode on the first success step.
+    terminate_on_task_success: bool = False
     bracelet_success_threshold: float = 0.01  # 1 cm
-    task_success_bonus: float = 10000.0
+    task_success_bonus: float = 1000.0
+    #: After the one-shot success bonus, ignore further policy actions and hold actuated joint
+    #: targets at the measured success pose until reset. Episode still continues (no terminate).
+    lock_motion_after_task_success: bool = True
 
     #: Print policy action vs ``joint_pos_cmd`` vs sim ``joint_pos`` every ``debug_joint_print_interval`` steps.
     debug_joint_cmd_vs_actual: bool = False
@@ -133,11 +143,22 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: When cumulative episode success rate exceeds :attr:`adaptive_physics_success_threshold`, switch from
     #: coarse (:attr:`~tasks.airec.airec2_finger.AIRECEnvCfg.physics_dt` / :attr:`~tasks.airec.airec2_finger.AIRECEnvCfg.decimation`)
     #: to fine PhysX (``fine_physics_dt`` / ``fine_decimation``). RL control step stays ``1/10`` s in both cases.
-    adaptive_physics_on_success: bool = True
+    adaptive_physics_on_success: bool = False
     adaptive_physics_success_threshold: float = 0.5
     adaptive_physics_min_episodes: int = 20
     fine_physics_dt: float = 1 / 2000
     fine_decimation: int = 200
+
+    #: Rim / fingertip ``VisualizationMarkers`` spheres. Requires GUI (do not use ``--headless``).
+    show_task_markers: bool = False
+    #: Disable markers when ``scene.num_envs`` exceeds this (Fabric GPU OOM with 1k+ envs).
+    show_task_markers_max_num_envs: int = 256
+    #: Geometric opening-rim PCA debug (``bracelet_opening_pca_viz``). Requires GUI for debug_draw.
+    debug_opening_pca_on_reset: bool = False
+    debug_opening_pca_refresh_each_step: bool = False
+    debug_opening_pca_arrow_scale: float = 0.08
+    debug_opening_pca_use_rest_pose: bool = False
+    debug_opening_pca_use_opening_ring: bool = False
 
     object_usd = os.path.join(
         # _REPO_ROOT, "assets", "Bracelet", "bracelet_b.usd"
@@ -472,8 +493,43 @@ class ReachBraceletEnv(AIRECEnv):
         # Keep ``cfg.sim`` aligned with coarse timestep (configclass ``sim`` is bound at class definition time).
         cfg.sim.dt = cfg.physics_dt
         cfg.sim.render_interval = cfg.decimation
+        tune_physx_gpu_buffers_for_vec_env(
+            cfg.sim.physx,
+            int(cfg.scene.num_envs),
+            deformable=False,
+        )
+        # Rigid AIREC + Shadow Hand + bracelet generates far more contact patches than
+        # Isaac's default ``5 * 2**15`` (163840). PhysX asked ~320k at 4096 envs; the
+        # tuner above clamps patches to that default and overflows. Restore a floor.
+        n_env = int(cfg.scene.num_envs)
+        patch_floor = 2**20 if n_env > 1024 else 2**19  # 1_048_576 / 524_288
+        contact_floor = 2**22 if n_env > 1024 else 2**21
+        physx = cfg.sim.physx
+        if hasattr(physx, "gpu_max_rigid_patch_count"):
+            physx.gpu_max_rigid_patch_count = max(
+                int(physx.gpu_max_rigid_patch_count or 0), patch_floor
+            )
+        if hasattr(physx, "gpu_max_rigid_contact_count"):
+            physx.gpu_max_rigid_contact_count = max(
+                int(physx.gpu_max_rigid_contact_count or 0), contact_floor
+            )
+        max_m = int(getattr(cfg, "show_task_markers_max_num_envs", 256))
+        use_markers = bool(cfg.show_task_markers) and cfg.scene.num_envs <= max_m
+        if bool(cfg.show_task_markers) and not use_markers:
+            print(
+                f"[ReachBraceletEnv] show_task_markers disabled "
+                f"(num_envs={cfg.scene.num_envs} > {max_m})"
+            )
+        cfg.show_task_markers = use_markers
 
         super().__init__(cfg, render_mode, **kwargs)
+        if bool(getattr(cfg, "show_task_markers", False)) and not self.sim.has_gui():
+            print(
+                "[ReachBraceletEnv] show_task_markers=True but no GUI "
+                "(omit --headless). Markers disabled."
+            )
+            cfg.show_task_markers = False
+            self.cfg.show_task_markers = False
 
         self._physics_timestep_upgraded = False
         self._curriculum_episode_count = 0
@@ -609,14 +665,30 @@ class ReachBraceletEnv(AIRECEnv):
         # Sparse task-success buffer (bracelet within ``cfg.bracelet_success_threshold`` of wrist goal).
         # Populated each step in ``_get_dones`` and consumed in ``_get_rewards`` for the +bonus term.
         self.task_success = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        # One-shot gate so success bonus is not re-awarded every step while success holds.
+        self._task_success_bonus_awarded = torch.zeros(
+            (self.num_envs,), dtype=torch.bool, device=self.device
+        )
+        # Actuated-joint pose snapshot used when ``lock_motion_after_task_success`` is True.
+        self._success_hold_joint_pos = torch.zeros(
+            (self.num_envs, len(self.actuated_dof_indices)),
+            device=self.device,
+            dtype=torch.float32,
+        )
 
         # debugging
-        self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
-        self._shadow_hand_finger_hold = torch.zeros(
-            (self.num_envs, len(self.finger_joint_ids)),
-            device=self.device,
-            dtype=self.hand.data.joint_pos.dtype,
-        )
+        if self._is_free_space_mode():
+            self.finger_joint_ids = []
+            self._shadow_hand_finger_hold = torch.zeros(
+                (self.num_envs, 0), device=self.device, dtype=torch.float32
+            )
+        else:
+            self.finger_joint_ids, _ = self.hand.find_joints(self.cfg.finger_joint_names)
+            self._shadow_hand_finger_hold = torch.zeros(
+                (self.num_envs, len(self.finger_joint_ids)),
+                device=self.device,
+                dtype=self.hand.data.joint_pos.dtype,
+            )
         self.wrist_xy_center_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         # Env-local vector from opening center to wrist (``torch.norm(..., dim=1)`` → ``wrist_center_euclidean_distance``).
         self.wrist_center_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
@@ -636,6 +708,8 @@ class ReachBraceletEnv(AIRECEnv):
 
     def _apply_action(self) -> None:
         super()._apply_action()
+        if self._is_free_space_mode():
+            return
         # hold finger targets
         finger_target_pos = self._shadow_hand_finger_hold
         zv = torch.zeros_like(finger_target_pos)
@@ -650,11 +724,20 @@ class ReachBraceletEnv(AIRECEnv):
         # Parent enables upper-fingertip frame debug by default; it draws extra axes near the workspace.
         self.left_upper_ee_frame.set_debug_vis(False)
         self.right_upper_ee_frame.set_debug_vis(False)
+        if self._is_free_space_mode():
+            self.goal_north_markers = None
+            self.goal_south_markers = None
+            self.goal_east_markers = None
+            self.goal_west_markers = None
+            self.goal_cent_markers = None
+            self.thumb_target_markers = None
+            self.pinky_target_markers = None
+            return
         # Rigid / deformable task object (bracelet) is added whenever ``object_type != "none"``.
         if self.cfg.object_type != "none":
             self._add_object_to_scene()
         # N/S/E/W/C markers: deformable glove uses nodal rim; rigid bracelet uses root pose + cfg offsets.
-        if self._use_glove or self.cfg.object_type == "rigid":
+        if self.cfg.show_task_markers and (self._use_glove or self.cfg.object_type == "rigid"):
             self.goal_north_markers = VisualizationMarkers(self.cfg.bracelet_north)
             self.goal_south_markers = VisualizationMarkers(self.cfg.bracelet_south)
             self.goal_east_markers = VisualizationMarkers(self.cfg.bracelet_east)
@@ -666,15 +749,24 @@ class ReachBraceletEnv(AIRECEnv):
             self.goal_east_markers = None
             self.goal_west_markers = None
             self.goal_cent_markers = None
-        # Initialize visualization markers for thumb and pinky targets
-        self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
-        self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
-        self.fore_target_markers = VisualizationMarkers(self.cfg.fore_target_marker)
-        self.middle_target_markers = VisualizationMarkers(self.cfg.middle_target_marker)
-        self.ring_target_markers = VisualizationMarkers(self.cfg.ring_target_marker)
-        self.wrist_target_markers = VisualizationMarkers(self.cfg.wrist_target_marker)
-        self.right_ee_markers = VisualizationMarkers(self.cfg.right_ee_marker)
-        self.left_ee_markers = VisualizationMarkers(self.cfg.left_ee_marker)
+        if self.cfg.show_task_markers:
+            self.thumb_target_markers = VisualizationMarkers(self.cfg.thumb_target_marker)
+            self.pinky_target_markers = VisualizationMarkers(self.cfg.pinky_target_marker)
+            self.fore_target_markers = VisualizationMarkers(self.cfg.fore_target_marker)
+            self.middle_target_markers = VisualizationMarkers(self.cfg.middle_target_marker)
+            self.ring_target_markers = VisualizationMarkers(self.cfg.ring_target_marker)
+            self.wrist_target_markers = VisualizationMarkers(self.cfg.wrist_target_marker)
+            self.right_ee_markers = VisualizationMarkers(self.cfg.right_ee_marker)
+            self.left_ee_markers = VisualizationMarkers(self.cfg.left_ee_marker)
+        else:
+            self.thumb_target_markers = None
+            self.pinky_target_markers = None
+            self.fore_target_markers = None
+            self.middle_target_markers = None
+            self.ring_target_markers = None
+            self.wrist_target_markers = None
+            self.right_ee_markers = None
+            self.left_ee_markers = None
         
 
         self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
@@ -740,6 +832,8 @@ class ReachBraceletEnv(AIRECEnv):
                 self.wrist_center_euclidean_distance.unsqueeze(1),
                 # per finger soft inside (5,)
                 self.per_finger_soft_inside,
+                # xyz com_b (3,)
+                self.com_pos_b,
             ),
             dim=-1,
         )
@@ -748,6 +842,19 @@ class ReachBraceletEnv(AIRECEnv):
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self.prev_actions[:] = self.actions
         super()._pre_physics_step(actions)
+        if not bool(getattr(self.cfg, "lock_motion_after_task_success", False)):
+            return
+        locked = self._task_success_bonus_awarded
+        if not bool(locked.any()):
+            return
+        ids = locked.nonzero(as_tuple=False).flatten()
+        # Overwrite policy-mapped targets with the pose frozen at success-bonus time.
+        self.joint_pos_cmd[ids.unsqueeze(1), self.actuated_idx.unsqueeze(0)] = (
+            self._success_hold_joint_pos[ids]
+        )
+        self.prev_joint_pos_cmd[ids.unsqueeze(1), self.actuated_idx.unsqueeze(0)] = (
+            self._success_hold_joint_pos[ids]
+        )
 
     def _maybe_upgrade_physics_timestep(self) -> None:
         if not self.cfg.adaptive_physics_on_success or self._physics_timestep_upgraded:
@@ -765,24 +872,35 @@ class ReachBraceletEnv(AIRECEnv):
                 f"(success_rate={rate:.3f} over {self._curriculum_episode_count} episodes)"
             )
 
-    def _update_physics_curriculum_on_reset(self, env_ids) -> None:
-        if not self.cfg.adaptive_physics_on_success or self._physics_timestep_upgraded:
+    def _episode_success_rate(self) -> float:
+        """Fraction of completed episodes that reached task success (bonus awarded)."""
+        return self._curriculum_success_count / max(self._curriculum_episode_count, 1)
+
+    def _update_success_stats_on_reset(self, env_ids) -> None:
+        """Count finished episodes that earned the one-shot success bonus (before clearing gates)."""
+        if env_ids is None:
             return
-        n = int(env_ids.numel()) if hasattr(env_ids, "numel") else len(env_ids)
-        if n == 0:
+        env_ids = self._normalize_env_ids(env_ids)
+        # Skip cold-start ``__init__`` reset (episode length still 0).
+        alive = self.episode_length_buf[env_ids] > 0
+        if not bool(alive.any()):
             return
-        successes = int(self.task_success[env_ids].sum().item())
+        env_ids = env_ids[alive]
+        n = int(env_ids.numel())
+        # Bonus gate = success at any point this episode (not only the final step).
+        successes = int(self._task_success_bonus_awarded[env_ids].sum().item())
         self._curriculum_episode_count += n
         self._curriculum_success_count += successes
-        self._maybe_upgrade_physics_timestep()
+        if self.cfg.adaptive_physics_on_success and not self._physics_timestep_upgraded:
+            self._maybe_upgrade_physics_timestep()
 
     def _reset_idx(self, env_ids: Sequence[int] | None = None):
         if env_ids is None:
             reset_ids = self.robot._ALL_INDICES
         else:
             reset_ids = self._normalize_env_ids(env_ids)
-        if self.cfg.adaptive_physics_on_success and not self._physics_timestep_upgraded:
-            self._update_physics_curriculum_on_reset(reset_ids)
+        # Record episode success *before* clearing one-shot gates / hold pose.
+        self._update_success_stats_on_reset(reset_ids)
 
         super()._reset_idx(env_ids)
         if env_ids is None:
@@ -790,6 +908,12 @@ class ReachBraceletEnv(AIRECEnv):
         else:
             e = self._normalize_env_ids(env_ids)
         self.prev_actions[e] = 0.0
+        # One-shot success bonus / motion lock are per-episode; must clear on every reset.
+        self.task_success[e] = False
+        self._task_success_bonus_awarded[e] = False
+        self._success_hold_joint_pos[e] = 0.0
+        if self._is_free_space_mode():
+            return
 
         # When ``_use_glove`` is False the base reset can skip goal-hand setup (``object_type=="none"`` path).
         # For rigid bracelet we still refresh ShadowHand pose and thumb/pinky aperture after reset.
@@ -800,6 +924,23 @@ class ReachBraceletEnv(AIRECEnv):
             self._reset_goal_aperture(e)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._is_free_space_mode():
+            self._compute_intermediate_values()
+            com_tip = (self.com_pos_b[:, 0] < float(self.cfg.com_tip_x_min)) | (
+                self.com_pos_b[:, 0] > float(self.cfg.com_tip_x_max)
+            )
+            termination = com_tip
+            time_out = self.episode_length_buf >= self.max_episode_length - 1
+            self.task_success.zero_()
+            self._term_log = {
+                "term_com_tip": com_tip.float(),
+                "com_pos_b_x": self.com_pos_b[:, 0].clone(),
+                "term_any": termination.float(),
+            }
+            self._episode_end_per_finger_soft_inside = self.per_finger_soft_inside.clone()
+            self._episode_end_task_success = self.task_success.clone()
+            return termination, time_out
+
         # Parent calls ``_compute_intermediate_values()`` and writes ``self._term_log`` for wandb.
         termination, time_out = super()._get_dones()
 
@@ -825,6 +966,16 @@ class ReachBraceletEnv(AIRECEnv):
         return termination, time_out
 
     def _get_rewards(self) -> torch.Tensor:
+        if self._is_free_space_mode():
+            rewards = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.device)
+            self.extras["log"] = {"free_space_reward": rewards}
+            term_log = getattr(self, "_term_log", None)
+            if term_log is not None:
+                self.extras["log"].update(term_log)
+            self.extras["counters"] = {}
+            self._debug_print_joint_cmd_vs_actual()
+            return rewards
+
         if self.cfg.use_geometryrl_b7_reward:
             rewards, b7_log = geometryrl_b7_cloth_hanging_reward(self)
             self.extras["log"] = dict(b7_log)
@@ -905,18 +1056,22 @@ class ReachBraceletEnv(AIRECEnv):
                 }
             )
 
-        # Sparse task-success bonus: bracelet within ``bracelet_success_threshold`` (m) of wrist goal.
+        # Sparse task-success bonus (one-shot): bracelet within ``bracelet_success_threshold`` (m).
         # ``_get_dones`` runs before ``_get_rewards`` each control step, so ``self.task_success`` is current.
-        success_bonus = self.task_success.float() * float(self.cfg.task_success_bonus)
+        newly_successful = self.task_success & ~self._task_success_bonus_awarded
+        success_bonus = newly_successful.float() * float(self.cfg.task_success_bonus)
+        if bool(getattr(self.cfg, "lock_motion_after_task_success", False)) and newly_successful.any():
+            ids = newly_successful.nonzero(as_tuple=False).flatten()
+            sl = self.actuated_dof_indices
+            self._success_hold_joint_pos[ids] = self.robot.data.joint_pos[ids][:, sl].clone()
+        self._task_success_bonus_awarded |= newly_successful
         rewards = rewards + success_bonus
         self.extras["log"]["task_success_bonus"] = success_bonus
         self.extras["log"]["task_success"] = self.task_success.float()
+        self.extras["log"]["motion_locked"] = self._task_success_bonus_awarded.float()
         self.extras["log"]["wrist_center_distance"] = self.wrist_center_euclidean_distance
+        self.extras["log"]["episode_success"] = newly_successful.float()
         if self.cfg.adaptive_physics_on_success:
-            rate = self._curriculum_success_count / max(self._curriculum_episode_count, 1)
-            self.extras["log"]["curriculum_success_rate"] = torch.full(
-                (self.num_envs,), rate, device=self.device, dtype=torch.float32
-            )
             self.extras["log"]["physics_timestep_upgraded"] = torch.full(
                 (self.num_envs,),
                 float(self._physics_timestep_upgraded),
@@ -930,7 +1085,24 @@ class ReachBraceletEnv(AIRECEnv):
         if term_log is not None:
             self.extras["log"].update(term_log)
 
-        self.extras["counters"] = {}
+        rate = self._episode_success_rate()
+        self.extras["counters"] = {
+            "success_rate": torch.full(
+                (self.num_envs,), rate, device=self.device, dtype=torch.float32
+            ),
+            "success_episodes": torch.full(
+                (self.num_envs,),
+                float(self._curriculum_success_count),
+                device=self.device,
+                dtype=torch.float32,
+            ),
+            "total_episodes": torch.full(
+                (self.num_envs,),
+                float(self._curriculum_episode_count),
+                device=self.device,
+                dtype=torch.float32,
+            ),
+        }
         self._debug_print_joint_cmd_vs_actual()
         return rewards
     
@@ -994,38 +1166,159 @@ class ReachBraceletEnv(AIRECEnv):
     #     self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
     
     def _reset_target_pose(self, env_ids):
-        # Default root state for selected envs
         default_state = self.hand.data.default_root_state.clone()[env_ids]
+        num_envs = len(env_ids)
 
-        # No randomization for position
+        # =========================================================
+        # 1. Position randomization
+        # =========================================================
+
+        # x, y: ±5 cm, z: ±1 cm
+        pos_noise = torch.empty(
+            (num_envs, 3),
+            device=self.device,
+            dtype=default_state.dtype,
+        )
+
+        pos_noise[:, 0] = sample_uniform(
+            -0.05, 0.05, (num_envs,), device=self.device
+        )   
+        pos_noise[:, 1] = sample_uniform(
+            -0.05, 0.05, (num_envs,), device=self.device
+        )
+        pos_noise[:, 2] = sample_uniform(
+            -0.05, 0.05, (num_envs,), device=self.device
+        )
+
+        # 各環境のdefault位置を使用
+        init_pos = default_state[:, 0:3].clone()
+
         default_state[:, 0:3] = (
-            self.hand.data.default_root_state[env_ids, 0:3]
+            init_pos
+            + pos_noise 
             + self.scene.env_origins[env_ids]
         )
 
-        # No randomization for rotation
-        default_state[:, 3:7] = self.hand.data.default_root_state[env_ids, 3:7]
+        # =========================================================
+        # 2. Orientation randomization
+        # =========================================================
 
-        # Reset root velocity
+        # 各環境のdefault orientation
+        init_rot = default_state[:, 3:7].clone()
+
+        # yaw: ±10 degrees
+        yaw_rad = sample_uniform(
+            torch.deg2rad(
+                torch.tensor(
+                    -10.0,
+                    device=self.device,
+                    dtype=default_state.dtype,
+                )
+            ),
+            torch.deg2rad(
+                torch.tensor(
+                    10.0,
+                    device=self.device,
+                    dtype=default_state.dtype,
+                )
+            ),
+            (num_envs,),
+            device=self.device,
+        )
+
+        # pitch: ±5 degrees
+        pitch_rad = sample_uniform(
+            torch.deg2rad(
+                torch.tensor(
+                    -10.0,
+                    device=self.device,
+                    dtype=default_state.dtype,
+                )
+            ),
+            torch.deg2rad(
+                torch.tensor(
+                    10.0,
+                    device=self.device,
+                    dtype=default_state.dtype,
+                )
+            ),
+            (num_envs,),
+            device=self.device,
+        )
+
+        roll_rad = sample_uniform(
+            torch.deg2rad(
+                torch.tensor(
+                    -10.0,
+                    device=self.device,
+                    dtype=default_state.dtype,
+                )
+            ),
+            torch.deg2rad(
+                torch.tensor(
+                    10.0,
+                    device=self.device,
+                    dtype=default_state.dtype,
+                )
+            ),
+            (num_envs,),
+            device=self.device,
+        )
+
+        # ランダムなyaw + pitch姿勢
+        q_random = quat_from_euler_xyz(
+            roll_rad,
+            pitch_rad,
+            yaw_rad,
+        )
+
+        # World frameでランダム回転をdefault姿勢に追加
+        default_state[:, 3:7] = quat_mul(
+            q_random,
+            init_rot,
+        )
+
+        # =========================================================
+        # 3. Reset root velocity
+        # =========================================================
+
         default_state[:, 7:] = 0.0
 
-        # Reset joints
-        joint_pos = self.hand.data.default_joint_pos[env_ids]
+        # =========================================================
+        # 4. Reset joints
+        # =========================================================
+
+        joint_pos = self.hand.data.default_joint_pos[env_ids].clone()
         joint_vel = torch.zeros_like(joint_pos)
 
-        self.hand.set_joint_position_target(joint_pos, env_ids=env_ids)
-        self.hand.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
-        self.hand.write_root_state_to_sim(default_state, env_ids=env_ids)
+        self.hand.set_joint_position_target(
+            joint_pos,
+            env_ids=env_ids,
+        )
+
+        self.hand.write_joint_state_to_sim(
+            joint_pos,
+            joint_vel,
+            env_ids=env_ids,
+        )
+
+        self.hand.write_root_state_to_sim(
+            default_state,
+            env_ids=env_ids,
+        )
 
         # Cache root pose actually written
         self.goal_hand_root_pos[env_ids] = default_state[:, 0:3].to(
             dtype=self.goal_hand_root_pos.dtype
         )
+
         self.goal_hand_root_quat[env_ids] = default_state[:, 3:7].to(
             dtype=self.goal_hand_root_quat.dtype
         )
 
-        self._shadow_hand_finger_hold[env_ids] = joint_pos[:, self.finger_joint_ids].clone()
+        self._shadow_hand_finger_hold[env_ids] = (
+            joint_pos[:, self.finger_joint_ids].clone()
+        )
     
     def _update_goal_aperture_targets(self, env_ids, thumb_offset=0.03, pinky_offset=0.02) -> None:
         """Recompute outward reach targets and stretch scalars from **current** ShadowHand geometry.
@@ -1185,6 +1478,10 @@ class ReachBraceletEnv(AIRECEnv):
         return torch.sigmoid(sharpness * (1.0 - ellipse_value))
     
     def _compute_intermediate_values(self, reset=False, env_ids: torch.Tensor | None = None):
+        if self._is_free_space_mode():
+            AIRECEnv._compute_intermediate_values(self, env_ids=env_ids)
+            return
+
         super()._compute_intermediate_values()
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
@@ -1348,7 +1645,7 @@ class ReachBraceletEnv(AIRECEnv):
         self.wrist_inside_ellipse[env_ids] = _wrist_inside_ellipse
 
         # print(f"left_ee_pinky_angular_distance: {self.left_ee_pinky_angular_distance[0]}")
-        print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
+        # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
         finger_heights = torch.stack([

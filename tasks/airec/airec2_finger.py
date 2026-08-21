@@ -16,6 +16,7 @@ import numpy as np
 import torch
 import math
 from collections.abc import Sequence
+from typing import Literal
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg, DeformableObject, DeformableObjectCfg
@@ -43,6 +44,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import (
     quat_apply,
+    quat_apply_inverse,
     quat_conjugate,
     quat_from_angle_axis,
     quat_mul,
@@ -50,12 +52,13 @@ from isaaclab.utils.math import (
     saturate,
 )
 import isaaclab.utils.math as math_utils
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.markers.config import FRAME_MARKER_CFG  # isort: skip
 from assets_cfg.airec_finger import AIREC_CFG  
 from assets_cfg.shadow_hand import SHADOW_HAND_CFG
 from pxr import Sdf, Usd, UsdPhysics, Sdf
 from isaaclab.sim import SimulationContext
-from tasks.airec.physics import BRACELET_PHYSICS_DT, BRACELET_DECIMATION, bracelet_sim_cfg
+from tasks.airec.physics import robot_material
 
 def ensure_xform_prim(prim_path: str) -> bool:
     sim = SimulationContext.instance()
@@ -68,15 +71,17 @@ def ensure_xform_prim(prim_path: str) -> bool:
 
 @configclass
 class AIRECEnvCfg(DirectRLEnvCfg):
+    #: ``full`` keeps the task scene; ``free_space`` spawns only the AIREC robot
+    #: (plus non-physical lights and robot-mounted frame sensors).
+    scene_mode: Literal["full", "free_space"] = "full"
+    #: The AIREC root is fixed, so free-space diagnostics do not require a ground plane.
+    free_space_keep_ground: bool = False
+
     # physics sim
     # 240 500 1000
-    # physics_dt = 1 / 500 # 0.002 #1 / 500 # 120 # 500 Hz
+    physics_dt = 1 / 500  # finer PhysX step (less tunneling); upgraded at runtime by reach_* curriculum
 
-    # # number of physics step per control step
-    # decimation = 5  # 10 # # 50 Hz
-    physics_dt = 1 / 500  # coarse PhysX step (Hz = 300); upgraded at runtime by reach_bracelet curriculum
-
-    # number of physics step per control step (RL step_dt = physics_dt * decimation = 1/10 s)
+    # number of physics step per control step (RL step_dt = physics_dt * decimation ≈ 0.05 s)
     decimation = 10
 
     # the number of physics simulation steps per rendering steps (default=1)
@@ -94,19 +99,48 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     obs_stack = 1
 
     # reset config
-    reset_object_position_noise = 0.0
+    reset_object_position_noise = 0.01
     #: If False, rigid / articulated task objects keep ``default_root_state`` orientation on reset (no ``randomize_rotation``).
     randomize_object_rotation: bool = False
     # lift stuff
     minimal_width = 0.02
     minimal_distance = 0.02
+    maximum_width = 0.148 ########## need changed from measurements
 
     act_moving_average = 0.1
+
+    #: If True, policy actions are residuals around reset pose (``a=0`` holds ref).
+    #: If False, actions map absolutely into soft joint limits (legacy).
+    residual_body_actions: bool = True
+    #: Max residual [rad] per body DOF when ``residual_body_actions`` is True (broadcast to all actuated DOFs).
+    residual_action_scale: float | None = None
 
     #: Print policy actions vs ``joint_pos_cmd`` vs measured ``joint_pos`` (see ``_debug_print_joint_cmd_vs_actual``).
     debug_joint_cmd_vs_actual: bool = False
     debug_joint_print_env_id: int = 0
     debug_joint_print_interval: int = 10
+
+    #: CoM tip termination: base-frame X outside ``[com_tip_x_min, com_tip_x_max]`` ends the episode.
+    com_tip_x_min: float = -0.1
+    com_tip_x_max: float = 0.1
+    #: Body used as the CoM base frame. ``None`` = auto-pick among planar-move / legacy names.
+    com_base_body_name: str | None = None
+    #: Large blue sphere at full-body CoM (world). Requires GUI; enable via ``--show-com-marker``.
+    show_com_marker: bool = False
+    #: Periodic stdout of ``com_pos_b`` (for tuning tip thresholds during play).
+    debug_com_print: bool = False
+    debug_com_print_env_id: int = 0
+    debug_com_print_interval: int = 10
+
+    com_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/com_marker",
+        markers={
+            "sphere": sim_utils.SphereCfg(
+                radius=0.2,
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.35, 1.0), opacity=0.85),
+            ),
+        },
+    )
     minimal_angular = 10.0 # degree
     minimal_dense = 0.02 # added for dense reward 10/20
     reaching_object_goal_scale = 10.0
@@ -124,6 +158,23 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     default_goal_euclidean_distance = 0.19
 
+    #: Deformable glove long-axis hint (world). Which end is the cuff is chosen by larger rim radius, not sign of this vector.
+    mouth_axis_hint: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    mouth_end_slice_ratio: float = 0.1
+    #: Keep only vertices within this fraction of the entry-slice thickness (near the opening plane).
+    mouth_entry_plane_ratio: float = 0.5
+    #: Outer ring on the opening: keep vertices with radius >= this quantile of ``r`` on the entry patch.
+    mouth_ring_quantile: float = 0.65
+    #: Cuff end-slice: ``env_axis`` (recommended), ``toward_point``, ``away_from_point``, ``larger_radius``, ``smaller_radius``.
+    mouth_opening_end_mode: str = "away_from_point"
+    #: Env-local axis; opening is the end slice with larger (or smaller if ``mouth_opening_env_axis_pick_positive`` is False) mean projection.
+    mouth_opening_env_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    mouth_opening_env_axis_pick_positive: bool = True
+    mouth_opening_toward_env_point: tuple[float, float, float] | None = (0.14, 0.0, 0.84)
+    mouth_world_axis_extreme_k: int = 8
+    deformable_bracelet_geom_north_max_z: bool = True
+    deformable_bracelet_geom_east_max_y: bool = True
+
     # Task-space / Cartesian control (``airec2_finger_taskspace``, ``wear_finger_taskspace``; joint-space ignores these).
     task_space_pos_min: tuple[float, float, float] = (-0.55, -0.55, 0.35)
     task_space_pos_max: tuple[float, float, float] = (0.55, 0.55, 1.45)
@@ -134,19 +185,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     sim: SimulationCfg = SimulationCfg(
         dt=physics_dt,
         render_interval=decimation,
-        physics_material=RigidBodyMaterialCfg(
-            static_friction=1.0,
-            dynamic_friction=1.0,
-        ),
-        # physics_material=DeformableBodyMaterialCfg(
-        #     youngs_modulus=1.0e7,     #  8e7
-        #     poissons_ratio=0.45,      #  0.48
-        #     density=300.0,            #  300 kg/m^3
-        #     damping_scale=1.0,
-        #     elasticity_damping=0.03, #  0.012
-        #     dynamic_friction=0.5,     #  0.6
-        # ),
-            
+        physics_material=robot_material,
         physx=PhysxCfg(
             solver_type=1,
             enable_ccd=True,
@@ -157,18 +196,22 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             bounce_threshold_velocity=0.2,
 
             min_position_iteration_count=8,
-            max_position_iteration_count=32,
+            max_position_iteration_count=32, # deformable bracelet
+            # max_position_iteration_count=32, # deformable glove
             max_velocity_iteration_count=1,
 
             ### GPU Buffer Management: 
-            gpu_total_aggregate_pairs_capacity=2**25,
+            # gpu_total_aggregate_pairs_capacity=2**25,
+            gpu_total_aggregate_pairs_capacity=2**26,
             gpu_found_lost_aggregate_pairs_capacity=2**25,
             gpu_found_lost_pairs_capacity=2**27,
             gpu_max_rigid_contact_count=2**23, # default 2**23
             gpu_max_rigid_patch_count=2**23, #23, default 5 * 2 ** 15. # change 2**20 to default 1119
             gpu_temp_buffer_capacity=2**20, # default 2**20
-            gpu_max_soft_body_contacts= 2**24, # default 2**20
-            gpu_collision_stack_size=2**30,
+            gpu_max_soft_body_contacts= 2**25, # default 2**20
+            # gpu_max_soft_body_contacts= 2**24, # default 2**20
+            # gpu_collision_stack_size=2**30,
+            gpu_collision_stack_size=2**31,
             gpu_heap_capacity=2**26,
             gpu_max_num_partitions=1,
             # gpu_temp_buffer_capacity=2**18, # default 2**20
@@ -183,7 +226,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     # temp
     replicate_physics = True
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=6144, env_spacing=2, replicate_physics=replicate_physics
+        num_envs=8192, env_spacing=2, replicate_physics=replicate_physics
     )
 
     # default_object_pos = [0.5, 0, 0.20]  # 0.055
@@ -374,7 +417,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    # rot=[0.0, 0.0, 1.0, 0.0]
+                    rot=[1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -390,7 +434,7 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_upper_ee",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    rot=[1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -454,7 +498,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
                 name="left_thumb",
                 offset=OffsetCfg(
                     pos=[0.0, 0.0, 0.0],
-                    rot=[0.0, 0.0, 1.0, 0.0]
+                    # rot=[0.0, 0.0, 1.0, 0.0]
+                    rot=[1.0, 0.0, 0.0, 0.0]
                 ),
             )
         ],
@@ -553,11 +598,11 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
 
     img_dim = 84
-    eye = [1.2, -0.3, 0.5]
-    target = [0, 3.0, 0]
+    # eye = [1.2, -0.3, 0.5]
+    # target = [0, 3.0, 0]
     tiled_camera: TiledCameraCfg = TiledCameraCfg(
         prim_path="/World/envs/env_.*/Camera",
-        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, -0.0, 0.0), rot=(1, 0, 0, 0), convention="base_link"),
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, -0.0, 0.0), rot=(1, 0, 0, 0), convention="world"),
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=24.0, focus_distance=400.0, horizontal_aperture=20.955, clipping_range=(0.01, 3.2)
@@ -577,12 +622,18 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     object_type = "rigid"  # "none" (no scene object) | "rigid" | "deformable" — override in task cfgs (e.g. WearEnvCfg)
     #: If True, spawn visible red cuboids at ``Visuals/Anchor{East,West,North,South,Center}/Geom`` (rim kinematic bodies).
     #: Set False for rigid tasks (e.g. bracelet) to hide them while keeping physics anchors.
-    show_anchor_rim_cuboids: bool = True
+    show_anchor_rim_cuboids: bool = False
     binary_tactile = False
     OPEN_IS_UPPER = True  # True: 上限=開, 下限=閉 / False: 上限=閉, 下限=開
 
 
 class AIRECEnv(DirectRLEnv):
+    def _is_free_space_mode(self) -> bool:
+        mode = str(getattr(self.cfg, "scene_mode", "full")).strip().lower()
+        if mode not in ("full", "free_space"):
+            raise ValueError(f"scene_mode must be 'full' or 'free_space', got {mode!r}")
+        return mode == "free_space"
+
     # pre-physics step calls
     #   |-- _pre_physics_step(action)
     #   |-- _apply_action()
@@ -653,10 +704,28 @@ class AIRECEnv(DirectRLEnv):
         n_actuated_policy = len(self.actuated_dof_indices)
         self.actions = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.prev_actions = torch.zeros_like(self.actions)
+        self._raw_actions = torch.zeros_like(self.actions)
         default_joint_pos = self.robot.data.default_joint_pos
         self.joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
         self.prev_joint_pos_cmd[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
         self.joint_pos_policy[:, self.actuated_dof_indices] = default_joint_pos[:, self.actuated_dof_indices]
+
+        # Body joint limits used by absolute / residual action mapping (actuated DOFs only).
+        sl = self.actuated_dof_indices
+        self._body_pos_lower = self.robot_dof_lower_limits[sl].clone()
+        self._body_pos_upper = self.robot_dof_upper_limits[sl].clone()
+        self._body_hard_lower = self.robot_hard_dof_lower_limits[sl].clone()
+        self._body_hard_upper = self.robot_hard_dof_upper_limits[sl].clone()
+        half_range = (self._body_pos_upper - self._body_pos_lower) / 2.0
+        if self.cfg.residual_action_scale is None:
+            self._body_residual_scale = half_range
+        else:
+            self._body_residual_scale = torch.full(
+                (len(sl),),
+                float(self.cfg.residual_action_scale),
+                device=self.device,
+                dtype=torch.float32,
+            )
         
         self.joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
@@ -728,6 +797,12 @@ class AIRECEnv(DirectRLEnv):
         self.left_ee_object_angular_distance = torch.zeros((self.num_envs,), device=self.device)
         self.left_ee_object_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
 
+        # for validation of aperture
+        self.right_ee_distance = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
+        self.left_ee_distance = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
+
         self.ee_angular_distance = torch.zeros((self.num_envs,), device=self.device)
         self.ee_distance = torch.zeros((self.num_envs, 3), device=self.device)
         self.ee_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
@@ -757,7 +832,25 @@ class AIRECEnv(DirectRLEnv):
         self.anchor_idx = None
         self.prev_anchor_idx = None           
         self.max_nodes = None
-        self.nodal_state = None  
+        self.nodal_state = None
+
+        # for residual body tracking
+        self._residual_body_ref = self.robot.data.default_joint_pos[:, self.actuated_dof_indices].clone()
+
+        # Full-body CoM (world + chassis frame) for tip termination / marker.
+        # Planar-move USD often has no ``base_link`` body (uses ``world`` / ``base_link_rot_yaw``).
+        self.base_link_body_idx, self._com_base_body_name = self._resolve_com_base_body_idx()
+        self.com_pos_w = torch.zeros((self.num_envs, 3), dtype=self.dtype, device=self.device)
+        self.com_pos_b = torch.zeros((self.num_envs, 3), dtype=self.dtype, device=self.device)
+        self.com_markers: VisualizationMarkers | None = None
+        if bool(getattr(self.cfg, "show_com_marker", False)):
+            if not self.sim.has_gui():
+                print(
+                    "[AIRECEnv] show_com_marker=True but no GUI "
+                    "(use without --headless). Marker disabled."
+                )
+            else:
+                self.com_markers = VisualizationMarkers(self.cfg.com_marker_cfg)
             
         self.extras["log"] = {
             "right_reach_reward": None,
@@ -798,6 +891,8 @@ class AIRECEnv(DirectRLEnv):
         self.action_space = action
 
     def _add_object_to_scene(self):
+        if self._is_free_space_mode():
+            return
         if self.cfg.object_type == "none":
             return
         if self.cfg.object_type == "rigid":
@@ -816,7 +911,9 @@ class AIRECEnv(DirectRLEnv):
         # Isaac Sim 5.x + GPU stacks can invalidate PhysX articulation views (weakref.proxy dies on first
         # scene.update — ReferenceError in articulation_data.joint_vel).
         self.robot = Articulation(self.cfg.robot_cfg)
-        self.hand = Articulation(self.cfg.hand_cfg)
+        self.hand = None
+        if not self._is_free_space_mode():
+            self.hand = Articulation(self.cfg.hand_cfg)
 
         # self._add_object_to_scene()
         
@@ -826,14 +923,33 @@ class AIRECEnv(DirectRLEnv):
         self.right_ee_frame = FrameTransformer(self.cfg.right_ee_config)
         self.right_ee_frame.set_debug_vis(False)
         self.left_upper_ee_frame = FrameTransformer(self.cfg.left_upper_ee_config)
-        self.left_upper_ee_frame.set_debug_vis(False)
+        self.left_upper_ee_frame.set_debug_vis(not self._is_free_space_mode())
         self.right_upper_ee_frame = FrameTransformer(self.cfg.right_upper_ee_config)
-        self.right_upper_ee_frame.set_debug_vis(False)
+        self.right_upper_ee_frame.set_debug_vis(not self._is_free_space_mode())
         self.left_thumb_frame = FrameTransformer(self.cfg.left_thumb_config)
         self.left_thumb_frame.set_debug_vis(False)
         self.right_thumb_frame = FrameTransformer(self.cfg.right_thumb_config)
         self.right_thumb_frame.set_debug_vis(False)
         #################################################################################
+
+        if self._is_free_space_mode():
+            if bool(getattr(self.cfg, "free_space_keep_ground", False)):
+                if not SimulationContext.instance().stage.GetPrimAtPath("/World/ground"):
+                    spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg(size=(10000, 10000)))
+            self.scene.clone_environments(copy_from_source=False)
+            self.scene.articulations["robot"] = self.robot
+            self.scene.sensors["left_ee_frame"] = self.left_ee_frame
+            self.scene.sensors["right_ee_frame"] = self.right_ee_frame
+            self.scene.sensors["left_upper_ee_frame"] = self.left_upper_ee_frame
+            self.scene.sensors["right_upper_ee_frame"] = self.right_upper_ee_frame
+            self.scene.sensors["left_thumb_frame"] = self.left_thumb_frame
+            self.scene.sensors["right_thumb_frame"] = self.right_thumb_frame
+            light_cfg = sim_utils.DomeLightCfg(intensity=1000.0, color=(0.75, 0.75, 0.75))
+            light_cfg.func("/World/Light", light_cfg)
+            if "pixels" in self.cfg.obs_list or "pixels" in self.cfg.aux_list:
+                self._tiled_camera = TiledCamera(self.cfg.tiled_camera)
+                self.scene.sensors["tiled_camera"] = self._tiled_camera
+            return
 
         rb_east_path_env0 = "/World/envs/env_0/Visuals/AnchorEast/Geom"
         rb_west_path_env0 = "/World/envs/env_0/Visuals/AnchorWest/Geom"
@@ -970,35 +1086,52 @@ class AIRECEnv(DirectRLEnv):
         self.joint_pos_cmd[:, sl] = torch.clamp(self.joint_pos_cmd[:, sl], lower, upper)
 
     def _update_actuated_joint_pos_cmd_from_actions(self) -> None:
-        """Map policy actions → joint targets with EMA, once per RL control step.
+        """Map (already EMA-smoothed) actions → joint targets, once per RL control step.
 
-        Pipeline (actuated DOFs only)::
+        Pipeline (actuated / body DOFs)::
 
-            actions ∈ [-1, 1]
-              → scale → ``joint_pos_policy``   # policy target in joint space
-              → EMA + hard clamp → ``joint_pos_cmd``  # sent to Isaac via set_joint_position_target
+            raw actions ∈ [-1, 1]
+              → action-space EMA in :meth:`_pre_physics_step`  (``act_moving_average``)
+              → absolute scale  OR  residual around ``_residual_body_ref``
+              → hard clamp → ``joint_pos_cmd``  # sent to Isaac via set_joint_position_target
+
+        ``joint_pos_policy`` = joint target from **raw** (pre-EMA) action (debug plots).
+        EMA must not run inside :meth:`_apply_action` (decimation).
         """
         sl = self.actuated_dof_indices
-        lower_soft = self.robot_dof_lower_limits[sl]
-        upper_soft = self.robot_dof_upper_limits[sl]
-        lower_hard, upper_hard = self._actuated_joint_limit_tensors()
-        ma = float(self.cfg.act_moving_average)
+        lower_soft = self._body_pos_lower
+        upper_soft = self._body_pos_upper
+        lower_hard = self._body_hard_lower
+        upper_hard = self._body_hard_upper
+        raw = self._raw_actions
 
-        q_policy = scale(self.actions, lower_soft, upper_soft)
-        prev_safe = torch.clamp(self.prev_joint_pos_cmd[:, sl], lower_hard, upper_hard)
-        q_cmd = ma * q_policy + (1.0 - ma) * prev_safe
-        q_cmd = torch.clamp(q_cmd, lower_hard, upper_hard)
+        if self.cfg.residual_body_actions:
+            q_policy = self._residual_body_ref + scale(
+                raw, -self._body_residual_scale, self._body_residual_scale
+            )
+            body_cmd = self._residual_body_ref + scale(
+                self.actions, -self._body_residual_scale, self._body_residual_scale
+            )
+        else:
+            q_policy = scale(raw, lower_soft, upper_soft)
+            body_cmd = scale(self.actions, lower_soft, upper_soft)
+
+        q_cmd = torch.clamp(body_cmd, lower_hard, upper_hard)
+        q_policy = torch.clamp(q_policy, lower_hard, upper_hard)
 
         self.joint_pos_policy[:, sl] = q_policy
         self.joint_pos_cmd[:, sl] = q_cmd
         self.prev_joint_pos_cmd[:, sl] = q_cmd
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        """
-        Store actions from policy in a class variable
-        """
+        """Store actions from policy, apply action-space EMA, then build joint targets."""
         self.last_action = self.joint_pos_cmd[:, self.actuated_dof_indices]
-        self.actions = actions.clone()
+        self.prev_joint_pos_cmd[:] = self.joint_pos_cmd
+        self.prev_actions[:] = self.actions
+        self._raw_actions[:] = actions
+        tau = float(self.cfg.act_moving_average)
+        # In-place EMA in action space (``action_tau`` in the reference snippet).
+        self.actions[:] = tau * actions + (1.0 - tau) * self.prev_actions
         self._update_actuated_joint_pos_cmd_from_actions()
 
     def _apply_action(self) -> None:
@@ -1020,6 +1153,10 @@ class AIRECEnv(DirectRLEnv):
             zero_vel_fixed = torch.zeros((self.num_envs, len(self._fixed_joint_indices)), device=self.device)
             self.robot.set_joint_velocity_target(zero_vel_fixed, joint_ids=self._fixed_joint_indices)
 
+        self.robot.set_joint_velocity_target(
+            torch.zeros((self.num_envs, len(self.actuated_dof_indices)), device=self.device),
+            joint_ids=self.actuated_dof_indices
+        )
         self.robot.set_joint_position_target(
             self.joint_pos_cmd[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
         )
@@ -1211,6 +1348,11 @@ class AIRECEnv(DirectRLEnv):
         return self.normalised_forces
 
     def _get_tactile(self):
+        if self._is_free_space_mode():
+            self.tactile.zero_()
+            self.normalised_forces.zero_()
+            self.unnormalised_forces.zero_()
+            return self.tactile
         # contact sensor data is [num_envs, 2, 3]
         forcesL_world, forcesR_world = self._read_force_matrix()
 
@@ -1270,6 +1412,17 @@ class AIRECEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
             
         super()._reset_idx(env_ids)
+
+        if self._is_free_space_mode():
+            self._reset_robot(env_ids)
+            # Call the parent implementation explicitly: subclass task intermediates
+            # depend on assets deliberately absent in free-space mode.
+            AIRECEnv._compute_intermediate_values(self, env_ids=env_ids)
+            self._policy_enabled = True
+            self._phase = "policy"
+            self._pregrasp_steps = 0
+            self._grip_latched_q = None
+            return
 
         if self.cfg.object_type == "none":
             self._reset_robot(env_ids)
@@ -1368,12 +1521,21 @@ class AIRECEnv(DirectRLEnv):
         self.object.write_root_state_to_sim(object_default_state, env_ids)
 
     def _reset_robot(self, env_ids):
-
         joint_pos = self.robot.data.default_joint_pos[env_ids]
+        # Residual reference = pose held when a=0 (reset / default).
+        self._residual_body_ref[env_ids] = joint_pos[:, self.actuated_dof_indices]
         # joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos)
         self.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+
+        # Keep command buffers consistent with reset pose (avoids EMA jump on first step).
+        self.joint_pos_cmd[env_ids] = joint_pos
+        self.prev_joint_pos_cmd[env_ids] = joint_pos
+        self.joint_pos_policy[env_ids] = joint_pos
+        self.actions[env_ids] = 0.0
+        self.prev_actions[env_ids] = 0.0
+        self._raw_actions[env_ids] = 0.0
         
         # Explicitly zero velocity for fixed finger joints
         if self._fixed_joint_indices:
@@ -1751,11 +1913,19 @@ class AIRECEnv(DirectRLEnv):
         self.left_thumb_pos[env_ids] = self.left_thumb_frame.data.target_pos_source[..., 0, :][env_ids]
         self.left_thumb_rot[env_ids] = self.left_thumb_frame.data.target_quat_source[..., 0, :][env_ids]  
         # self.right_ee_distance[env_ids] = ((self.right_ee_pos[env_ids] + self.right_upper_ee_pos[env_ids])/2) - self.right_thumb_pos[env_ids]
+        self.right_ee_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.right_thumb_pos[env_ids]
+        self.right_ee_euclidean_distance[env_ids] = torch.norm(self.right_ee_distance[env_ids], dim=1)
+        self.left_ee_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.left_thumb_pos[env_ids]
+        self.left_ee_euclidean_distance[env_ids] = torch.norm(self.left_ee_distance[env_ids], dim=1)
         ######################################################################
 
         # joint vel roughly between -2.5, 2.5, so dividing by 3.
         self.normalised_joint_vel[env_ids] = self.joint_vel[env_ids] / self.cfg.vel_max_magnitude
-        if self.cfg.object_type == "none":
+
+        # CoM before free-space early return so tip / marker work in all scene modes.
+        self._update_robot_com(env_ids)
+
+        if self.cfg.object_type == "none" or self._is_free_space_mode():
             self.ee_pos[env_ids] = (self.right_upper_ee_pos[env_ids] + self.left_upper_ee_pos[env_ids]) / 2
             self.ee_distance[env_ids] = torch.abs(
                 self.right_upper_ee_pos[env_ids] - self.left_upper_ee_pos[env_ids]
@@ -1825,13 +1995,16 @@ class AIRECEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # no termination at the moment
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.50 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.50   # check
-        too_far = self.ee_euclidean_distance > 1.0 # 0.40 20
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.30 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.30   # check
+        too_far = self.ee_euclidean_distance > 0.30 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
-        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left
-        # if termination.any():
-        #     print(f"termination (env0): {termination[0]}")
+        # CoM behind / too far forward of base (X in base_link frame) = tipping.
+        com_tip = (self.com_pos_b[:, 0] < float(self.cfg.com_tip_x_min)) | (
+            self.com_pos_b[:, 0] > float(self.cfg.com_tip_x_max)
+        )
+
+        termination = out_of_reach | too_far | is_grasp_right | is_grasp_left | com_tip
         # termination = too_far | out_of_reach
         # termination = too_far | is_grasp_right | is_grasp_left
        
@@ -1842,6 +2015,8 @@ class AIRECEnv(DirectRLEnv):
             "term_grasp_left": is_grasp_left.float(),
             "term_too_far": too_far.float(),
             "term_out_of_reach": out_of_reach.float(),
+            "term_com_tip": com_tip.float(),
+            "com_pos_b_x": self.com_pos_b[:, 0].clone(),
             "term_any": termination.float(),
         }
 
@@ -1850,6 +2025,76 @@ class AIRECEnv(DirectRLEnv):
         #     print(f"time_out (env0): {time_out[0]}")
 
         return termination, time_out
+
+    def _resolve_com_base_body_idx(self) -> tuple[int, str]:
+        """Pick the chassis body for ``com_pos_b`` (legacy ``base_link`` or planar-move USD).
+
+        Planar-move URDF→USD often exposes ``world`` / ``base_link_trans_*`` / ``base_link_rot_yaw``
+        and does **not** keep ``base_link`` as a rigid body (see ``airec_finger.AIREC_CFG``).
+        Prefer the yawed chassis when present so tip X follows base heading.
+        """
+        names = list(self.robot.data.body_names)
+        override = getattr(self.cfg, "com_base_body_name", None)
+        candidates: list[str] = []
+        if override:
+            candidates.append(str(override))
+        candidates.extend(
+            [
+                "base_link",
+                "base_link_rot_yaw",
+                "base_link_trans_y",
+                "base_link_trans_x",
+                "world",
+            ]
+        )
+        for name in candidates:
+            if name in names:
+                idx = names.index(name)
+                print(f"[AIRECEnv] CoM base body: {name!r} (idx={idx})")
+                return idx, name
+        raise RuntimeError(
+            "Could not resolve CoM base body. Tried "
+            f"{candidates}. Available body_names={names}"
+        )
+
+    def _update_robot_com(self, env_ids: torch.Tensor) -> None:
+        """Mass-weighted body CoM in world, then expressed relative to the chassis body."""
+        body_com_pos = self.robot.data.body_com_pose_w[..., :3]
+        mass = self.robot.data.default_mass.to(device=self.device)
+        total_mass = mass.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        self.com_pos_w[env_ids] = (
+            body_com_pos[env_ids] * mass[env_ids].unsqueeze(-1)
+        ).sum(dim=1) / total_mass[env_ids]
+
+        base_link_pos_w = self.robot.data.body_link_pose_w[:, self.base_link_body_idx, :3]
+        base_quat = self.robot.data.body_link_pose_w[:, self.base_link_body_idx, 3:7]
+        com_to_base_w = self.com_pos_w[env_ids] - base_link_pos_w[env_ids]
+        self.com_pos_b[env_ids] = quat_apply_inverse(base_quat[env_ids], com_to_base_w)
+        if self.com_markers is not None:
+            self.com_markers.visualize(translations=self.com_pos_w)
+
+        self._debug_print_com()
+
+    def _debug_print_com(self) -> None:
+        if not bool(getattr(self.cfg, "debug_com_print", False)):
+            return
+        interval = max(int(getattr(self.cfg, "debug_com_print_interval", 10)), 1)
+        eid = int(getattr(self.cfg, "debug_com_print_env_id", 0))
+        eid = max(0, min(eid, self.num_envs - 1))
+        step = int(self.episode_length_buf[eid].item())
+        if step % interval != 0:
+            return
+        cb = self.com_pos_b[eid]
+        cw = self.com_pos_w[eid]
+        x_min = float(self.cfg.com_tip_x_min)
+        x_max = float(self.cfg.com_tip_x_max)
+        tip = bool(cb[0].item() < x_min or cb[0].item() > x_max)
+        print(
+            f"[CoM env={eid} t={step} base={self._com_base_body_name}] "
+            f"com_pos_b=({cb[0].item():+.4f}, {cb[1].item():+.4f}, {cb[2].item():+.4f}) "
+            f"com_pos_w=({cw[0].item():+.4f}, {cw[1].item():+.4f}, {cw[2].item():+.4f}) "
+            f"tip_band=[{x_min:.2f}, {x_max:.2f}] tip={tip}"
+        )
     
     def _rigid_anchor_body_offset(self, anchor_mode: str) -> torch.Tensor:
         """Small object-frame offsets (m) for rim debug anchors when ``object_type=="rigid"``."""
