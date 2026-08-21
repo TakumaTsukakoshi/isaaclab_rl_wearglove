@@ -1724,8 +1724,8 @@ def compute_rewards(
     pinky_between_height_condition = (top_height > pinky_height) & (pinky_height > bottom_height)
   
     ######## rewards for reaching ########
-    reaching_right_ee_thumb_scale = 2.0
-    reaching_left_ee_pinky_scale = 1.0
+    reaching_right_ee_thumb_scale = 20
+    reaching_left_ee_pinky_scale = 10
     right_ee_thumb_condition = (ee_near_condition) & thumb_between_height_condition
     left_ee_pinky_condition = (ee_near_condition) & pinky_between_height_condition 
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")
@@ -1743,7 +1743,7 @@ def compute_rewards(
     )
 
     ######## rewards for insert ########
-    reaching_wrist_center_scale = 20.0
+    reaching_wrist_center_scale = 200.0
     wrist_center_condition = ee_near_condition 
     
     r_wrist_center_distance = (
