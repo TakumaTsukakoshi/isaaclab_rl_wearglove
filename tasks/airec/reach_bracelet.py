@@ -1649,7 +1649,7 @@ class ReachBraceletEnv(AIRECEnv):
         self.wrist_inside_ellipse[env_ids] = _wrist_inside_ellipse
 
         # print(f"left_ee_pinky_angular_distance: {self.left_ee_pinky_angular_distance[0]}")
-        print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
+        # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
         finger_heights = torch.stack([
