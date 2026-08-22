@@ -203,8 +203,8 @@ class AIRECEnvCfg(DirectRLEnvCfg):
             friction_correlation_distance=0.005,
             bounce_threshold_velocity=0.2,
 
-            min_position_iteration_count=8,
-            max_position_iteration_count=32, # deformable bracelet
+            min_position_iteration_count=32,
+            max_position_iteration_count=64, # deformable bracelet
             # max_position_iteration_count=32, # deformable glove
             max_velocity_iteration_count=1,
 
