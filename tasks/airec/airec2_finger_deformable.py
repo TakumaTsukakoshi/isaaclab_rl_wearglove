@@ -110,6 +110,14 @@ class AIRECEnvCfg(DirectRLEnvCfg):
 
     act_moving_average = 0.1
 
+    #: Hold planar-move base DOFs at default (usually 0) with zero velocity.
+    hold_base_fixed: bool = True
+    held_base_joint_names: tuple[str, ...] = (
+        "base_joint_trans_x",
+        "base_joint_trans_y",
+        "base_joint_rot_yaw",
+    )
+
     #: If True, policy actions are residuals around reset pose (``a=0`` holds ref).
     #: If False, actions map absolutely into soft joint limits (legacy).
     residual_body_actions: bool = True
@@ -691,6 +699,18 @@ class AIRECEnv(DirectRLEnv):
             except ValueError:
                 pass  # Joint not found, skip
 
+        self._base_joint_ids: list[int] = []
+        if bool(getattr(self.cfg, "hold_base_fixed", True)):
+            for joint_name in getattr(self.cfg, "held_base_joint_names", ()):
+                try:
+                    self._base_joint_ids.append(self.robot.joint_names.index(joint_name))
+                except ValueError:
+                    pass
+            if self._base_joint_ids:
+                print(f"[AIRECEnv] holding base fixed (zero vel): {[self.robot.joint_names[i] for i in self._base_joint_ids]}")
+            else:
+                print("[AIRECEnv] hold_base_fixed requested but no planar base joints found on the USD")
+
         # create empty tensors
         n_actuated_policy = len(self.actuated_dof_indices)
         self.actions = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
@@ -1065,6 +1085,27 @@ class AIRECEnv(DirectRLEnv):
         #     self.wholebody_contact_sensor = ContactSensor(self.cfg.wholebody_contact_cfg)
         #     self.scene.sensors["wholebody_contact_sensor"] = self.wholebody_contact_sensor
 
+    def _hold_base_fixed(self, env_ids: torch.Tensor | None = None) -> None:
+        """Pin planar base DOFs at default pose and zero velocity (targets + sim state)."""
+        ids = getattr(self, "_base_joint_ids", None)
+        if not ids:
+            return
+        if env_ids is None:
+            pos = self.robot.data.default_joint_pos[:, ids]
+            vel = torch.zeros_like(pos)
+            self.joint_pos_cmd[:, ids] = pos
+            self.robot.set_joint_position_target(pos, joint_ids=ids)
+            self.robot.set_joint_velocity_target(vel, joint_ids=ids)
+            self.robot.write_joint_state_to_sim(pos, vel, joint_ids=ids)
+            return
+        pos = self.robot.data.default_joint_pos[env_ids][:, ids]
+        vel = torch.zeros_like(pos)
+        for col, jid in enumerate(ids):
+            self.joint_pos_cmd[env_ids, jid] = pos[:, col]
+        self.robot.set_joint_position_target(pos, joint_ids=ids, env_ids=env_ids)
+        self.robot.set_joint_velocity_target(vel, joint_ids=ids, env_ids=env_ids)
+        self.robot.write_joint_state_to_sim(pos, vel, joint_ids=ids, env_ids=env_ids)
+
     def _actuated_joint_limit_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Hard joint limits for policy-actuated DOFs (USD / PhysX ``joint_pos_limits``)."""
         idx = self.actuated_dof_indices
@@ -1185,6 +1226,7 @@ class AIRECEnv(DirectRLEnv):
         self.robot.set_joint_position_target(
             self.joint_pos_cmd[:, self.actuated_dof_indices], joint_ids=self.actuated_dof_indices
         )
+        self._hold_base_fixed()
 
     @staticmethod
     def _joint_dir_label(value: float, eps: float = 1e-4) -> str:
@@ -1559,6 +1601,7 @@ class AIRECEnv(DirectRLEnv):
         joint_vel = torch.zeros_like(joint_pos)
         self.robot.set_joint_position_target(joint_pos, env_ids=env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
+        self._hold_base_fixed(env_ids)
 
         # Keep command buffers consistent with reset pose (avoids EMA jump on first step).
         self.joint_pos_cmd[env_ids] = joint_pos

@@ -1283,7 +1283,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
 
         default_state[:, 0:3] = (
             init_pos
-            + pos_noise
+            + pos_noise 
             + self.scene.env_origins[env_ids]
         )
 
@@ -1298,14 +1298,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         yaw_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -10.0,
+                    -15.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    10.0,
+                    15.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1318,14 +1318,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         pitch_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -10.0,
+                    -15.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    10.0,
+                    15.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1337,14 +1337,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         roll_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -10.0,
+                    -15.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    10.0,
+                    15.0,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1353,8 +1353,9 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             device=self.device,
         )
 
-        # roll_rad = torch.zeros_like(yaw_rad)
-        # pitch_rad = torch.zeros_like(yaw_rad)
+        roll_rad = torch.zeros_like(yaw_rad)
+        pitch_rad = torch.zeros_like(yaw_rad)
+        yaw_rad = torch.zeros_like(yaw_rad)
 
         # ランダムなyaw + pitch姿勢
         q_random = quat_from_euler_xyz(
