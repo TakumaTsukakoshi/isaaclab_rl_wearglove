@@ -2040,8 +2040,8 @@ class AIRECEnv(DirectRLEnv):
         self._compute_intermediate_values()
 
         # no termination at the moment
-        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.30 # check
-        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.30   # check
+        is_grasp_right = self.garment_right_ee_euclidean_distance > 0.25 # check
+        is_grasp_left = self.garment_left_ee_euclidean_distance > 0.25   # check
         too_far = self.ee_euclidean_distance > 0.30 # 0.40 20
         out_of_reach =self.object_pos[:,2] < 0.4
         # CoM behind / too far forward of base (X in base_link frame) = tipping.

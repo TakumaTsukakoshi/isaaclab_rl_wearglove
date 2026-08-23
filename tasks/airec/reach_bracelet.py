@@ -1649,7 +1649,7 @@ class ReachBraceletEnv(AIRECEnv):
         self.wrist_inside_ellipse[env_ids] = _wrist_inside_ellipse
 
         # print(f"left_ee_pinky_angular_distance: {self.left_ee_pinky_angular_distance[0]}")
-        # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_ee_euclidean_distance: {self.wrist_ee_euclidean_distance[0]}")
+        # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
         finger_heights = torch.stack([
@@ -1728,8 +1728,8 @@ def compute_rewards(
     pinky_between_height_condition = (top_height > pinky_height) & (pinky_height > bottom_height)
   
     ######## rewards for reaching ########
-    reaching_right_ee_thumb_scale = 20
-    reaching_left_ee_pinky_scale = 10
+    reaching_right_ee_thumb_scale = 20.0
+    reaching_left_ee_pinky_scale = 10.0
     right_ee_thumb_condition = (ee_near_condition) & thumb_between_height_condition
     left_ee_pinky_condition = (ee_near_condition) & pinky_between_height_condition 
     # print(f"thumb_inside_ellipse: {thumb_inside_ellipse[0]}, pinky_inside_ellipse: {pinky_inside_ellipse[0]}, wrist_inside_ellipse: {wrist_inside_ellipse[0]}")

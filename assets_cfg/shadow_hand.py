@@ -29,7 +29,7 @@ DAMPING_SCALE = 10.0
 
 # Match reach_bracelet rigid object / tasks.airec.physics: huge hand-only values let the solver
 # push the hand through thin ring colliders; keep depenetration in the same ballpark as the bracelet.
-_SHADOW_HAND_MAX_DEPENETRATION_VELOCITY = 5.0
+_SHADOW_HAND_MAX_DEPENETRATION_VELOCITY = 1.0
 
 SHADOW_HAND_CFG = ArticulationCfg(
     spawn=sim_utils.UsdFileCfg(
