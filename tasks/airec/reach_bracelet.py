@@ -616,13 +616,17 @@ class ReachBraceletEnv(AIRECEnv):
         self.garment_left_ee_euclidean_distance = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         # goal related tensors
         # self.right_ee_goal_distance = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_ee_thumb_distance = torch.zeros((self.num_envs, 3), device=self.device)
-        self.right_ee_thumb_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
+        # self.right_ee_thumb_distance = torch.zeros((self.num_envs, 3), device=self.device)
+        # self.right_ee_thumb_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
+        self.right_upper_ee_thumb_distance = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_upper_ee_thumb_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
         self.right_ee_thumb_rotation = torch.zeros((self.num_envs, 4), device=self.device)
         self.right_ee_thumb_angular_distance = torch.zeros((self.num_envs,), device=self.device)
         # self.left_ee_goal_distance = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_ee_pinky_distance = torch.zeros((self.num_envs, 3), device=self.device)
-        self.left_ee_pinky_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
+        # self.left_ee_pinky_distance = torch.zeros((self.num_envs, 3), device=self.device)
+        # self.left_ee_pinky_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
+        self.left_upper_ee_pinky_distance = torch.zeros((self.num_envs, 3), device=self.device)
+        self.left_upper_ee_pinky_euclidean_distance = torch.zeros((self.num_envs,), device=self.device)
         self.left_ee_pinky_rotation = torch.zeros((self.num_envs, 4), device=self.device)
         self.left_ee_pinky_angular_distance = torch.zeros((self.num_envs,), device=self.device)
 
@@ -818,13 +822,13 @@ class ReachBraceletEnv(AIRECEnv):
                 # euclidean distance (1,)
                 self.ee_euclidean_distance.unsqueeze(1),
                 # xyz diffs (3,)
-                self.right_ee_thumb_distance,
+                self.right_upper_ee_thumb_distance,
                 # euclidean distance (1,)
-                self.right_ee_thumb_euclidean_distance.unsqueeze(1),
+                self.right_upper_ee_thumb_euclidean_distance.unsqueeze(1),
                 ## xyz diffs (3,)
-                self.left_ee_pinky_distance,
+                self.left_upper_ee_pinky_distance,
                 # euclidean distances (1,)
-                self.left_ee_pinky_euclidean_distance.unsqueeze(1),
+                self.left_upper_ee_pinky_euclidean_distance.unsqueeze(1),
     
                 # xyz diffs (3,)
                 self.wrist_center_distance,
@@ -1016,8 +1020,8 @@ class ReachBraceletEnv(AIRECEnv):
                 self.joint_vel_penalty_scale,
                 self.ee_euclidean_distance,
                 self.goal_stretch_euclidean_distance,
-                self.right_ee_thumb_euclidean_distance,
-                self.left_ee_pinky_euclidean_distance,
+                self.right_upper_ee_thumb_euclidean_distance,
+                self.left_upper_ee_pinky_euclidean_distance,
                 self.right_ee_thumb_angular_distance,
                 self.left_ee_pinky_angular_distance,
                 garment_r,
@@ -1358,6 +1362,7 @@ class ReachBraceletEnv(AIRECEnv):
 
         self.thumb_target[env_ids] = thumb_current - thumb_offset * unit_dir
         self.pinky_target[env_ids] = pinky_current + pinky_offset * unit_dir
+        # print(f"thumb_target: {self.thumb_target[0]} pinky_target: {self.pinky_target[0]}")
 
         target_delta = self.thumb_target[env_ids] - self.pinky_target[env_ids]
         self.human_stretch_euclidean_distance[env_ids] = torch.norm(target_delta, dim=-1)
@@ -1606,15 +1611,15 @@ class ReachBraceletEnv(AIRECEnv):
         self.top_wrist_euclidean_distance[env_ids] = torch.norm(self.top_wrist_distance[env_ids], dim=1)
         self.under_wrist_euclidean_distance[env_ids] = torch.norm(self.under_wrist_distance[env_ids], dim=1)
         # print(f"east: {self.west_edge_pos[0]} thumb_goal_pos:{self.thumb_goal_pos[0]}")
-        self.right_ee_thumb_distance[env_ids] = self.right_ee_pos[env_ids] - self.thumb_target[env_ids]
-        self.right_ee_thumb_euclidean_distance[env_ids] = torch.norm(self.right_ee_thumb_distance[env_ids], dim=1)
+        self.right_upper_ee_thumb_distance[env_ids] = self.right_upper_ee_pos[env_ids] - self.thumb_target[env_ids]
+        self.right_upper_ee_thumb_euclidean_distance[env_ids] = torch.norm(self.right_upper_ee_thumb_distance[env_ids], dim=1)
         # print(f"right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]}")
         self.right_ee_thumb_rotation[env_ids] = quat_mul(self.right_ee_rot[env_ids], quat_conjugate(self.thumb_goal_rot[env_ids]))
         self.right_ee_thumb_angular_distance[env_ids] = rotation_distance(self.right_ee_rot[env_ids], self.thumb_goal_rot[env_ids])
         # print(f"right_ee_thumb_angular_distance: {self.right_ee_thumb_angular_distance[0]}")
         # self.left_ee_goal_distance[env_ids] = self.left_l_ee_pos[env_ids] - self.pinky_goal_pos[env_ids]
-        self.left_ee_pinky_distance[env_ids] = self.left_ee_pos[env_ids] - self.pinky_target[env_ids]
-        self.left_ee_pinky_euclidean_distance[env_ids] = torch.norm(self.left_ee_pinky_distance[env_ids], dim=1)
+        self.left_upper_ee_pinky_distance[env_ids] = self.left_upper_ee_pos[env_ids] - self.pinky_target[env_ids]
+        self.left_upper_ee_pinky_euclidean_distance[env_ids] = torch.norm(self.left_upper_ee_pinky_distance[env_ids], dim=1)
         self.left_ee_pinky_rotation[env_ids] = quat_mul(self.left_ee_rot[env_ids], quat_conjugate(self.pinky_goal_rot[env_ids]))
         self.left_ee_pinky_angular_distance[env_ids] = rotation_distance(self.left_ee_rot[env_ids], self.pinky_goal_rot[env_ids])
 

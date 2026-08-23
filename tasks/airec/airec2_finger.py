@@ -1359,7 +1359,7 @@ class AIRECEnv(DirectRLEnv):
                 self.ee_distance,
                 # euclidean distance (1,)
                 self.ee_euclidean_distance.unsqueeze(1),
-                
+                # com pos (3,)
                 self.com_pos_b,
             ),
             dim=-1,
