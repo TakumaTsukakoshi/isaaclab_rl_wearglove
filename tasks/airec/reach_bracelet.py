@@ -1043,7 +1043,7 @@ class ReachBraceletEnv(AIRECEnv):
                 "reach_reward_right": r_right_ee_thumb_distance,
                 "reach_reward_left": r_left_ee_pinky_distance,
                 "wrist_center_distance_reward": r_wrist_center_distance,
-                # "fingers_inside_soft_gate": self.fingers_inside_soft_gate,
+                "fingers_inside_soft_gate": self.fingers_inside_soft_gate,
                 # "thumb_upper_ee_proximity": self.thumb_upper_ee_proximity,
                 # "thumb_ellipse_value": self.thumb_ellipse_value,
             }
