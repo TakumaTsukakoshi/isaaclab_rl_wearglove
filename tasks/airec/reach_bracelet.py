@@ -109,7 +109,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: Soft in-opening gate ``exp(-max(0, radial^2-1)/std)``; larger = more lenient outside the ellipse.
     bracelet_inside_opening_std: float = 0.15
     #: ``soft`` = mean(sigmoid(m_i / k)); ``hard`` = mean(1[m_i > 0]). Reward uses ``fingers_inside_soft_gate``.
-    insertion_gate_mode: str = "soft"
+    insertion_gate_mode: str = "hard"
     #: Temperature ``k`` in ``g_i = sigmoid(m_i / k)`` for soft per-finger insertion gates (m = margin to opening rims).
     insertion_gate_temperature: float = 0.01
     #: Normalized opening ellipse in Y-Z: inside when ``ellipse_value <= eval_opening_ellipse_threshold``.
@@ -707,7 +707,13 @@ class ReachBraceletEnv(AIRECEnv):
         self.pinky_inside_ellipse = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.wrist_inside_ellipse = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.fingers_inside_soft_gate = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
+        self.fingers_inside_hard_gate = torch.zeros((self.num_envs,), dtype=torch.float, device=self.device)
         self.per_finger_soft_inside = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
+        self.per_finger_hard_inside = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
+        self.per_finger_insert_margin = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
+        self.per_finger_height_z = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
+        self.per_finger_ellipse_value = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
+        self.per_finger_inside_ellipse = torch.zeros((self.num_envs, 5), dtype=torch.float, device=self.device)
     
 
     def _apply_action(self) -> None:
@@ -942,6 +948,10 @@ class ReachBraceletEnv(AIRECEnv):
                 "term_any": termination.float(),
             }
             self._episode_end_per_finger_soft_inside = self.per_finger_soft_inside.clone()
+            self._episode_end_per_finger_insert_margin = self.per_finger_insert_margin.clone()
+            self._episode_end_per_finger_height_z = self.per_finger_height_z.clone()
+            self._episode_end_per_finger_ellipse_value = self.per_finger_ellipse_value.clone()
+            self._episode_end_per_finger_inside_ellipse = self.per_finger_inside_ellipse.clone()
             self._episode_end_task_success = self.task_success.clone()
             return termination, time_out
 
@@ -964,8 +974,15 @@ class ReachBraceletEnv(AIRECEnv):
             self._term_log["term_any"] = termination.float()
 
         self._episode_end_per_finger_soft_inside = self.per_finger_soft_inside.clone()
+        self._episode_end_per_finger_insert_margin = self.per_finger_insert_margin.clone()
+        self._episode_end_per_finger_height_z = self.per_finger_height_z.clone()
+        self._episode_end_per_finger_ellipse_value = self.per_finger_ellipse_value.clone()
+        self._episode_end_per_finger_inside_ellipse = self.per_finger_inside_ellipse.clone()
+        self._episode_end_opening_south_z = self.goal_south_pos[:, 2].clone()
+        self._episode_end_opening_north_z = self.goal_north_pos[:, 2].clone()
         self._episode_end_task_success = self.task_success.clone()
         self._episode_end_wrist_center_euclidean_distance = self.wrist_center_euclidean_distance.clone()
+
 
         return termination, time_out
 
@@ -1657,31 +1674,38 @@ class ReachBraceletEnv(AIRECEnv):
         # print(f"left_ee_pinky_euclidean_distance: {self.left_ee_pinky_euclidean_distance[0]} right_ee_thumb_euclidean_distance: {self.right_ee_thumb_euclidean_distance[0]} wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
         # shadow hand aperature
         self.goal_stretch_euclidean_distance[env_ids] = torch.abs(self.ee_euclidean_distance[env_ids] - self.human_stretch_euclidean_distance[env_ids])
-        finger_heights = torch.stack([
-            self.thumb_target[:, 2],
-            self.fore_goal_pos[:, 2],
-            self.middle_goal_pos[:, 2],
-            self.ring_goal_pos[:, 2],
-            self.pinky_target[:, 2],
-        ], dim=-1)
-        dist_from_south_pos = finger_heights - self.goal_south_pos[:, 2].unsqueeze(-1)
-        dist_from_north_pos = self.goal_north_pos[:, 2].unsqueeze(-1) - finger_heights
+        # Must index by env_ids: reset calls this on a subset (e.g. 31), not all num_envs.
+        finger_heights = torch.stack(
+            [
+                self.thumb_target[env_ids, 2],
+                self.fore_goal_pos[env_ids, 2],
+                self.middle_goal_pos[env_ids, 2],
+                self.ring_goal_pos[env_ids, 2],
+                self.pinky_target[env_ids, 2],
+            ],
+            dim=-1,
+        )
+        dist_from_south_pos = finger_heights - self.goal_south_pos[env_ids, 2].unsqueeze(-1)
+        dist_from_north_pos = self.goal_north_pos[env_ids, 2].unsqueeze(-1) - finger_heights
         margin = torch.minimum(dist_from_south_pos, dist_from_north_pos)
-        temperature = 0.02
-        self.per_finger_soft_inside[env_ids] = torch.sigmoid(margin[env_ids] / temperature)
-        # print(f"ee_euclidean_distance: {self.ee_euclidean_distance[0]}, human_stretch_euclidean_distance: {self.human_stretch_euclidean_distance[0]}")
-        # print(f"per_finger_soft_inside: {self.per_finger_soft_inside[0]}")
-        # print(f"per_finger_soft_inside: {self.per_finger_soft_inside[0]}")
-        # between_height_condition = (
-        #     (self.goal_north_pos[:, 2].unsqueeze(-1) > finger_heights) &
-        #     (finger_heights > self.goal_south_pos[:, 2].unsqueeze(-1))
-        # )
-        # num_fingers_inside = between_height_condition.sum(dim=-1)  # (num_envs,)
-        # # ``_compute_intermediate_values`` may run on a subset of envs; only write the matching slice.
-        # self.fingers_inside_soft_gate[env_ids] = (
-        #     num_fingers_inside[env_ids].float() / float(finger_heights.shape[-1])
-        # )
-        self.fingers_inside_soft_gate[env_ids] = self.per_finger_soft_inside[env_ids].mean(dim=-1)
+        gate_k = float(getattr(self.cfg, "insertion_gate_temperature", 0.01))
+        self.per_finger_height_z[env_ids] = finger_heights
+        self.per_finger_insert_margin[env_ids] = margin
+        # soft: g_i = sigmoid(m_i / k); hard: 1[m_i > 0] (same decision boundary at 0.5 / m_i = 0)
+        soft_inside = torch.sigmoid(margin / max(gate_k, 1e-8))
+        hard_inside = (margin > 0.0).to(dtype=soft_inside.dtype)
+        self.per_finger_soft_inside[env_ids] = soft_inside
+        self.per_finger_hard_inside[env_ids] = hard_inside
+        self.fingers_inside_hard_gate[env_ids] = hard_inside.mean(dim=-1)
+        gate_mode = str(getattr(self.cfg, "insertion_gate_mode", "soft")).lower()
+        if gate_mode == "hard":
+            self.fingers_inside_soft_gate[env_ids] = self.fingers_inside_hard_gate[env_ids]
+        elif gate_mode == "soft":
+            self.fingers_inside_soft_gate[env_ids] = soft_inside.mean(dim=-1)
+        else:
+            raise ValueError(
+                f"Unknown insertion_gate_mode={gate_mode!r}; expected 'soft' or 'hard'."
+            )
         # print(f"per_finger_soft_inside: {self.per_finger_soft_inside[0]}")
         # print(f"fingers_inside_soft_gate: {self.fingers_inside_soft_gate[0]}")
         # print(f"wrist_center_euclidean_distance: {self.wrist_center_euclidean_distance[0]}")
