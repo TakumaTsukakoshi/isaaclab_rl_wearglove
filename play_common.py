@@ -202,23 +202,36 @@ def add_play_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         help="Stop evaluation after this many completed episodes.",
     )
     parser.add_argument(
+        "--insertion-delta-m",
+        type=float,
+        default=0.003,
+        help="Signed-distance hysteresis (m) for opening-plane crossing (default: 0.003).",
+    )
+    parser.add_argument(
+        "--insertion-confirm-frames",
+        type=int,
+        default=4,
+        help="Consecutive destination-side frames required to confirm a crossing (default: 4 at 50 Hz = 80 ms).",
+    )
+    parser.add_argument(
         "--insertion-window-sec",
         type=float,
         default=1.0,
-        help="Seconds before episode end used for finger-insertion stability (default: 1.0 s at 50 Hz = 50 steps).",
+        help="Deprecated. Ignored by the crossing state machine; kept so old commands still parse.",
     )
     parser.add_argument(
         "--insertion-ratio-threshold",
         type=float,
         default=0.8,
-        help="Fraction of the insertion window that must be inserted for an episode-level True (default: 0.8).",
+        help="Deprecated. Ignored by the crossing state machine; kept so old commands still parse.",
     )
     parser.add_argument(
         "--insertion-ellipse-threshold",
         type=float,
         default=None,
         help=(
-            "Opening-ellipse inside threshold (default: env eval_opening_ellipse_threshold, usually 1.0). "
+            "Opening-ellipse inside threshold at the interpolated crossing (default: env "
+            "eval_opening_ellipse_threshold, usually 1.0). "
             "Inside when ((y-c_y)/r_y)^2 + ((z-c_z)/r_z)^2 <= threshold."
         ),
     )
@@ -227,6 +240,18 @@ def add_play_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         type=int,
         default=None,
         help="If set, only this env_id contributes evaluation episodes. Default: all parallel envs.",
+    )
+    parser.add_argument(
+        "--debug-insertion",
+        action="store_true",
+        default=False,
+        help="Print per-finger insertion debug (signed distance, ellipse, latch). Best with --num_envs 1.",
+    )
+    parser.add_argument(
+        "--debug-insertion-interval",
+        type=int,
+        default=10,
+        help="With --debug-insertion: print every N control steps (default: 10 = 0.2 s at 50 Hz). 1 = every step.",
     )
     parser.add_argument(
         "--legacy-dressing-eval",

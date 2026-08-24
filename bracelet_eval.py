@@ -1,11 +1,24 @@
 """Bracelet-task evaluation: motion-lock success, finger insertion, joint deviation.
 
-Insertion geometry (env-local, same convention as reach_*_bracelet):
-  * opening plane: X = goal_cent.x, normal = +X (insertion axis)
-  * opening boundary: live Y-Z ellipse from N/S/E/W rim goals
-  * finger segment: middle-phalanx COM -> distal COM (short distal-phalanx centerline)
-  * inserted_raw iff the A->B line hits the plane at P inside the ellipse and
-    the distal has reached or passed the plane (signed X >= 0)
+Insertion is a per-finger crossing state machine, not a final-frame or last-window
+point-in-opening test.
+
+Geometry (env-local, same live buffers as ``reach_*_bracelet``):
+  * opening center ``c_t`` = ``goal_cent_pos`` (rigid: root + rim offsets; deformable: live rim)
+  * opening plane normal ``n`` = env +X
+  * opening boundary = live Y-Z ellipse from N/S/E/W rim goals
+  * finger point ``p_i`` = finger-base / knuckle COM (not the fingertip)
+
+Signed distance:
+  ``d_i = n · (p_i - c_t) = p_i.x - c_t.x``
+  pre-insertion (hand / +X) = ``d > +delta``
+  post-insertion (through / -X) = ``d < -delta``
+
+A finger becomes inserted after a confirmed forward crossing through the
+ellipse. ``PRE → BAND → POST`` counts: the last clear hand-side sample is
+used, so the ±delta deadband does not swallow the event. It stays inserted
+if the bracelet later slides to the wrist or deforms. A confirmed reverse
+crossing (``POST → PRE`` through the ellipse) clears the flag.
 """
 
 from __future__ import annotations
@@ -23,6 +36,13 @@ from play_common import PlaySession, unwrap_env
 from play_output_utils import control_dt_from_env_cfg
 
 FINGER_ORDER = ("thumb", "index", "middle", "ring", "little")
+FINGER_LABELS = {
+    "thumb": "Thumb",
+    "index": "Index",
+    "middle": "Middle",
+    "ring": "Ring",
+    "little": "Pinky",
+}
 
 # Actuated Shadow Hand finger joints (matches Reach*BraceletEnvCfg.finger_joint_names).
 # Wrist WRJ* and coupled DIP *J0 are excluded.
@@ -34,26 +54,22 @@ FINGER_JOINT_NAMES: dict[str, tuple[str, ...]] = {
     "little": ("robot0_LFJ4", "robot0_LFJ3", "robot0_LFJ2", "robot0_LFJ1"),
 }
 
-DISTAL_POS_ATTRS: dict[str, str] = {
-    "thumb": "thumb_goal_pos",
-    "index": "fore_goal_pos",
-    "middle": "middle_goal_pos",
-    "ring": "ring_goal_pos",
-    "little": "pinky_goal_pos",
+# Palm-side finger bases (first match wins). Tips / middle phalanges are not used.
+BASE_BODY_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "thumb": ("robot0_thbase", "robot0_thproximal"),
+    "index": ("robot0_ffknuckle", "robot0_ffproximal"),
+    "middle": ("robot0_mfknuckle", "robot0_mfproximal"),
+    "ring": ("robot0_rfknuckle", "robot0_rfproximal"),
+    "little": ("robot0_lfknuckle", "robot0_lfmetacarpal", "robot0_lfproximal"),
 }
 
-# Shadow Hand USD body names; first match wins. Looked up at runtime.
-MIDDLE_BODY_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "thumb": ("robot0_thmiddle", "robot0_thhub", "robot0_thproximal"),
-    "index": ("robot0_ffmiddle", "robot0_ffproximal"),
-    "middle": ("robot0_mfmiddle", "robot0_mfproximal"),
-    "ring": ("robot0_rfmiddle", "robot0_rfproximal"),
-    "little": ("robot0_lfmiddle", "robot0_lfproximal"),
-}
-
-# When no middle body exists, step this far from distal toward the wrist (meters).
-_FALLBACK_SEGMENT_M = 0.02
-_PLANE_PARALLEL_EPS = 1e-8
+INSERTION_OUTCOMES = (
+    "none",
+    "partial",
+    "all_exited",
+    "all_retained",
+    "all_retained_and_success",
+)
 
 CSV_FIELDS = [
     "episode",
@@ -70,7 +86,18 @@ CSV_FIELDS = [
     "middle_inserted",
     "ring_inserted",
     "little_inserted",
-    "num_inserted_fingers",
+    "pinky_inserted",
+    "final_inserted_fingers",
+    "max_inserted_fingers",
+    "ever_all_inserted",
+    "final_all_inserted",
+    "insertion_outcome",
+    "thumb_first_insert_time",
+    "index_first_insert_time",
+    "middle_first_insert_time",
+    "ring_first_insert_time",
+    "little_first_insert_time",
+    "pinky_first_insert_time",
     "thumb_insert_ratio",
     "index_insert_ratio",
     "middle_insert_ratio",
@@ -81,7 +108,7 @@ CSV_FIELDS = [
     "middle_insert_steps",
     "ring_insert_steps",
     "little_insert_steps",
-    "insertion_window_steps",
+    "num_inserted_fingers",
     "thumb_rms",
     "index_rms",
     "middle_rms",
@@ -159,16 +186,203 @@ def _resolve_body_index(body_names: list[str], candidates: tuple[str, ...]) -> i
     return None
 
 
-def _stack_distal_env_local(raw_env: Any) -> torch.Tensor | None:
-    """Return ``(num_envs, 5, 3)`` distal positions in env-local frame, or None."""
-    cols = []
-    for name in FINGER_ORDER:
-        attr = DISTAL_POS_ATTRS[name]
-        tensor = getattr(raw_env, attr, None)
-        if tensor is None or not isinstance(tensor, torch.Tensor):
-            return None
-        cols.append(tensor)
-    return torch.stack(cols, dim=1)
+def opening_radii(
+    east: torch.Tensor,
+    west: torch.Tensor,
+    north: torch.Tensor,
+    south: torch.Tensor,
+    eps: float = 1e-4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Live Y (E/W) and Z (N/S) ellipse semi-axes. Shape ``(num_envs,)``."""
+    min_r = torch.as_tensor(eps, device=east.device, dtype=east.dtype)
+    radius_y = 0.5 * torch.abs(east[:, 1] - west[:, 1]).clamp_min(min_r)
+    radius_z = 0.5 * torch.abs(north[:, 2] - south[:, 2]).clamp_min(min_r)
+    return radius_y, radius_z
+
+
+def ellipse_value_yz(
+    point: torch.Tensor,
+    center: torch.Tensor,
+    radius_y: torch.Tensor,
+    radius_z: torch.Tensor,
+) -> torch.Tensor:
+    """Normalized Y-Z ellipse value. ``point`` is ``(N, 5, 3)`` or ``(N, 3)``."""
+    if point.ndim == 2:
+        dy = (point[:, 1] - center[:, 1]) / radius_y
+        dz = (point[:, 2] - center[:, 2]) / radius_z
+        return dy.pow(2) + dz.pow(2)
+    dy = (point[..., 1] - center[:, 1].unsqueeze(1)) / radius_y.unsqueeze(1)
+    dz = (point[..., 2] - center[:, 2].unsqueeze(1)) / radius_z.unsqueeze(1)
+    return dy.pow(2) + dz.pow(2)
+
+
+def classify_insertion_outcome(
+    *,
+    max_inserted: int,
+    ever_all: bool,
+    final_all: bool,
+    success: bool,
+) -> str:
+    """Most specific episode insertion case. Task success is only used for the last label."""
+    if ever_all or final_all:
+        if final_all and success:
+            return "all_retained_and_success"
+        if final_all:
+            return "all_retained"
+        return "all_exited"
+    if max_inserted <= 0:
+        return "none"
+    return "partial"
+
+
+class FingerCrossingTracker:
+    """Per-env, per-finger insertion latch with forward/reverse crossing confirmation."""
+
+    def __init__(
+        self,
+        num_envs: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        *,
+        delta: float,
+        confirm_frames: int,
+        ellipse_threshold: float,
+    ) -> None:
+        self.num_envs = int(num_envs)
+        self.device = device
+        self.dtype = dtype
+        self.delta = float(delta)
+        self.confirm_frames = max(1, int(confirm_frames))
+        self.ellipse_threshold = float(ellipse_threshold)
+
+        z5 = (self.num_envs, 5)
+        self.inserted = torch.zeros(z5, dtype=torch.bool, device=device)
+        # Last clearly-outside-band side: +1 PRE, -1 POST, 0 unknown. BAND does not update this.
+        self.last_clear_side = torch.zeros(z5, dtype=torch.int8, device=device)
+        self.last_clear_pos = torch.zeros((self.num_envs, 5, 3), dtype=dtype, device=device)
+        self.last_clear_center = torch.zeros((self.num_envs, 5, 3), dtype=dtype, device=device)
+        self.last_clear_radius_y = torch.zeros((self.num_envs, 5), dtype=dtype, device=device)
+        self.last_clear_radius_z = torch.zeros((self.num_envs, 5), dtype=dtype, device=device)
+        self.has_clear = torch.zeros(z5, dtype=torch.bool, device=device)
+        self.fwd_pending = torch.zeros(z5, dtype=torch.bool, device=device)
+        self.rev_pending = torch.zeros(z5, dtype=torch.bool, device=device)
+        self.fwd_count = torch.zeros(z5, dtype=torch.int32, device=device)
+        self.rev_count = torch.zeros(z5, dtype=torch.int32, device=device)
+        self.first_insert_step = torch.full(z5, -1, dtype=torch.int32, device=device)
+        self.step_count = torch.zeros((self.num_envs,), dtype=torch.int32, device=device)
+        self.max_inserted = torch.zeros((self.num_envs,), dtype=torch.int32, device=device)
+        self.ever_all = torch.zeros((self.num_envs,), dtype=torch.bool, device=device)
+        self.inserted_steps = torch.zeros(z5, dtype=torch.int32, device=device)
+
+    def reset_envs(self, env_ids: list[int] | torch.Tensor) -> None:
+        if isinstance(env_ids, torch.Tensor):
+            ids = env_ids.to(device=self.device, dtype=torch.long)
+        else:
+            ids = torch.as_tensor(list(env_ids), device=self.device, dtype=torch.long)
+        if ids.numel() == 0:
+            return
+        self.inserted[ids] = False
+        self.last_clear_side[ids] = 0
+        self.last_clear_pos[ids] = 0.0
+        self.last_clear_center[ids] = 0.0
+        self.last_clear_radius_y[ids] = 0.0
+        self.last_clear_radius_z[ids] = 0.0
+        self.has_clear[ids] = False
+        self.fwd_pending[ids] = False
+        self.rev_pending[ids] = False
+        self.fwd_count[ids] = 0
+        self.rev_count[ids] = 0
+        self.first_insert_step[ids] = -1
+        self.step_count[ids] = 0
+        self.max_inserted[ids] = 0
+        self.ever_all[ids] = False
+        self.inserted_steps[ids] = 0
+
+    def update(
+        self,
+        distal: torch.Tensor,
+        center: torch.Tensor,
+        radius_y: torch.Tensor,
+        radius_z: torch.Tensor,
+        active: torch.Tensor,
+    ) -> torch.Tensor:
+        """Advance the state machine. ``active`` skips post-reset / inactive envs.
+
+        Crossing uses the last *clear* side (outside ±delta), so PRE → BAND → POST
+        counts as a forward cross. The ±delta band is only a deadzone, not a veto.
+        """
+        active = active.to(device=self.device, dtype=torch.bool)
+        if not bool(active.any()):
+            return self.inserted
+
+        d_curr = distal[..., 0] - center[:, 0].unsqueeze(1)
+        is_pre = d_curr > self.delta
+        is_post = d_curr < -self.delta
+        is_clear = is_pre | is_post
+        side = torch.where(is_pre, torch.ones_like(self.last_clear_side), torch.where(is_post, -torch.ones_like(self.last_clear_side), torch.zeros_like(self.last_clear_side)))
+
+        d_clear = self.last_clear_pos[..., 0] - self.last_clear_center[..., 0]
+        denom = d_clear - d_curr
+        t = torch.where(denom.abs() > 1e-8, d_clear / denom, torch.full_like(d_curr, 0.5))
+        t = t.clamp(0.0, 1.0)
+        t3 = t.unsqueeze(-1)
+        cross_p = self.last_clear_pos + t3 * (distal - self.last_clear_pos)
+        cross_c = self.last_clear_center + t3 * (center.unsqueeze(1) - self.last_clear_center)
+        cross_ry = self.last_clear_radius_y + t * (radius_y.unsqueeze(1) - self.last_clear_radius_y)
+        cross_rz = self.last_clear_radius_z + t * (radius_z.unsqueeze(1) - self.last_clear_radius_z)
+        ev = ((cross_p[..., 1] - cross_c[..., 1]) / cross_ry.clamp_min(1e-6)).pow(2) + (
+            (cross_p[..., 2] - cross_c[..., 2]) / cross_rz.clamp_min(1e-6)
+        ).pow(2)
+        through_opening = ev <= self.ellipse_threshold
+
+        from_pre = self.has_clear & (self.last_clear_side > 0)
+        from_post = self.has_clear & (self.last_clear_side < 0)
+        active_f = active.unsqueeze(1)
+        fwd_cand = active_f & is_post & from_pre & (~self.inserted) & through_opening
+        rev_cand = active_f & is_pre & from_post & self.inserted & through_opening
+
+        ones = torch.ones_like(self.fwd_count)
+        zeros = torch.zeros_like(self.fwd_count)
+
+        fwd_pending = ((self.fwd_pending & is_post) | fwd_cand) & (~self.inserted) & active_f
+        fwd_count = torch.where(~fwd_pending, zeros, torch.where(fwd_cand, ones, self.fwd_count + 1))
+        commit_fwd = fwd_pending & (fwd_count >= self.confirm_frames)
+        inserted = self.inserted | commit_fwd
+        fwd_pending = fwd_pending & (~commit_fwd)
+        fwd_count = torch.where(fwd_pending, fwd_count, zeros)
+
+        first = self.first_insert_step
+        step_i = (self.step_count + 1).unsqueeze(1).expand_as(first)
+        self.first_insert_step = torch.where((first < 0) & commit_fwd, step_i.to(first.dtype), first)
+
+        rev_pending = ((self.rev_pending & is_pre) | rev_cand) & inserted & active_f
+        rev_count = torch.where(~rev_pending, zeros, torch.where(rev_cand, ones, self.rev_count + 1))
+        commit_rev = rev_pending & (rev_count >= self.confirm_frames)
+        inserted = inserted & (~commit_rev)
+        rev_pending = rev_pending & (~commit_rev) & inserted
+        rev_count = torch.where(rev_pending, rev_count, zeros)
+
+        active_i = active.to(dtype=self.step_count.dtype)
+        self.step_count = self.step_count + active_i
+        n_now = inserted.sum(dim=1).to(dtype=self.max_inserted.dtype)
+        self.max_inserted = torch.maximum(self.max_inserted, torch.where(active, n_now, self.max_inserted))
+        self.ever_all = self.ever_all | (active & (n_now >= 5))
+        self.inserted_steps = self.inserted_steps + (inserted & active_f).to(self.inserted_steps.dtype)
+
+        clear_f = active_f & is_clear
+        self.last_clear_side = torch.where(clear_f, side, self.last_clear_side)
+        self.last_clear_pos = torch.where(clear_f.unsqueeze(-1), distal, self.last_clear_pos)
+        self.last_clear_center = torch.where(clear_f.unsqueeze(-1), center.unsqueeze(1).expand_as(distal), self.last_clear_center)
+        self.last_clear_radius_y = torch.where(clear_f, radius_y.unsqueeze(1).expand_as(d_curr), self.last_clear_radius_y)
+        self.last_clear_radius_z = torch.where(clear_f, radius_z.unsqueeze(1).expand_as(d_curr), self.last_clear_radius_z)
+        self.has_clear = self.has_clear | clear_f
+
+        self.inserted = torch.where(active_f, inserted, self.inserted)
+        self.fwd_pending = torch.where(active_f, fwd_pending, self.fwd_pending)
+        self.rev_pending = torch.where(active_f, rev_pending, self.rev_pending)
+        self.fwd_count = torch.where(active_f, fwd_count, self.fwd_count)
+        self.rev_count = torch.where(active_f, rev_count, self.rev_count)
+        return self.inserted
 
 
 @dataclass
@@ -178,7 +392,7 @@ class _RunningEpisode:
     episode_return: float = 0.0
     motion_locked: bool = False
     motion_lock_step: int | None = None
-    inserted_raw: list[list[bool]] = field(default_factory=list)
+    inserted_state: list[list[bool]] = field(default_factory=list)
     d_finger: list[list[float]] = field(default_factory=list)
     sum_sq_all_joints: float = 0.0
     n_joint_samples: int = 0
@@ -198,8 +412,13 @@ class EpisodeMetrics:
     inserted: dict[str, bool]
     insert_ratio: dict[str, float]
     insert_steps: dict[str, int]
+    first_insert_time_s: dict[str, float | None]
     num_inserted_fingers: int
-    insertion_window_steps: int
+    final_inserted_fingers: int
+    max_inserted_fingers: int
+    ever_all_inserted: bool
+    final_all_inserted: bool
+    insertion_outcome: str
     finger_rms: dict[str, float]
     finger_peak: dict[str, float]
     hand_rms: float
@@ -218,19 +437,27 @@ class EpisodeMetrics:
             "episode_length_seconds": f"{self.episode_length_seconds:.6g}",
             "motion_lock_step": "" if self.motion_lock_step is None else self.motion_lock_step,
             "motion_lock_time_s": "" if self.motion_lock_time_s is None else f"{self.motion_lock_time_s:.6g}",
+            "final_inserted_fingers": self.final_inserted_fingers,
+            "max_inserted_fingers": self.max_inserted_fingers,
+            "ever_all_inserted": int(self.ever_all_inserted),
+            "final_all_inserted": int(self.final_all_inserted),
+            "insertion_outcome": self.insertion_outcome,
             "num_inserted_fingers": self.num_inserted_fingers,
-            "insertion_window_steps": self.insertion_window_steps,
             "hand_rms": f"{self.hand_rms:.8g}",
             "worst_finger_peak": f"{self.worst_finger_peak:.8g}",
             "worst_finger": self.worst_finger,
             "return": f"{self.episode_return:.6g}",
         }
         for name in FINGER_ORDER:
+            t0 = self.first_insert_time_s[name]
             row[f"{name}_inserted"] = int(self.inserted[name])
+            row[f"{name}_first_insert_time"] = "" if t0 is None else f"{t0:.6g}"
             row[f"{name}_insert_ratio"] = f"{self.insert_ratio[name]:.6g}"
             row[f"{name}_insert_steps"] = self.insert_steps[name]
             row[f"{name}_rms"] = f"{self.finger_rms[name]:.8g}"
             row[f"{name}_peak"] = f"{self.finger_peak[name]:.8g}"
+        row["pinky_inserted"] = row["little_inserted"]
+        row["pinky_first_insert_time"] = row["little_first_insert_time"]
         return row
 
 
@@ -244,41 +471,48 @@ class BraceletEvalCollector:
         output_dir: Path,
         control_dt: float,
         max_episodes: int,
-        insertion_window_sec: float,
-        insertion_ratio_threshold: float,
+        insertion_delta_m: float,
+        insertion_confirm_frames: int,
         insertion_ellipse_threshold: float,
         eval_env_ids: list[int],
         task: str | None,
         checkpoint: str,
         executed_at: str,
         log_prefix: str = "play_eval",
+        debug_insertion: bool = False,
+        debug_insertion_interval: int = 10,
     ) -> None:
         self.raw_env = raw_env
         self.output_dir = Path(output_dir)
         self.control_dt = float(control_dt)
         self.max_episodes = int(max_episodes)
-        self.insertion_window_sec = float(insertion_window_sec)
-        self.insertion_ratio_threshold = float(insertion_ratio_threshold)
+        self.insertion_delta_m = float(insertion_delta_m)
+        self.insertion_confirm_frames = max(1, int(insertion_confirm_frames))
         self.insertion_ellipse_threshold = float(insertion_ellipse_threshold)
         self.eval_env_ids = list(eval_env_ids)
         self.task = task
         self.checkpoint = checkpoint
         self.executed_at = executed_at
         self.log_prefix = log_prefix
+        self.debug_insertion = bool(debug_insertion)
+        self.debug_insertion_interval = max(1, int(debug_insertion_interval))
+        self._debug_prev_inserted: dict[int, list[bool]] = {eid: [False] * 5 for eid in eval_env_ids}
+        self._debug_prev_side: dict[int, list[str]] = {eid: ["?"] * 5 for eid in eval_env_ids}
 
-        self.insertion_window_steps = max(1, int(round(self.insertion_window_sec / max(self.control_dt, 1e-9))))
         self.csv_path = self.output_dir / "episode_metrics.csv"
         self.summary_path = self.output_dir / "evaluation_summary.json"
         self.partial_path = self.output_dir / "evaluation_summary.partial.json"
 
         self.episodes: list[EpisodeMetrics] = []
         self._running = {eid: _RunningEpisode(env_id=eid) for eid in self.eval_env_ids}
+        self._tracker: FingerCrossingTracker | None = None
 
         self.hand = getattr(raw_env, "hand", None)
         self.finger_joint_ids: dict[str, list[int]] = {name: [] for name in FINGER_ORDER}
         self.all_finger_joint_ids: list[int] = []
         self.resolved_joint_groups: dict[str, list[str]] = {name: [] for name in FINGER_ORDER}
-        self.middle_body_ids: dict[str, int | None] = {name: None for name in FINGER_ORDER}
+        self.base_body_ids: dict[str, int | None] = {name: None for name in FINGER_ORDER}
+        self.resolved_base_bodies: dict[str, str | None] = {name: None for name in FINGER_ORDER}
         self.q_default: torch.Tensor | None = None
         self._bind_hand()
         self._write_csv_header()
@@ -301,28 +535,37 @@ class BraceletEvalCollector:
         ellipse_thr = getattr(args, "insertion_ellipse_threshold", None)
         if ellipse_thr is None:
             ellipse_thr = float(getattr(session.env_cfg, "eval_opening_ellipse_threshold", 1.0))
+        delta = float(getattr(args, "insertion_delta_m", 0.003))
+        confirm = int(getattr(args, "insertion_confirm_frames", 4))
 
         collector = cls(
             raw,
             output_dir=session.output_paths.evaluation_dir,
             control_dt=control_dt,
             max_episodes=int(args.max_episodes),
-            insertion_window_sec=float(args.insertion_window_sec),
-            insertion_ratio_threshold=float(args.insertion_ratio_threshold),
+            insertion_delta_m=delta,
+            insertion_confirm_frames=confirm,
             insertion_ellipse_threshold=float(ellipse_thr),
             eval_env_ids=eval_env_ids,
             task=getattr(args, "task", None),
             checkpoint=session.resume_path,
             executed_at=session.output_paths.executed_at,
             log_prefix=session.log_prefix,
+            debug_insertion=bool(getattr(args, "debug_insertion", False)),
+            debug_insertion_interval=int(getattr(args, "debug_insertion_interval", 10)),
         )
         print(
             f"[{session.log_prefix}] bracelet eval: max_episodes={collector.max_episodes} "
             f"control={1.0 / collector.control_dt:.1f} Hz "
-            f"window={collector.insertion_window_sec:.2f}s ({collector.insertion_window_steps} steps) "
-            f"ratio>={collector.insertion_ratio_threshold:.2f} "
+            f"crossing delta={collector.insertion_delta_m:.4g} m "
+            f"confirm={collector.insertion_confirm_frames} frames "
             f"ellipse<={collector.insertion_ellipse_threshold:.3g} "
             f"envs={eval_env_ids}"
+            + (
+                f" debug_insertion every {collector.debug_insertion_interval} steps"
+                if collector.debug_insertion
+                else ""
+            )
         )
         return collector
 
@@ -353,20 +596,61 @@ class BraceletEvalCollector:
         if default is not None:
             self.q_default = default[0].detach().clone()
 
-        body_names = list(getattr(hand, "body_names", []) or getattr(hand.data, "body_names", []) or [])
-        found_bodies: dict[str, str] = {}
-        for finger, cands in MIDDLE_BODY_CANDIDATES.items():
-            idx = _resolve_body_index(body_names, cands)
-            self.middle_body_ids[finger] = idx
-            if idx is not None:
-                found_bodies[finger] = body_names[idx]
-        if found_bodies:
-            print(f"[{self.log_prefix}] finger middle bodies: {found_bodies}")
-        else:
+        body_names = list(
+            getattr(hand, "body_names", None) or getattr(hand.data, "body_names", None) or []
+        )
+        missing_base: list[str] = []
+        for finger, candidates in BASE_BODY_CANDIDATES.items():
+            idx = _resolve_body_index(body_names, candidates)
+            self.base_body_ids[finger] = idx
+            if idx is None:
+                missing_base.append(finger)
+                self.resolved_base_bodies[finger] = None
+            else:
+                self.resolved_base_bodies[finger] = body_names[idx]
+        if missing_base:
             print(
-                f"[{self.log_prefix}] no middle-phalanx bodies found; "
-                f"using distal-to-wrist fallback segment ({_FALLBACK_SEGMENT_M * 100:.0f} mm)"
+                f"[{self.log_prefix}] WARNING: missing finger-base bodies for {missing_base}; "
+                "those fingers will not be tracked"
             )
+        print(
+            f"[{self.log_prefix}] insertion points: finger-base COM "
+            f"{self.resolved_base_bodies}"
+        )
+
+    def _ensure_tracker(self, like: torch.Tensor) -> FingerCrossingTracker:
+        if self._tracker is None:
+            n = int(getattr(self.raw_env, "num_envs", like.shape[0]))
+            self._tracker = FingerCrossingTracker(
+                n,
+                like.device,
+                like.dtype,
+                delta=self.insertion_delta_m,
+                confirm_frames=self.insertion_confirm_frames,
+                ellipse_threshold=self.insertion_ellipse_threshold,
+            )
+        return self._tracker
+
+    def _stack_finger_base_env_local(self) -> torch.Tensor | None:
+        """Return ``(num_envs, 5, 3)`` finger-base COMs in env-local frame, or None."""
+        hand = self.hand
+        if hand is None or any(self.base_body_ids[name] is None for name in FINGER_ORDER):
+            return None
+        body_pos_w = getattr(hand.data, "body_pos_w", None)
+        if body_pos_w is None:
+            return None
+        origins = getattr(self.raw_env, "env_origins", None)
+        if origins is None:
+            scene = getattr(self.raw_env, "scene", None)
+            origins = getattr(scene, "env_origins", None) if scene is not None else None
+        if origins is None:
+            origins = body_pos_w.new_zeros((body_pos_w.shape[0], 3))
+        origins = origins.to(device=body_pos_w.device, dtype=body_pos_w.dtype)
+        cols = []
+        for name in FINGER_ORDER:
+            idx = self.base_body_ids[name]
+            cols.append(body_pos_w[:, idx] - origins)
+        return torch.stack(cols, dim=1)
 
     def _write_csv_header(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -394,7 +678,8 @@ class BraceletEvalCollector:
         if self.is_complete():
             return
         raw = self.raw_env
-        inserted = self._compute_inserted_raw()
+        done = torch.logical_or(terminated, truncated)
+        inserted = self._update_insertion(done)
         d_finger, sum_sq, n_j = self._compute_joint_deviation()
 
         for env_id in self.eval_env_ids:
@@ -410,9 +695,12 @@ class BraceletEvalCollector:
                 run.motion_lock_step = run.steps - 1
 
             if inserted is not None:
-                run.inserted_raw.append([bool(inserted[env_id, i].item()) for i in range(5)])
+                flags = [bool(inserted[env_id, i].item()) for i in range(5)]
+                run.inserted_state.append(flags)
+                if self.debug_insertion and env_id == self.eval_env_ids[0]:
+                    self._debug_insertion_env(env_id, run.steps, flags)
             else:
-                run.inserted_raw.append([False] * 5)
+                run.inserted_state.append([False] * 5)
 
             if d_finger is not None:
                 run.d_finger.append([float(d_finger[env_id, i].item()) for i in range(5)])
@@ -421,8 +709,8 @@ class BraceletEvalCollector:
             else:
                 run.d_finger.append([0.0] * 5)
 
-            done = bool(terminated[env_id].item()) or bool(truncated[env_id].item())
-            if done:
+            env_done = bool(done[env_id].item())
+            if env_done:
                 self._finalize_env(
                     env_id,
                     terminated=bool(terminated[env_id].item()),
@@ -442,6 +730,10 @@ class BraceletEvalCollector:
         run = self._running[env_id]
         if run.steps <= 0:
             self._running[env_id] = _RunningEpisode(env_id=env_id)
+            self._debug_prev_inserted[env_id] = [False] * 5
+            self._debug_prev_side[env_id] = ["?"] * 5
+            if self._tracker is not None:
+                self._tracker.reset_envs([env_id])
             return
         ep = self._build_episode(run, terminated=terminated, truncated=truncated)
         self.episodes.append(ep)
@@ -449,23 +741,45 @@ class BraceletEvalCollector:
         self._write_summary(partial=True)
         print(
             f"[{self.log_prefix}] episode {ep.episode}: success={int(ep.success)} "
-            f"inserted={ep.num_inserted_fingers}/5 lock_step={ep.motion_lock_step} "
+            f"final={ep.final_inserted_fingers}/5 max={ep.max_inserted_fingers}/5 "
+            f"outcome={ep.insertion_outcome} lock_step={ep.motion_lock_step} "
             f"steps={ep.episode_length_steps} env={env_id}"
         )
         self._running[env_id] = _RunningEpisode(env_id=env_id)
+        self._debug_prev_inserted[env_id] = [False] * 5
+        self._debug_prev_side[env_id] = ["?"] * 5
+        if self._tracker is not None:
+            self._tracker.reset_envs([env_id])
+
+    def _snapshot_tracker(self, env_id: int) -> tuple[int, bool, dict[str, float | None], dict[str, int]]:
+        tracker = self._tracker
+        first_t = {name: None for name in FINGER_ORDER}
+        insert_steps = {name: 0 for name in FINGER_ORDER}
+        max_n = 0
+        ever_all = False
+        if tracker is None:
+            return max_n, ever_all, first_t, insert_steps
+        max_n = int(tracker.max_inserted[env_id].item())
+        ever_all = bool(tracker.ever_all[env_id].item())
+        for i, name in enumerate(FINGER_ORDER):
+            step_i = int(tracker.first_insert_step[env_id, i].item())
+            if step_i >= 0:
+                first_t[name] = step_i * self.control_dt
+            insert_steps[name] = int(tracker.inserted_steps[env_id, i].item())
+        return max_n, ever_all, first_t, insert_steps
 
     def _build_episode(self, run: _RunningEpisode, *, terminated: bool, truncated: bool) -> EpisodeMetrics:
-        window = min(self.insertion_window_steps, run.steps)
-        tail = run.inserted_raw[-window:] if window else []
-        insert_steps = {name: 0 for name in FINGER_ORDER}
-        insert_ratio = {name: 0.0 for name in FINGER_ORDER}
+        max_n, ever_all, first_t, insert_steps = self._snapshot_tracker(run.env_id)
         inserted = {name: False for name in FINGER_ORDER}
-        if tail:
+        insert_ratio = {name: 0.0 for name in FINGER_ORDER}
+        if run.inserted_state:
+            last = run.inserted_state[-1]
             for i, name in enumerate(FINGER_ORDER):
-                count = sum(1 for row in tail if row[i])
-                insert_steps[name] = count
-                insert_ratio[name] = count / float(window)
-                inserted[name] = insert_ratio[name] >= self.insertion_ratio_threshold
+                inserted[name] = bool(last[i])
+                insert_ratio[name] = insert_steps[name] / float(max(run.steps, 1))
+        if max_n == 0:
+            max_n = max((sum(1 for v in row if v) for row in run.inserted_state), default=0)
+            ever_all = ever_all or any(all(row) for row in run.inserted_state)
 
         finger_rms = {name: 0.0 for name in FINGER_ORDER}
         finger_peak = {name: 0.0 for name in FINGER_ORDER}
@@ -482,10 +796,19 @@ class BraceletEvalCollector:
 
         worst_finger = max(FINGER_ORDER, key=lambda n: finger_peak[n])
         lock_t = None if run.motion_lock_step is None else run.motion_lock_step * self.control_dt
+        final_n = sum(1 for name in FINGER_ORDER if inserted[name])
+        final_all = final_n == 5
+        success = bool(run.motion_locked)
+        outcome = classify_insertion_outcome(
+            max_inserted=max_n,
+            ever_all=ever_all,
+            final_all=final_all,
+            success=success,
+        )
         return EpisodeMetrics(
             episode=len(self.episodes),
             env_id=run.env_id,
-            success=bool(run.motion_locked),
+            success=success,
             terminated=terminated,
             truncated=truncated,
             episode_length_steps=run.steps,
@@ -495,8 +818,13 @@ class BraceletEvalCollector:
             inserted=inserted,
             insert_ratio=insert_ratio,
             insert_steps=insert_steps,
-            num_inserted_fingers=sum(1 for name in FINGER_ORDER if inserted[name]),
-            insertion_window_steps=window,
+            first_insert_time_s=first_t,
+            num_inserted_fingers=final_n,
+            final_inserted_fingers=final_n,
+            max_inserted_fingers=max_n,
+            ever_all_inserted=ever_all,
+            final_all_inserted=final_all,
+            insertion_outcome=outcome,
             finger_rms=finger_rms,
             finger_peak=finger_peak,
             hand_rms=hand_rms,
@@ -505,22 +833,12 @@ class BraceletEvalCollector:
             episode_return=run.episode_return,
         )
 
-    def _compute_inserted_raw(self) -> torch.Tensor | None:
-        """Per-env, per-finger raw insertion. Shape ``(num_envs, 5)`` bool.
-
-        Geometric test (see module docstring):
-          1. opening center c = goal_cent_pos (live, follows deformable rim)
-          2. opening plane X = c_x (env-local +X is the task insertion axis)
-          3. ellipse radii from live E/W (Y) and N/S (Z)
-          4. segment A (middle) -> B (distal)
-          5. line-plane hit P; require distal on/past the plane and ellipse(P) <= thr
-        Fully-through fingers still count: after the phalanx is past the plane, t is
-        typically negative (the plane lies behind the middle joint).
-        """
+    def _update_insertion(self, done: torch.Tensor) -> torch.Tensor | None:
+        """Update the crossing tracker. Skip envs that just reset (``done``)."""
         raw = self.raw_env
         if getattr(raw, "_is_free_space_mode", lambda: False)():
             return None
-        distal = _stack_distal_env_local(raw)
+        distal = self._stack_finger_base_env_local()
         cent = getattr(raw, "goal_cent_pos", None)
         east = getattr(raw, "goal_east_pos", None)
         west = getattr(raw, "goal_west_pos", None)
@@ -529,69 +847,84 @@ class BraceletEvalCollector:
         if distal is None or cent is None or east is None or west is None or north is None or south is None:
             return None
 
-        n_envs = int(distal.shape[0])
-        middle = self._middle_positions(n_envs, distal)
-        if middle is None:
-            return None
+        radius_y, radius_z = opening_radii(east, west, north, south)
+        tracker = self._ensure_tracker(distal)
+        active = torch.zeros((tracker.num_envs,), dtype=torch.bool, device=distal.device)
+        for env_id in self.eval_env_ids:
+            if env_id < tracker.num_envs and not bool(done[env_id].item()):
+                active[env_id] = True
+        return tracker.update(distal, cent, radius_y, radius_z, active)
 
-        # A = middle, B = distal. All env-local.
-        a = middle
-        b = distal
-        c = cent
-        eps = torch.as_tensor(1e-4, device=cent.device, dtype=cent.dtype)
-        radius_y = 0.5 * torch.abs(east[:, 1] - west[:, 1]).clamp_min(eps)
-        radius_z = 0.5 * torch.abs(north[:, 2] - south[:, 2]).clamp_min(eps)
-
-        # Line AB vs plane X = c_x:  A_x + t (B_x - A_x) = c_x
-        dx = b[..., 0] - a[..., 0]
-        parallel = dx.abs() < _PLANE_PARALLEL_EPS
-        safe_dx = torch.where(parallel, torch.ones_like(dx), dx)
-        t = (c[:, 0].unsqueeze(1) - a[..., 0]) / safe_dx
-
-        p = a + t.unsqueeze(-1) * (b - a)
-        dy = (p[..., 1] - c[:, 1].unsqueeze(1)) / radius_y.unsqueeze(1)
-        dz = (p[..., 2] - c[:, 2].unsqueeze(1)) / radius_z.unsqueeze(1)
-        ellipse = dy.pow(2) + dz.pow(2)
-        # Distal has reached / passed the opening plane (env +X). Do not require t>=0:
-        # after the whole phalanx is through, t is typically negative (plane is behind A).
-        signed_b = b[..., 0] - c[:, 0].unsqueeze(1)
-        hit = (ellipse <= self.insertion_ellipse_threshold) & (signed_b >= 0.0)
-
-        # Parallel fallback: distal already on/past the plane and inside the Y-Z ellipse.
-        dy_b = (b[..., 1] - c[:, 1].unsqueeze(1)) / radius_y.unsqueeze(1)
-        dz_b = (b[..., 2] - c[:, 2].unsqueeze(1)) / radius_z.unsqueeze(1)
-        ellipse_b = dy_b.pow(2) + dz_b.pow(2)
-        fallback = (signed_b >= 0.0) & (ellipse_b <= self.insertion_ellipse_threshold)
-        return torch.where(parallel, fallback, hit)
-
-    def _middle_positions(self, n_envs: int, distal: torch.Tensor) -> torch.Tensor | None:
-        """Env-local middle (or fallback) points, shape ``(num_envs, 5, 3)``."""
+    def _debug_insertion_env(self, env_id: int, steps: int, flags: list[bool]) -> None:
+        """Print per-finger signed distance / ellipse / latch for one env."""
         raw = self.raw_env
-        hand = self.hand
-        origins = getattr(getattr(raw, "scene", None), "env_origins", None)
-        cols: list[torch.Tensor] = []
-        wrist = getattr(raw, "goal_wrist_pos", None)
+        distal = self._stack_finger_base_env_local()
+        cent = getattr(raw, "goal_cent_pos", None)
+        east = getattr(raw, "goal_east_pos", None)
+        west = getattr(raw, "goal_west_pos", None)
+        north = getattr(raw, "goal_north_pos", None)
+        south = getattr(raw, "goal_south_pos", None)
+        if distal is None or cent is None or east is None or west is None or north is None or south is None:
+            return
+        if env_id >= int(distal.shape[0]):
+            return
 
-        body_pos_w = None
-        if hand is not None:
-            body_pos_w = getattr(hand.data, "body_pos_w", None)
-
-        for i, finger in enumerate(FINGER_ORDER):
-            bid = self.middle_body_ids.get(finger)
-            if bid is not None and body_pos_w is not None and origins is not None:
-                cols.append(body_pos_w[:, bid, :] - origins)
-                continue
-            # Fallback: short centerline from distal toward the wrist goal.
-            b = distal[:, i, :]
-            if wrist is not None:
-                axis = b - wrist
-                norm = torch.norm(axis, dim=-1, keepdim=True).clamp_min(1e-6)
-                cols.append(b - _FALLBACK_SEGMENT_M * (axis / norm))
+        radius_y, radius_z = opening_radii(east, west, north, south)
+        p = distal[env_id]
+        c = cent[env_id]
+        d = p[:, 0] - c[0]
+        ev = ellipse_value_yz(p.unsqueeze(0), c.unsqueeze(0), radius_y[env_id : env_id + 1], radius_z[env_id : env_id + 1])[0]
+        delta = self.insertion_delta_m
+        prev = self._debug_prev_inserted.get(env_id, [False] * 5)
+        prev_side = self._debug_prev_side.get(env_id, ["?"] * 5)
+        sides: list[str] = []
+        for i in range(5):
+            di = float(d[i].item())
+            if di > delta:
+                sides.append("PRE")
+            elif di < -delta:
+                sides.append("POST")
             else:
-                fallback = b.clone()
-                fallback[:, 0] = fallback[:, 0] - _FALLBACK_SEGMENT_M
-                cols.append(fallback)
-        return torch.stack(cols, dim=1)
+                sides.append("BAND")
+        latch_changed = [flags[i] != prev[i] for i in range(5)]
+        side_changed = [sides[i] != prev_side[i] for i in range(5)]
+        periodic = (steps % self.debug_insertion_interval) == 0
+        if not periodic and not any(latch_changed) and not any(side_changed):
+            self._debug_prev_inserted[env_id] = list(flags)
+            self._debug_prev_side[env_id] = sides
+            return
+
+        n_in = sum(1 for v in flags if v)
+        t_s = steps * self.control_dt
+        print(
+            f"[{self.log_prefix} insert] ep={len(self.episodes)} env={env_id} "
+            f"t={t_s:.2f}s step={steps}  inserted={n_in}/5  "
+            f"c=({c[0].item():.3f},{c[1].item():.3f},{c[2].item():.3f}) "
+            f"r_yz=({radius_y[env_id].item():.3f},{radius_z[env_id].item():.3f})"
+        )
+        tracker = self._tracker
+        for i, name in enumerate(FINGER_ORDER):
+            di = float(d[i].item())
+            evi = float(ev[i].item())
+            hole = "in " if evi <= self.insertion_ellipse_threshold else "out"
+            latch = "IN" if flags[i] else "--"
+            pend = ""
+            if tracker is not None:
+                if bool(tracker.fwd_pending[env_id, i].item()):
+                    pend = f" fwd {int(tracker.fwd_count[env_id, i].item())}/{tracker.confirm_frames}"
+                elif bool(tracker.rev_pending[env_id, i].item()):
+                    pend = f" rev {int(tracker.rev_count[env_id, i].item())}/{tracker.confirm_frames}"
+            event = ""
+            if side_changed[i] and prev_side[i] != "?":
+                event = f"  << CROSS {prev_side[i]}->{sides[i]}"
+            if latch_changed[i]:
+                event += "  << INSERT" if flags[i] else "  << EXIT"
+            print(
+                f"  {FINGER_LABELS[name]:<6} {latch}  {sides[i]:<4}  "
+                f"d={di:+.4f}m  ev={evi:.2f} {hole}{pend}{event}"
+            )
+        self._debug_prev_inserted[env_id] = list(flags)
+        self._debug_prev_side[env_id] = sides
 
     def _compute_joint_deviation(self) -> tuple[torch.Tensor | None, torch.Tensor | None, int]:
         """Per-finger RMS ``D_f`` and per-env sum of squared joint errors.
@@ -623,23 +956,38 @@ class BraceletEvalCollector:
         n = len(eps)
         success_count = sum(1 for ep in eps if ep.success)
         inserted_counts = {name: sum(1 for ep in eps if ep.inserted[name]) for name in FINGER_ORDER}
-        n_ins = [float(ep.num_inserted_fingers) for ep in eps]
+        ever_counts = {
+            name: sum(1 for ep in eps if ep.first_insert_time_s[name] is not None) for name in FINGER_ORDER
+        }
+        n_final = [float(ep.final_inserted_fingers) for ep in eps]
+        n_max = [float(ep.max_inserted_fingers) for ep in eps]
         hand_rms = [ep.hand_rms for ep in eps]
+        outcome_counts = {key: sum(1 for ep in eps if ep.insertion_outcome == key) for key in INSERTION_OUTCOMES}
 
-        fingers_block: dict[str, Any] = {}
+        deform_fingers: dict[str, Any] = {}
+        insert_fingers: dict[str, Any] = {}
         for name in FINGER_ORDER:
             rms = [ep.finger_rms[name] for ep in eps]
             peak = [ep.finger_peak[name] for ep in eps]
-            fingers_block[name] = {
+            times = [t for t in (ep.first_insert_time_s[name] for ep in eps) if t is not None]
+            deform_fingers[name] = {
                 "mean_rms": (sum(rms) / n) if n else 0.0,
                 "std_rms": sample_std(rms),
                 "mean_peak": (sum(peak) / n) if n else 0.0,
                 "max_peak": max(peak) if peak else 0.0,
             }
+            insert_fingers[name] = {
+                "ever_count": ever_counts[name],
+                "ever_rate": (ever_counts[name] / n) if n else 0.0,
+                "final_count": inserted_counts[name],
+                "final_rate": (inserted_counts[name] / n) if n else 0.0,
+                "mean_first_insert_time_s": (sum(times) / len(times)) if times else None,
+            }
+        insert_fingers["pinky"] = dict(insert_fingers["little"])
 
         worst_ep = max(eps, key=lambda e: e.worst_finger_peak) if eps else None
         return {
-            "schema_version": 1,
+            "schema_version": 3,
             "task": self.task,
             "checkpoint": self.checkpoint,
             "executed_at": self.executed_at,
@@ -649,12 +997,16 @@ class BraceletEvalCollector:
                 "max_episodes": self.max_episodes,
                 "num_envs": int(getattr(self.raw_env, "num_envs", 1)),
                 "eval_env_ids": self.eval_env_ids,
-                "insertion_window_sec": self.insertion_window_sec,
-                "insertion_window_steps": self.insertion_window_steps,
-                "insertion_ratio_threshold": self.insertion_ratio_threshold,
+                "insertion_delta_m": self.insertion_delta_m,
+                "insertion_confirm_frames": self.insertion_confirm_frames,
                 "insertion_ellipse_threshold": self.insertion_ellipse_threshold,
                 "success_definition": "motion_lock_triggered",
-                "insertion_definition": "middle_to_distal_line_vs_env_x_opening_ellipse",
+                "insertion_definition": "last_clear_pre_to_post_through_live_yz_ellipse",
+                "insertion_normal": "+x",
+                "insertion_pre_side": "d > +delta (hand / +X of opening)",
+                "insertion_post_side": "d < -delta (through / -X of opening)",
+                "finger_representative_point": "finger_base_com",
+                "finger_base_bodies": dict(self.resolved_base_bodies),
                 "deformation_definition": "rms_joint_deviation_from_hand_default_joint_pos",
                 "finger_joint_groups": self.resolved_joint_groups,
             },
@@ -665,19 +1017,28 @@ class BraceletEvalCollector:
                 "success_rate": (success_count / n) if n else 0.0,
             },
             "insertion": {
-                "mean_inserted_fingers": (sum(n_ins) / n) if n else 0.0,
-                "std_inserted_fingers": sample_std(n_ins),
-                "fingers": {
-                    name: {
-                        "count": inserted_counts[name],
-                        "rate": (inserted_counts[name] / n) if n else 0.0,
+                "mean_final_inserted_fingers": (sum(n_final) / n) if n else 0.0,
+                "std_final_inserted_fingers": sample_std(n_final),
+                "mean_max_inserted_fingers": (sum(n_max) / n) if n else 0.0,
+                "std_max_inserted_fingers": sample_std(n_max),
+                "mean_inserted_fingers": (sum(n_final) / n) if n else 0.0,
+                "std_inserted_fingers": sample_std(n_final),
+                "ever_all_inserted_count": sum(1 for ep in eps if ep.ever_all_inserted),
+                "ever_all_inserted_rate": (sum(1 for ep in eps if ep.ever_all_inserted) / n) if n else 0.0,
+                "final_all_inserted_count": sum(1 for ep in eps if ep.final_all_inserted),
+                "final_all_inserted_rate": (sum(1 for ep in eps if ep.final_all_inserted) / n) if n else 0.0,
+                "outcomes": {
+                    key: {
+                        "count": outcome_counts[key],
+                        "rate": (outcome_counts[key] / n) if n else 0.0,
                     }
-                    for name in FINGER_ORDER
+                    for key in INSERTION_OUTCOMES
                 },
+                "fingers": insert_fingers,
             },
             "deformation": {
                 "unit": "deg",
-                "fingers": fingers_block,
+                "fingers": deform_fingers,
                 "hand": {
                     "mean_rms": (sum(hand_rms) / n) if n else 0.0,
                     "std_rms": sample_std(hand_rms),
@@ -715,14 +1076,14 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
     fingers_ins = insertion.get("fingers") or {}
     fingers_def = deform.get("fingers") or {}
     hand = deform.get("hand") or {}
+    outcomes = insertion.get("outcomes") or {}
     n = int(success.get("num_episodes") or 0)
     n_ok = int(success.get("num_success") or 0)
     n_fail = int(success.get("num_failed") or 0)
     rate = float(success.get("success_rate") or 0.0) * 100.0
     freq = summary.get("control_frequency_hz")
-    window_s = cfg.get("insertion_window_sec")
-    window_n = cfg.get("insertion_window_steps")
-    ratio_thr = cfg.get("insertion_ratio_threshold")
+    delta = cfg.get("insertion_delta_m")
+    confirm = cfg.get("insertion_confirm_frames")
 
     print("")
     print("=" * 60)
@@ -730,10 +1091,10 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
     print("=" * 60)
     if output_dir is not None:
         print(f"Output : {output_dir}")
-    if freq and window_s is not None:
+    if freq and delta is not None:
         print(
-            f"Control: {float(freq):.1f} Hz   window: {float(window_s):.2f} s "
-            f"({int(window_n)} steps)   ratio >= {float(ratio_thr):.2f}"
+            f"Control: {float(freq):.1f} Hz   crossing: |d| > {float(delta):.4g} m "
+            f"confirm {int(confirm)} frames   ellipse <= {float(cfg.get('insertion_ellipse_threshold') or 1.0):.3g}"
         )
     print("")
     print("Episodes")
@@ -743,20 +1104,57 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
     print(f"  Rate    : {rate:.1f} %")
     print("")
     print("-" * 60)
-    print("Finger Insertion  (plane ∩ opening ellipse, last window)")
+    print("Finger Insertion  (finger-base crossing through live opening)")
     print("-" * 60)
-    print(f"{'Finger':<10}  {'Episodes Inserted':>18}     Rate")
+    print(f"{'Finger':<10}  {'Ever':>14}     {'Final':>14}")
     for name in FINGER_ORDER:
         block = fingers_ins.get(name) or {}
-        count = int(block.get("count") or 0)
-        fr = float(block.get("rate") or 0.0) * 100.0
-        print(f"{name.capitalize():<10}  {count:8d} / {n:<6d}   {fr:6.1f} %")
+        ever_c = int(block.get("ever_count") or 0)
+        ever_r = float(block.get("ever_rate") or 0.0) * 100.0
+        final_c = int(block.get("final_count") or block.get("count") or 0)
+        final_r = float(block.get("final_rate") or block.get("rate") or 0.0) * 100.0
+        print(
+            f"{FINGER_LABELS.get(name, name.capitalize()):<10}  "
+            f"{ever_c:4d} / {n:<4d} {ever_r:5.1f}%   "
+            f"{final_c:4d} / {n:<4d} {final_r:5.1f}%"
+        )
     print("")
-    print("Mean inserted fingers :")
     print(
-        f"  {float(insertion.get('mean_inserted_fingers') or 0.0):.2f} "
-        f"± {float(insertion.get('std_inserted_fingers') or 0.0):.2f} / 5"
+        f"Mean final inserted fingers : "
+        f"{float(insertion.get('mean_final_inserted_fingers') or insertion.get('mean_inserted_fingers') or 0.0):.2f} "
+        f"± {float(insertion.get('std_final_inserted_fingers') or insertion.get('std_inserted_fingers') or 0.0):.2f} / 5"
     )
+    print(
+        f"Mean max inserted fingers   : "
+        f"{float(insertion.get('mean_max_inserted_fingers') or 0.0):.2f} "
+        f"± {float(insertion.get('std_max_inserted_fingers') or 0.0):.2f} / 5"
+    )
+    print(
+        f"Ever all five               : "
+        f"{int(insertion.get('ever_all_inserted_count') or 0)} / {n}   "
+        f"{float(insertion.get('ever_all_inserted_rate') or 0.0) * 100.0:.1f} %"
+    )
+    print(
+        f"Final all five              : "
+        f"{int(insertion.get('final_all_inserted_count') or 0)} / {n}   "
+        f"{float(insertion.get('final_all_inserted_rate') or 0.0) * 100.0:.1f} %"
+    )
+    print("")
+    print("Insertion outcomes")
+    outcome_labels = {
+        "none": "no insertion",
+        "partial": "partial insertion",
+        "all_exited": "all five then one+ exited",
+        "all_retained": "all five retained to end",
+        "all_retained_and_success": "all five retained + wrist success",
+    }
+    for key in INSERTION_OUTCOMES:
+        block = outcomes.get(key) or {}
+        print(
+            f"  {outcome_labels[key]:<34}  "
+            f"{int(block.get('count') or 0):4d} / {n:<4d}  "
+            f"{float(block.get('rate') or 0.0) * 100.0:5.1f} %"
+        )
     print("")
     print("-" * 60)
     print("Finger Joint Deviation  (from hand.data.default_joint_pos, deg)")
@@ -765,7 +1163,7 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
     for name in FINGER_ORDER:
         block = fingers_def.get(name) or {}
         print(
-            f"{name.capitalize():<10}  "
+            f"{FINGER_LABELS.get(name, name.capitalize()):<10}  "
             f"{float(block.get('mean_rms') or 0.0):8.3f}    "
             f"{float(block.get('std_rms') or 0.0):8.3f}    "
             f"{float(block.get('mean_peak') or 0.0):8.3f}    "

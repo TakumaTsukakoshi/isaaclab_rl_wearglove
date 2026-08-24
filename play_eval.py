@@ -5,8 +5,13 @@
 
 """Evaluate a trained RL agent: motion-lock success, finger insertion, joint deviation.
 
-Shares playback / CLI / output layout with ``play.py``. See ``bracelet_eval.py``
-for metric definitions.
+Finger insertion is a per-finger crossing state machine using each finger's
+base / knuckle COM (not the fingertip). See ``bracelet_eval.py``.
+Task success remains motion-lock / wrist goal.
+
+Single-env debug: ``--num_envs 1 --debug-insertion --show-task-markers``.
+
+Shares playback / CLI / output layout with ``play.py``.
 """
 
 import argparse
