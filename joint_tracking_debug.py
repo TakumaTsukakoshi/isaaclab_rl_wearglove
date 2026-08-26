@@ -9,8 +9,11 @@ Naming (joint space, radians unless noted)::
 
 Typical usage (via ``play.py``)::
 
-    python play.py --task ... --checkpoint ... --debug-joints \\
-        --record-joint-tracking joint_tracking_plots --num_envs 1
+    python play.py --task ... --checkpoint ... --num_envs 1 \\
+        --record-joint-tracking joint_tracking_plots --joint-tracking-no-plots
+
+    Per episode this also writes ``episode_XXX_q_cmd.npy`` (``(T, N)`` rad) and
+    ``episode_XXX_q_cmd.npz`` (``q_cmd``, ``joint_names``, ``dt``, ``simulation_time``).
 """
 
 from __future__ import annotations
@@ -651,6 +654,54 @@ def save_joint_tracking_json(trace: JointTrackingEpisodeTrace, path: str) -> str
     return path
 
 
+def save_joint_cmd_npy(
+    trace: JointTrackingEpisodeTrace,
+    path: str,
+    *,
+    dt: float | None = None,
+) -> dict[str, str]:
+    """Save commanded joint angles (rad) for real-world playback.
+
+    Writes:
+      ``*.npy``  — ``q_cmd`` array shaped ``(T, N)``, radians, column order = ``joint_names``
+      ``*.npz`` — same ``q_cmd`` plus ``joint_names``, ``simulation_time``, ``dt``
+
+    Returns paths for ``npy`` and ``npz``.
+    """
+    if not trace.steps:
+        raise ValueError("empty joint tracking episode")
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    stem, _ = os.path.splitext(path)
+    npy_path = f"{stem}.npy"
+    npz_path = f"{stem}.npz"
+
+    names = list(trace.joint_names or trace.steps[0].joint_names)
+    q_cmd = _stack_field(trace, "q_cmd")
+    if q_cmd is None:
+        raise ValueError("trace has no q_cmd")
+    times = np.asarray([float(s.simulation_time) for s in trace.steps], dtype=np.float64)
+    if dt is None and len(times) >= 2:
+        dt = float(np.median(np.diff(times)))
+    if dt is None:
+        dt = 0.0
+
+    np.save(npy_path, q_cmd.astype(np.float64, copy=False))
+    np.savez_compressed(
+        npz_path,
+        q_cmd=q_cmd.astype(np.float64, copy=False),
+        joint_names=np.asarray(names, dtype=object),
+        simulation_time=times,
+        dt=np.float64(dt),
+        episode_index=np.int64(trace.episode_index),
+        env_id=np.int64(trace.env_id),
+    )
+    # Sidecar names for the plain .npy (same column order).
+    meta_path = f"{stem}_joint_names.json"
+    with open(meta_path, "w") as f:
+        json.dump({"joint_names": names, "dt": float(dt), "unit": "rad", "shape": list(q_cmd.shape)}, f, indent=2)
+    return {"npy": npy_path, "npz": npz_path, "meta": meta_path}
+
+
 def finalize_joint_tracking_episode(
     trace: JointTrackingEpisodeTrace,
     out_dir: str,
@@ -660,7 +711,7 @@ def finalize_joint_tracking_episode(
     dt: float | None = 0.1,
     angle_unit: str = "deg",
 ) -> dict[str, str]:
-    """Write JSON/CSV and arm (+ torso) PNGs for one episode. Returns path map.
+    """Write JSON/CSV/NPY and arm (+ torso) PNGs for one episode. Returns path map.
 
     Bottom angle panel: ``q_policy`` (if present), ``q_cmd`` → Isaac, ``q_act`` measured.
     """
@@ -670,6 +721,13 @@ def finalize_joint_tracking_episode(
     paths: dict[str, str] = {}
     paths["json"] = save_joint_tracking_json(trace, os.path.join(out_dir, f"{stem}.json"))
     paths["csv"] = save_joint_tracking_csv(trace, os.path.join(out_dir, f"{stem}.csv"))
+    if trace.steps:
+        npy_paths = save_joint_cmd_npy(
+            trace,
+            os.path.join(out_dir, f"episode_{trace.episode_index:03d}_q_cmd.npy"),
+            dt=dt,
+        )
+        paths.update(npy_paths)
     if save_plots and trace.steps:
         arm_paths = plot_left_right_arm_joint_states(trace, out_dir, dt=dt, angle_unit=angle_unit)
         paths["right_png"] = arm_paths["right"]

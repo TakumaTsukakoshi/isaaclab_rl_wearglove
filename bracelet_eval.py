@@ -123,6 +123,21 @@ CSV_FIELDS = [
     "worst_finger_peak",
     "worst_finger",
     "return",
+    "final_success",
+    "wrist_distance_at_success",
+    "inserted_fingers_at_success",
+    "all_5_inserted_at_success",
+    "thumb_inserted_at_success",
+    "index_inserted_at_success",
+    "middle_inserted_at_success",
+    "ring_inserted_at_success",
+    "little_inserted_at_success",
+    "episode_done_step",
+    "episode_done_reason",
+    "first_wrist_goal_step",
+    "first_wrist_goal_time_s",
+    "inserted_fingers_at_first_wrist_goal",
+    "missing_fingers_at_first_wrist_goal",
 ]
 
 
@@ -385,6 +400,52 @@ class FingerCrossingTracker:
         return self.inserted
 
 
+def _finger_names_from_flags(flags: list[bool]) -> str:
+    return ",".join(name for name, on in zip(FINGER_ORDER, flags) if on)
+
+
+def _missing_finger_names(flags: list[bool]) -> str:
+    return ",".join(name for name, on in zip(FINGER_ORDER, flags) if not on)
+
+
+def _read_float_env(value: Any, env_id: int) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 0:
+            return None
+        if value.ndim == 0:
+            return float(value.item())
+        if env_id >= int(value.shape[0]):
+            return None
+        return float(value[env_id].reshape(-1)[0].item())
+    if isinstance(value, (list, tuple)) and env_id < len(value):
+        return float(value[env_id])
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _episode_done_reason(terminated: bool, truncated: bool, infos: Any, env_id: int) -> str:
+    if truncated:
+        return "timeout"
+    if not terminated:
+        return "incomplete"
+    log = infos.get("log") if isinstance(infos, dict) else None
+    if isinstance(log, dict):
+        for key in (
+            "term_com_tip",
+            "term_too_far",
+            "term_out_of_reach",
+            "term_grasp_right",
+            "term_grasp_left",
+        ):
+            if _as_bool_scalar(log.get(key), env_id):
+                return key
+    return "terminated"
+
+
 @dataclass
 class _RunningEpisode:
     env_id: int
@@ -396,6 +457,12 @@ class _RunningEpisode:
     d_finger: list[list[float]] = field(default_factory=list)
     sum_sq_all_joints: float = 0.0
     n_joint_samples: int = 0
+    wrist_distance_at_success: float | None = None
+    inserted_flags_at_success: list[bool] | None = None
+    first_wrist_goal_step: int | None = None
+    first_wrist_incomplete: bool = False
+    inserted_flags_at_first_wrist_goal: list[bool] | None = None
+    last_done_reason: str = "incomplete"
 
 
 @dataclass
@@ -425,6 +492,16 @@ class EpisodeMetrics:
     worst_finger_peak: float
     worst_finger: str
     episode_return: float
+    wrist_distance_at_success: float | None = None
+    inserted_fingers_at_success: int | None = None
+    all_5_inserted_at_success: bool | None = None
+    per_finger_inserted_at_success: dict[str, bool] | None = None
+    episode_done_step: int | None = None
+    episode_done_reason: str = "incomplete"
+    first_wrist_goal_step: int | None = None
+    first_wrist_goal_time_s: float | None = None
+    inserted_fingers_at_first_wrist_goal: int | None = None
+    missing_fingers_at_first_wrist_goal: str = ""
 
     def to_csv_row(self) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -458,6 +535,35 @@ class EpisodeMetrics:
             row[f"{name}_peak"] = f"{self.finger_peak[name]:.8g}"
         row["pinky_inserted"] = row["little_inserted"]
         row["pinky_first_insert_time"] = row["little_first_insert_time"]
+        at_success = self.per_finger_inserted_at_success or {}
+        row["final_success"] = int(self.success)
+        row["wrist_distance_at_success"] = (
+            "" if self.wrist_distance_at_success is None else f"{self.wrist_distance_at_success:.8g}"
+        )
+        row["inserted_fingers_at_success"] = (
+            "" if self.inserted_fingers_at_success is None else self.inserted_fingers_at_success
+        )
+        row["all_5_inserted_at_success"] = (
+            "" if self.all_5_inserted_at_success is None else int(self.all_5_inserted_at_success)
+        )
+        for name in FINGER_ORDER:
+            row[f"{name}_inserted_at_success"] = (
+                "" if name not in at_success else int(at_success[name])
+            )
+        row["episode_done_step"] = "" if self.episode_done_step is None else self.episode_done_step
+        row["episode_done_reason"] = self.episode_done_reason
+        row["first_wrist_goal_step"] = (
+            "" if self.first_wrist_goal_step is None else self.first_wrist_goal_step
+        )
+        row["first_wrist_goal_time_s"] = (
+            "" if self.first_wrist_goal_time_s is None else f"{self.first_wrist_goal_time_s:.6g}"
+        )
+        row["inserted_fingers_at_first_wrist_goal"] = (
+            ""
+            if self.inserted_fingers_at_first_wrist_goal is None
+            else self.inserted_fingers_at_first_wrist_goal
+        )
+        row["missing_fingers_at_first_wrist_goal"] = self.missing_fingers_at_first_wrist_goal
         return row
 
 
@@ -554,12 +660,20 @@ class BraceletEvalCollector:
             debug_insertion=bool(getattr(args, "debug_insertion", False)),
             debug_insertion_interval=int(getattr(args, "debug_insertion_interval", 10)),
         )
+        require_all = bool(getattr(args, "complete_dressing_success", True))
+        if hasattr(raw, "cfg") and hasattr(raw.cfg, "eval_success_requires_all_fingers"):
+            raw.cfg.eval_success_requires_all_fingers = require_all
+            raw.cfg.eval_insertion_delta_m = collector.insertion_delta_m
+            raw.cfg.eval_insertion_confirm_frames = collector.insertion_confirm_frames
+            if hasattr(raw.cfg, "eval_opening_ellipse_threshold"):
+                raw.cfg.eval_opening_ellipse_threshold = collector.insertion_ellipse_threshold
         print(
             f"[{session.log_prefix}] bracelet eval: max_episodes={collector.max_episodes} "
             f"control={1.0 / collector.control_dt:.1f} Hz "
             f"crossing delta={collector.insertion_delta_m:.4g} m "
             f"confirm={collector.insertion_confirm_frames} frames "
             f"ellipse<={collector.insertion_ellipse_threshold:.3g} "
+            f"success={'wrist+all_5' if require_all else 'wrist_only'} "
             f"envs={eval_env_ids}"
             + (
                 f" debug_insertion every {collector.debug_insertion_interval} steps"
@@ -690,17 +804,41 @@ class BraceletEvalCollector:
             if isinstance(rewards, torch.Tensor) and env_id < rewards.shape[0]:
                 run.episode_return += float(rewards[env_id].reshape(-1)[0].item())
 
-            if (not run.motion_locked) and read_motion_locked(infos, raw, env_id):
-                run.motion_locked = True
-                run.motion_lock_step = run.steps - 1
-
             if inserted is not None:
                 flags = [bool(inserted[env_id, i].item()) for i in range(5)]
                 run.inserted_state.append(flags)
                 if self.debug_insertion and env_id == self.eval_env_ids[0]:
                     self._debug_insertion_env(env_id, run.steps, flags)
             else:
-                run.inserted_state.append([False] * 5)
+                flags = [False] * 5
+                run.inserted_state.append(flags)
+
+            log = infos.get("log") if isinstance(infos, dict) else None
+            if not isinstance(log, dict):
+                extras = getattr(raw, "extras", None) or {}
+                log = extras.get("log") if isinstance(extras, dict) else {}
+            wrist_ok = _as_bool_scalar((log or {}).get("wrist_within_goal"), env_id)
+            if not wrist_ok:
+                dist = getattr(raw, "wrist_center_euclidean_distance", None)
+                wrist_dist = _read_float_env(dist, env_id)
+                thr = float(getattr(getattr(raw, "cfg", None), "bracelet_success_threshold", 0.01))
+                if wrist_dist is not None:
+                    wrist_ok = wrist_dist < thr
+            if wrist_ok and run.first_wrist_goal_step is None and not all(flags):
+                run.first_wrist_goal_step = run.steps - 1
+                run.first_wrist_incomplete = True
+                run.inserted_flags_at_first_wrist_goal = list(flags)
+
+            if (not run.motion_locked) and read_motion_locked(infos, raw, env_id):
+                run.motion_locked = True
+                run.motion_lock_step = run.steps - 1
+                run.inserted_flags_at_success = list(flags)
+                dist = None
+                if isinstance(log, dict):
+                    dist = _read_float_env(log.get("wrist_center_distance"), env_id)
+                if dist is None:
+                    dist = _read_float_env(getattr(raw, "wrist_center_euclidean_distance", None), env_id)
+                run.wrist_distance_at_success = dist
 
             if d_finger is not None:
                 run.d_finger.append([float(d_finger[env_id, i].item()) for i in range(5)])
@@ -711,6 +849,12 @@ class BraceletEvalCollector:
 
             env_done = bool(done[env_id].item())
             if env_done:
+                run.last_done_reason = _episode_done_reason(
+                    bool(terminated[env_id].item()),
+                    bool(truncated[env_id].item()),
+                    infos,
+                    env_id,
+                )
                 self._finalize_env(
                     env_id,
                     terminated=bool(terminated[env_id].item()),
@@ -722,6 +866,7 @@ class BraceletEvalCollector:
             if self.is_complete():
                 break
             if self._running[env_id].steps > 0:
+                self._running[env_id].last_done_reason = "timeout"
                 self._finalize_env(env_id, terminated=False, truncated=True)
 
     def _finalize_env(self, env_id: int, *, terminated: bool, truncated: bool) -> None:
@@ -743,7 +888,12 @@ class BraceletEvalCollector:
             f"[{self.log_prefix}] episode {ep.episode}: success={int(ep.success)} "
             f"final={ep.final_inserted_fingers}/5 max={ep.max_inserted_fingers}/5 "
             f"outcome={ep.insertion_outcome} lock_step={ep.motion_lock_step} "
-            f"steps={ep.episode_length_steps} env={env_id}"
+            f"done={ep.episode_done_reason} steps={ep.episode_length_steps} env={env_id}"
+            + (
+                f" first_wrist_incomplete={ep.missing_fingers_at_first_wrist_goal}"
+                if ep.first_wrist_goal_step is not None
+                else ""
+            )
         )
         self._running[env_id] = _RunningEpisode(env_id=env_id)
         self._debug_prev_inserted[env_id] = [False] * 5
@@ -752,11 +902,28 @@ class BraceletEvalCollector:
             self._tracker.reset_envs([env_id])
 
     def _snapshot_tracker(self, env_id: int) -> tuple[int, bool, dict[str, float | None], dict[str, int]]:
-        tracker = self._tracker
         first_t = {name: None for name in FINGER_ORDER}
         insert_steps = {name: 0 for name in FINGER_ORDER}
         max_n = 0
         ever_all = False
+        raw = self.raw_env
+        end_max = getattr(raw, "_episode_end_eval_max_inserted", None)
+        end_ever = getattr(raw, "_episode_end_eval_ever_all", None)
+        end_first = getattr(raw, "_episode_end_eval_first_insert_step", None)
+        end_steps = getattr(raw, "_episode_end_eval_insert_steps", None)
+        if end_max is not None and env_id < int(end_max.shape[0]):
+            max_n = int(end_max[env_id].item())
+            ever_all = bool(end_ever[env_id].item()) if end_ever is not None else False
+            for i, name in enumerate(FINGER_ORDER):
+                if end_first is not None:
+                    step_i = int(end_first[env_id, i].item())
+                    if step_i >= 0:
+                        first_t[name] = step_i * self.control_dt
+                if end_steps is not None:
+                    insert_steps[name] = int(end_steps[env_id, i].item())
+            return max_n, ever_all, first_t, insert_steps
+
+        tracker = self._tracker
         if tracker is None:
             return max_n, ever_all, first_t, insert_steps
         max_n = int(tracker.max_inserted[env_id].item())
@@ -780,6 +947,14 @@ class BraceletEvalCollector:
         if max_n == 0:
             max_n = max((sum(1 for v in row if v) for row in run.inserted_state), default=0)
             ever_all = ever_all or any(all(row) for row in run.inserted_state)
+        for i, name in enumerate(FINGER_ORDER):
+            if first_t[name] is None:
+                for step_i, row in enumerate(run.inserted_state):
+                    if row[i]:
+                        first_t[name] = step_i * self.control_dt
+                        break
+            if insert_steps[name] == 0 and run.inserted_state:
+                insert_steps[name] = sum(1 for row in run.inserted_state if row[i])
 
         finger_rms = {name: 0.0 for name in FINGER_ORDER}
         finger_peak = {name: 0.0 for name in FINGER_ORDER}
@@ -805,6 +980,16 @@ class BraceletEvalCollector:
             final_all=final_all,
             success=success,
         )
+        flags_at_success = run.inserted_flags_at_success
+        per_success = (
+            {name: bool(flags_at_success[i]) for i, name in enumerate(FINGER_ORDER)}
+            if flags_at_success is not None
+            else None
+        )
+        first_wrist_t = (
+            None if run.first_wrist_goal_step is None else run.first_wrist_goal_step * self.control_dt
+        )
+        first_flags = run.inserted_flags_at_first_wrist_goal
         return EpisodeMetrics(
             episode=len(self.episodes),
             env_id=run.env_id,
@@ -831,6 +1016,26 @@ class BraceletEvalCollector:
             worst_finger_peak=finger_peak[worst_finger],
             worst_finger=worst_finger,
             episode_return=run.episode_return,
+            wrist_distance_at_success=run.wrist_distance_at_success,
+            inserted_fingers_at_success=(
+                None if flags_at_success is None else sum(1 for v in flags_at_success if v)
+            ),
+            all_5_inserted_at_success=(
+                None if flags_at_success is None else all(flags_at_success)
+            ),
+            per_finger_inserted_at_success=per_success,
+            episode_done_step=max(run.steps - 1, 0),
+            episode_done_reason=run.last_done_reason if run.last_done_reason else (
+                "timeout" if truncated else ("terminated" if terminated else "incomplete")
+            ),
+            first_wrist_goal_step=run.first_wrist_goal_step if run.first_wrist_incomplete else None,
+            first_wrist_goal_time_s=first_wrist_t if run.first_wrist_incomplete else None,
+            inserted_fingers_at_first_wrist_goal=(
+                None if first_flags is None else sum(1 for v in first_flags if v)
+            ),
+            missing_fingers_at_first_wrist_goal=(
+                _missing_finger_names(first_flags) if first_flags is not None else ""
+            ),
         )
 
     def _update_insertion(self, done: torch.Tensor) -> torch.Tensor | None:
@@ -838,6 +1043,14 @@ class BraceletEvalCollector:
         raw = self.raw_env
         if getattr(raw, "_is_free_space_mode", lambda: False)():
             return None
+        cfg = getattr(raw, "cfg", None)
+        if bool(getattr(cfg, "eval_success_requires_all_fingers", True)):
+            env_tracker = getattr(raw, "_eval_finger_crossing_tracker", None)
+            if env_tracker is not None:
+                self._tracker = env_tracker
+            end = getattr(raw, "_episode_end_eval_inserted", None)
+            if end is not None:
+                return end
         distal = self._stack_finger_base_env_local()
         cent = getattr(raw, "goal_cent_pos", None)
         east = getattr(raw, "goal_east_pos", None)
@@ -986,8 +1199,28 @@ class BraceletEvalCollector:
         insert_fingers["pinky"] = dict(insert_fingers["little"])
 
         worst_ep = max(eps, key=lambda e: e.worst_finger_peak) if eps else None
+        episode_debug = [
+            {
+                "env_id": ep.env_id,
+                "episode": ep.episode,
+                "motion_lock_step": ep.motion_lock_step,
+                "motion_lock_time_s": ep.motion_lock_time_s,
+                "wrist_distance_at_success": ep.wrist_distance_at_success,
+                "inserted_fingers_at_success": ep.inserted_fingers_at_success,
+                "all_5_inserted_at_success": ep.all_5_inserted_at_success,
+                "per_finger_inserted_at_success": ep.per_finger_inserted_at_success,
+                "episode_done_step": ep.episode_done_step,
+                "episode_done_reason": ep.episode_done_reason,
+                "final_success": ep.success,
+                "first_wrist_goal_step": ep.first_wrist_goal_step,
+                "first_wrist_goal_time_s": ep.first_wrist_goal_time_s,
+                "inserted_fingers_at_first_wrist_goal": ep.inserted_fingers_at_first_wrist_goal,
+                "missing_fingers_at_first_wrist_goal": ep.missing_fingers_at_first_wrist_goal,
+            }
+            for ep in eps
+        ]
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "task": self.task,
             "checkpoint": self.checkpoint,
             "executed_at": self.executed_at,
@@ -1000,7 +1233,16 @@ class BraceletEvalCollector:
                 "insertion_delta_m": self.insertion_delta_m,
                 "insertion_confirm_frames": self.insertion_confirm_frames,
                 "insertion_ellipse_threshold": self.insertion_ellipse_threshold,
-                "success_definition": "motion_lock_triggered",
+                "success_definition": (
+                    "wrist_within_goal_and_all_5_fingers_inserted"
+                    if bool(getattr(getattr(self.raw_env, "cfg", None), "eval_success_requires_all_fingers", True))
+                    else "motion_lock_triggered"
+                ),
+                "motion_lock_definition": (
+                    "wrist_within_goal_and_all_5_fingers_inserted"
+                    if bool(getattr(getattr(self.raw_env, "cfg", None), "eval_success_requires_all_fingers", True))
+                    else "wrist_within_goal"
+                ),
                 "insertion_definition": "last_clear_pre_to_post_through_live_yz_ellipse",
                 "insertion_normal": "+x",
                 "insertion_pre_side": "d > +delta (hand / +X of opening)",
@@ -1047,6 +1289,7 @@ class BraceletEvalCollector:
                     "max_worst_finger_episode": worst_ep.episode if worst_ep else None,
                 },
             },
+            "episode_debug": episode_debug,
         }
 
     def _write_summary(self, *, partial: bool) -> None:
@@ -1098,6 +1341,8 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
         )
     print("")
     print("Episodes")
+    print(f"  Success definition : {cfg.get('success_definition')}")
+    print(f"  Motion lock        : {cfg.get('motion_lock_definition')}")
     print(f"  Total   : {n}")
     print(f"  Success : {n_ok}")
     print(f"  Failed  : {n_fail}")

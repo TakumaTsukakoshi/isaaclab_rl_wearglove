@@ -242,6 +242,16 @@ def add_play_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         help="If set, only this env_id contributes evaluation episodes. Default: all parallel envs.",
     )
     parser.add_argument(
+        "--complete-dressing-success",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Success / motion lock require wrist-within-1cm AND all five confirmed "
+            "finger insertions (default: on; same rule as training). "
+            "Use --no-complete-dressing-success for the old wrist-only criterion."
+        ),
+    )
+    parser.add_argument(
         "--debug-insertion",
         action="store_true",
         default=False,

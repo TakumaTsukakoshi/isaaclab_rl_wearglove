@@ -319,6 +319,18 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
         if hasattr(env_cfg, "debug_opening_pca_use_opening_ring"):
             env_cfg.debug_opening_pca_use_opening_ring = True
 
+    if hasattr(args_cli, "complete_dressing_success") and hasattr(
+        env_cfg, "eval_success_requires_all_fingers"
+    ):
+        env_cfg.eval_success_requires_all_fingers = bool(args_cli.complete_dressing_success)
+        if getattr(args_cli, "insertion_delta_m", None) is not None:
+            env_cfg.eval_insertion_delta_m = float(args_cli.insertion_delta_m)
+        if getattr(args_cli, "insertion_confirm_frames", None) is not None:
+            env_cfg.eval_insertion_confirm_frames = int(args_cli.insertion_confirm_frames)
+        ellipse_thr = getattr(args_cli, "insertion_ellipse_threshold", None)
+        if ellipse_thr is not None and hasattr(env_cfg, "eval_opening_ellipse_threshold"):
+            env_cfg.eval_opening_ellipse_threshold = float(ellipse_thr)
+
     return env_cfg
 
 
