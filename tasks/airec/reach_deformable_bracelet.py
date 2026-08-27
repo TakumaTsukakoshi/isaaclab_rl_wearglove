@@ -130,6 +130,12 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     #: After the one-shot success bonus, ignore further policy actions and hold actuated joint
     #: targets at the measured success pose until reset. Episode still continues (no terminate).
     lock_motion_after_task_success: bool = True
+    #: Train and play_eval: ``task_success`` / bonus / motion lock require
+    #: ``wrist_within_goal AND all_5_confirmed_insertions``. Episode still runs to timeout.
+    #: ``play_eval.py --no-complete-dressing-success`` restores wrist-only lock for eval.
+    eval_success_requires_all_fingers: bool = True
+    eval_insertion_delta_m: float = 0.003
+    eval_insertion_confirm_frames: int = 4
 
     #: When cumulative episode success rate exceeds :attr:`adaptive_physics_success_threshold`, switch from
     #: coarse (:attr:`~tasks.airec.airec2_finger_deformable.AIRECEnvCfg.physics_dt` / decimation) to fine PhysX.
@@ -693,6 +699,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             device=self.device,
             dtype=torch.float32,
         )
+        # Complete-dressing buffers (wrist + 5-finger crossing tracker for bonus / lock).
+        self.wrist_within_goal = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        self.eval_all_5_inserted = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+        self._episode_end_eval_inserted = torch.zeros(
+            (self.num_envs, 5), dtype=torch.bool, device=self.device
+        )
+        self._eval_finger_crossing_tracker = None
+        self._eval_base_body_ids: dict[str, int | None] | None = None
 
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         if self._is_free_space_mode():
@@ -959,6 +973,12 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.task_success[e] = False
         self._task_success_bonus_awarded[e] = False
         self._success_hold_joint_pos[e] = 0.0
+        self.wrist_within_goal[e] = False
+        self.eval_all_5_inserted[e] = False
+        # Keep ``_episode_end_eval_*`` snapshots for play_eval to read after Isaac Lab reset.
+        tracker = getattr(self, "_eval_finger_crossing_tracker", None)
+        if tracker is not None:
+            tracker.reset_envs(e)
         if self._is_free_space_mode():
             self._set_free_space_dummy_observations(e)
             return
@@ -1041,6 +1061,82 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             "rim_vertex_set": str(getattr(self.cfg, "deformable_bracelet_rim_vertex_set", "opening_ring")),
         }
 
+    def _eval_complete_success_enabled(self) -> bool:
+        """True when bonus / motion lock need wrist + all five confirmed insertions."""
+        return bool(getattr(self.cfg, "eval_success_requires_all_fingers", True)) and (
+            not self._is_free_space_mode()
+        )
+
+    def _ensure_eval_insertion_tracker(self):
+        """Reuse ``bracelet_eval.FingerCrossingTracker`` (same confirmed-insertion detector)."""
+        if self._eval_finger_crossing_tracker is not None:
+            return self._eval_finger_crossing_tracker
+        from bracelet_eval import FingerCrossingTracker
+
+        self._eval_finger_crossing_tracker = FingerCrossingTracker(
+            int(self.num_envs),
+            self.device,
+            torch.float32,
+            delta=float(getattr(self.cfg, "eval_insertion_delta_m", 0.003)),
+            confirm_frames=int(getattr(self.cfg, "eval_insertion_confirm_frames", 4)),
+            ellipse_threshold=float(getattr(self.cfg, "eval_opening_ellipse_threshold", 1.0)),
+        )
+        return self._eval_finger_crossing_tracker
+
+    def _stack_eval_finger_base_env_local(self) -> torch.Tensor | None:
+        """``(num_envs, 5, 3)`` finger-base COMs in env-local frame (same bodies as eval)."""
+        from bracelet_eval import BASE_BODY_CANDIDATES, FINGER_ORDER, _resolve_body_index
+
+        hand = getattr(self, "hand", None)
+        if hand is None:
+            return None
+        body_pos_w = getattr(hand.data, "body_pos_w", None)
+        if body_pos_w is None:
+            return None
+        if self._eval_base_body_ids is None:
+            body_names = list(
+                getattr(hand, "body_names", None) or getattr(hand.data, "body_names", None) or []
+            )
+            self._eval_base_body_ids = {
+                name: _resolve_body_index(body_names, candidates)
+                for name, candidates in BASE_BODY_CANDIDATES.items()
+            }
+        if any(self._eval_base_body_ids[name] is None for name in FINGER_ORDER):
+            return None
+        origins = getattr(self, "env_origins", None)
+        if origins is None:
+            scene = getattr(self, "scene", None)
+            origins = getattr(scene, "env_origins", None) if scene is not None else None
+        if origins is None:
+            origins = body_pos_w.new_zeros((body_pos_w.shape[0], 3))
+        origins = origins.to(device=body_pos_w.device, dtype=body_pos_w.dtype)
+        cols = [body_pos_w[:, self._eval_base_body_ids[name]] - origins for name in FINGER_ORDER]
+        return torch.stack(cols, dim=1)
+
+    def _update_eval_insertion_tracker(self) -> torch.Tensor | None:
+        """Advance the shared crossing tracker after live opening / finger poses are current."""
+        from bracelet_eval import opening_radii
+
+        distal = self._stack_eval_finger_base_env_local()
+        cent = getattr(self, "goal_cent_pos", None)
+        east = getattr(self, "goal_east_pos", None)
+        west = getattr(self, "goal_west_pos", None)
+        north = getattr(self, "goal_north_pos", None)
+        south = getattr(self, "goal_south_pos", None)
+        if distal is None or cent is None or east is None or west is None or north is None or south is None:
+            self._episode_end_eval_inserted.zero_()
+            return None
+        radius_y, radius_z = opening_radii(east, west, north, south)
+        tracker = self._ensure_eval_insertion_tracker()
+        active = torch.ones((int(self.num_envs),), dtype=torch.bool, device=distal.device)
+        inserted = tracker.update(distal, cent, radius_y, radius_z, active)
+        self._episode_end_eval_inserted.copy_(inserted)
+        self._episode_end_eval_max_inserted = tracker.max_inserted.clone()
+        self._episode_end_eval_ever_all = tracker.ever_all.clone()
+        self._episode_end_eval_first_insert_step = tracker.first_insert_step.clone()
+        self._episode_end_eval_insert_steps = tracker.inserted_steps.clone()
+        return inserted
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         if self._is_free_space_mode():
             self._compute_intermediate_values()
@@ -1070,15 +1166,32 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         termination, time_out = super()._get_dones()
 
         # Bracelet root vs. ShadowHand wrist goal, both env-local (see ``_compute_intermediate_values``).
-        self.task_success[:] = (
-            self.wrist_center_euclidean_distance < self.cfg.bracelet_success_threshold
-        )
+        wrist_ok = self.wrist_center_euclidean_distance < self.cfg.bracelet_success_threshold
+        self.wrist_within_goal[:] = wrist_ok
+
+        if self._eval_complete_success_enabled():
+            # Insertion first (this step's live geometry), then complete success, then latch.
+            inserted = self._update_eval_insertion_tracker()
+            all_5 = (
+                inserted.all(dim=1)
+                if inserted is not None
+                else torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
+            )
+            self.eval_all_5_inserted[:] = all_5
+            complete_success = wrist_ok & all_5
+            self.task_success |= complete_success
+        else:
+            self.eval_all_5_inserted.zero_()
+            self.task_success[:] = wrist_ok
 
         # Surface to wandb via the same ``_term_log`` dict that ``AIRECEnv._get_dones`` populates.
         if not hasattr(self, "_term_log") or self._term_log is None:
             self._term_log = {}
         self._term_log["task_success"] = self.task_success.float()
         self._term_log["wrist_center_distance"] = self.wrist_center_euclidean_distance
+        if self._eval_complete_success_enabled():
+            self._term_log["wrist_within_goal"] = self.wrist_within_goal.float()
+            self._term_log["eval_all_5_inserted"] = self.eval_all_5_inserted.float()
 
         if self.cfg.terminate_on_task_success:
             termination = termination | self.task_success
@@ -1208,6 +1321,10 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.extras["log"]["task_success"] = self.task_success.float()
         self.extras["log"]["motion_locked"] = self._task_success_bonus_awarded.float()
         self.extras["log"]["wrist_center_distance"] = self.wrist_center_euclidean_distance
+        if self._eval_complete_success_enabled():
+            self.extras["log"]["wrist_within_goal"] = self.wrist_within_goal.float()
+            self.extras["log"]["eval_all_5_inserted"] = self.eval_all_5_inserted.float()
+            self.extras["log"]["eval_fingers_inserted"] = self._episode_end_eval_inserted.float()
         # Episode success *event*: 1.0 only on the step the bonus is awarded.
         # EpisodeTracker sums per-step means over the eval window → ≈ window success rate.
         self.extras["log"]["episode_success"] = newly_successful.float()
@@ -1267,15 +1384,15 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             device=self.device,
             dtype=default_state.dtype,
         )
-
+        pos_noise_range = 0.05
         pos_noise[:, 0] = sample_uniform(
-            -0.05, 0.05, (num_envs,), device=self.device
+            -pos_noise_range, pos_noise_range, (num_envs,), device=self.device
         )   
         pos_noise[:, 1] = sample_uniform(
-            -0.05, 0.05, (num_envs,), device=self.device
+            -pos_noise_range, pos_noise_range, (num_envs,), device=self.device
         )
         pos_noise[:, 2] = sample_uniform(
-            -0.05, 0.05, (num_envs,), device=self.device
+            -pos_noise_range, pos_noise_range, (num_envs,), device=self.device
         )
 
         # 各環境のdefault位置を使用
@@ -1293,19 +1410,19 @@ class ReachDeformableBraceletEnv(AIRECEnv):
 
         # 各環境のdefault orientation
         init_rot = default_state[:, 3:7].clone()
-
-        # yaw: ±10 degrees
+        angle_range = 10.0
+        # yaw: ±angle_range degrees
         yaw_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -15.0,
+                    -angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    15.0,
+                    angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1314,18 +1431,18 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             device=self.device,
         )
 
-        # pitch: ±5 degrees
+        # pitch: ±angle_range degrees
         pitch_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -15.0,
+                    -angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    15.0,
+                    angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1337,14 +1454,14 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         roll_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -15.0,
+                    -angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    15.0,
+                    angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1354,8 +1471,8 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         )
 
         roll_rad = torch.zeros_like(yaw_rad)
-        pitch_rad = torch.zeros_like(yaw_rad)
-        yaw_rad = torch.zeros_like(yaw_rad)
+        # pitch_rad = torch.zeros_like(yaw_rad)
+        # yaw_rad = torch.zeros_like(yaw_rad)
 
         # ランダムなyaw + pitch姿勢
         q_random = quat_from_euler_xyz(
@@ -2211,6 +2328,9 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         self.task_success[env_ids] = False
         self._task_success_bonus_awarded[env_ids] = False
         self._success_hold_joint_pos[env_ids] = 0.0
+        self.wrist_within_goal[env_ids] = False
+        self.eval_all_5_inserted[env_ids] = False
+        self._episode_end_eval_inserted[env_ids] = False
 
 
 def compute_rewards(
