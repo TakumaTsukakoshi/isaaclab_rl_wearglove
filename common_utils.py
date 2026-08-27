@@ -290,6 +290,12 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
         env_cfg.debug_joint_print_env_id = int(args_cli.debug_joint_env_id)
     if getattr(args_cli, "debug_joint_interval", None) is not None:
         env_cfg.debug_joint_print_interval = int(args_cli.debug_joint_interval)
+    if getattr(args_cli, "residual_scale_mult", None) is not None:
+        if not hasattr(env_cfg, "residual_action_scale_mult"):
+            raise AttributeError(
+                "--residual-scale-mult requested, but env_cfg has no residual_action_scale_mult field"
+            )
+        env_cfg.residual_action_scale_mult = float(args_cli.residual_scale_mult)
 
     if bool(getattr(args_cli, "show_task_markers", False)):
         if not hasattr(env_cfg, "show_task_markers"):

@@ -421,118 +421,41 @@ AIREC_CFG = ArticulationCfg(
     #     },
     # ),
     # # NOTE initial state for reach bracelet task
-    init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
-        joint_pos={
-     
-        "torso_joint_1": radians(-30),
-        "torso_joint_2": radians(60),
-        "torso_joint_3": radians(0),
-        "head_joint_1": radians(0),
-        "head_joint_2": radians(0),
-        "head_joint_3": radians(0),
-        "left_arm_joint_1": radians(20),
-        # "left_arm_joint_2": radians(-14),
-        # "left_arm_joint_2": radians(-18), default
-        "left_arm_joint_2": radians(-18),
-        "left_arm_joint_3": radians(-14),
-        # "left_arm_joint_4": radians(100),
-        "left_arm_joint_4": radians(105),
-        "left_arm_joint_5": radians(26),
-        # "left_arm_joint_6": radians(45),
-        "left_arm_joint_6": radians(65),
-        "left_arm_joint_7": radians(-13),
-        "left_arm_joint_7": radians(13),
-        # "right_arm_joint_1": radians(33),
-        "right_arm_joint_1": radians(20),
-        # "right_arm_joint_2": radians(-14),
-        # "right_arm_joint_2": radians(-18),default
-        "right_arm_joint_2": radians(-18),
-        "right_arm_joint_3": radians(-14),
-        # "right_arm_joint_4": radians(100),
-        "right_arm_joint_4": radians(105),
-        "right_arm_joint_5": radians(26),
-        # "right_arm_joint_6": radians(45),
-        "right_arm_joint_6": radians(65),
-        "right_arm_joint_7": radians(13),
-        "right_arm_joint_7": radians(13),
-        # "left_hand_thumb_joint_1": radians(75),
-        # "left_hand_thumb_joint_2": radians(13),
-        # "left_hand_thumb_joint_3": radians(4),
-        # "left_hand_thumb_joint_4": radians(0),
-        "left_hand_thumb_joint_1": radians(75),
-        "left_hand_thumb_joint_2": radians(5),
-        "left_hand_thumb_joint_3": radians(5),
-        "left_hand_thumb_joint_4": radians(0),
-        "left_hand_first_finger_joint_1": radians(89),
-        "left_hand_first_finger_joint_2": radians(60),
-        "left_hand_second_finger_joint_1": radians(89),
-        "left_hand_second_finger_joint_2": radians(89),
-        # "left_hand_second_finger_joint_1": radians(89),
-        # "left_hand_second_finger_joint_2": radians(89),
-        "left_hand_third_finger_joint_1": radians(89),
-        "left_hand_third_finger_joint_2": radians(89),
-        # "right_hand_thumb_joint_1": radians(75),
-        # "right_hand_thumb_joint_1": radians(75),
-        # "right_hand_thumb_joint_2": radians(13),
-        # "right_hand_thumb_joint_3": radians(4),
-        # "right_hand_thumb_joint_4": radians(0),
-        "right_hand_thumb_joint_1": radians(75),
-        "right_hand_thumb_joint_2": radians(5),
-        "right_hand_thumb_joint_3": radians(5),
-        "right_hand_thumb_joint_4": radians(0),
-        "right_hand_first_finger_joint_1": radians(89),
-        "right_hand_first_finger_joint_2": radians(60),
-        "right_hand_second_finger_joint_1": radians(89),
-        "right_hand_second_finger_joint_2": radians(89),
-        # "right_hand_second_finger_joint_1": radians(89),
-        # "right_hand_second_finger_joint_2": radians(89),
-        "right_hand_third_finger_joint_1": radians(89),
-        "right_hand_third_finger_joint_2": radians(89),
-        },
-    ),
-    ###########################################################################
-    #NOTE: for reach deformable bracelet task
     # init_state=ArticulationCfg.InitialStateCfg(
     #     pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
     #     joint_pos={
      
-    #     "base_joint_trans_x": 0.0,
-    #     "base_joint_trans_y": 0.0,
-    #     "base_joint_rot_yaw": 0.0,
-    #     "torso_joint_1": radians(-40),
-    #     "torso_joint_2": radians(70),
+    #     "torso_joint_1": radians(-30),
+    #     "torso_joint_2": radians(60),
     #     "torso_joint_3": radians(0),
     #     "head_joint_1": radians(0),
     #     "head_joint_2": radians(0),
     #     "head_joint_3": radians(0),
-    #     "left_arm_joint_1": radians(18),
+    #     "left_arm_joint_1": radians(20),
     #     # "left_arm_joint_2": radians(-14),
-    #     # "left_arm_joint_2": radians(-20), default
-    #     "left_arm_joint_2": radians(-11),
-    #     "left_arm_joint_3": radians(-9), # for real
-    #     # "left_arm_joint_3": radians(-14), # default
+    #     # "left_arm_joint_2": radians(-18), default
+    #     "left_arm_joint_2": radians(-18),
+    #     "left_arm_joint_3": radians(-14),
     #     # "left_arm_joint_4": radians(100),
-    #     "left_arm_joint_4": radians(108), # for real
-    #     # "left_arm_joint_4": radians(105), # default
+    #     "left_arm_joint_4": radians(105),
     #     "left_arm_joint_5": radians(26),
     #     # "left_arm_joint_6": radians(45),
     #     "left_arm_joint_6": radians(65),
-    #     "left_arm_joint_7": radians(20),
+    #     "left_arm_joint_7": radians(-13),
+    #     "left_arm_joint_7": radians(13),
     #     # "right_arm_joint_1": radians(33),
-    #     "right_arm_joint_1": radians(18),
+    #     "right_arm_joint_1": radians(20),
     #     # "right_arm_joint_2": radians(-14),
-    #     # "right_arm_joint_2": radians(-20),default
-    #     "right_arm_joint_2": radians(-11),
-    #     "right_arm_joint_3": radians(-9), # for real
-    #     # "right_arm_joint_3": radians(-14), # default
+    #     # "right_arm_joint_2": radians(-18),default
+    #     "right_arm_joint_2": radians(-18),
+    #     "right_arm_joint_3": radians(-14),
     #     # "right_arm_joint_4": radians(100),
-    #     "right_arm_joint_4": radians(108), # for real
-    #     # "right_arm_joint_4": radians(105), # default
+    #     "right_arm_joint_4": radians(105),
     #     "right_arm_joint_5": radians(26),
     #     # "right_arm_joint_6": radians(45),
     #     "right_arm_joint_6": radians(65),
-    #     "right_arm_joint_7": radians(20),
+    #     "right_arm_joint_7": radians(13),
+    #     "right_arm_joint_7": radians(13),
     #     # "left_hand_thumb_joint_1": radians(75),
     #     # "left_hand_thumb_joint_2": radians(13),
     #     # "left_hand_thumb_joint_3": radians(4),
@@ -562,12 +485,89 @@ AIREC_CFG = ArticulationCfg(
     #     "right_hand_first_finger_joint_2": radians(60),
     #     "right_hand_second_finger_joint_1": radians(89),
     #     "right_hand_second_finger_joint_2": radians(89),
-    #     "right_hand_second_finger_joint_1": radians(89),
-    #     "right_hand_second_finger_joint_2": radians(89),
+    #     # "right_hand_second_finger_joint_1": radians(89),
+    #     # "right_hand_second_finger_joint_2": radians(89),
     #     "right_hand_third_finger_joint_1": radians(89),
     #     "right_hand_third_finger_joint_2": radians(89),
     #     },
     # ),
+    ###########################################################################
+    #NOTE: for reach deformable bracelet task
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.0),  # Robot base position in world (x, y, z). Adjust if needed.
+        joint_pos={
+     
+        "base_joint_trans_x": 0.0,
+        "base_joint_trans_y": 0.0,
+        "base_joint_rot_yaw": 0.0,
+        "torso_joint_1": radians(-40),
+        "torso_joint_2": radians(70),
+        "torso_joint_3": radians(0),
+        "head_joint_1": radians(0),
+        "head_joint_2": radians(0),
+        "head_joint_3": radians(0),
+        "left_arm_joint_1": radians(18),
+        # "left_arm_joint_2": radians(-14),
+        # "left_arm_joint_2": radians(-20), default
+        "left_arm_joint_2": radians(-11),
+        "left_arm_joint_3": radians(-9), # for real
+        # "left_arm_joint_3": radians(-14), # default
+        # "left_arm_joint_4": radians(100),
+        "left_arm_joint_4": radians(108), # for real
+        # "left_arm_joint_4": radians(105), # default
+        "left_arm_joint_5": radians(26),
+        # "left_arm_joint_6": radians(45),
+        "left_arm_joint_6": radians(65),
+        "left_arm_joint_7": radians(20),
+        # "right_arm_joint_1": radians(33),
+        "right_arm_joint_1": radians(18),
+        # "right_arm_joint_2": radians(-14),
+        # "right_arm_joint_2": radians(-20),default
+        "right_arm_joint_2": radians(-11),
+        "right_arm_joint_3": radians(-9), # for real
+        # "right_arm_joint_3": radians(-14), # default
+        # "right_arm_joint_4": radians(100),
+        "right_arm_joint_4": radians(108), # for real
+        # "right_arm_joint_4": radians(105), # default
+        "right_arm_joint_5": radians(26),
+        # "right_arm_joint_6": radians(45),
+        "right_arm_joint_6": radians(65),
+        "right_arm_joint_7": radians(20),
+        # "left_hand_thumb_joint_1": radians(75),
+        # "left_hand_thumb_joint_2": radians(13),
+        # "left_hand_thumb_joint_3": radians(4),
+        # "left_hand_thumb_joint_4": radians(0),
+        "left_hand_thumb_joint_1": radians(75),
+        "left_hand_thumb_joint_2": radians(5),
+        "left_hand_thumb_joint_3": radians(5),
+        "left_hand_thumb_joint_4": radians(0),
+        "left_hand_first_finger_joint_1": radians(89),
+        "left_hand_first_finger_joint_2": radians(60),
+        "left_hand_second_finger_joint_1": radians(89),
+        "left_hand_second_finger_joint_2": radians(89),
+        # "left_hand_second_finger_joint_1": radians(89),
+        # "left_hand_second_finger_joint_2": radians(89),
+        "left_hand_third_finger_joint_1": radians(89),
+        "left_hand_third_finger_joint_2": radians(89),
+        # "right_hand_thumb_joint_1": radians(75),
+        # "right_hand_thumb_joint_1": radians(75),
+        # "right_hand_thumb_joint_2": radians(13),
+        # "right_hand_thumb_joint_3": radians(4),
+        # "right_hand_thumb_joint_4": radians(0),
+        "right_hand_thumb_joint_1": radians(75),
+        "right_hand_thumb_joint_2": radians(5),
+        "right_hand_thumb_joint_3": radians(5),
+        "right_hand_thumb_joint_4": radians(0),
+        "right_hand_first_finger_joint_1": radians(89),
+        "right_hand_first_finger_joint_2": radians(60),
+        "right_hand_second_finger_joint_1": radians(89),
+        "right_hand_second_finger_joint_2": radians(89),
+        "right_hand_second_finger_joint_1": radians(89),
+        "right_hand_second_finger_joint_2": radians(89),
+        "right_hand_third_finger_joint_1": radians(89),
+        "right_hand_third_finger_joint_2": radians(89),
+        },
+    ),
 
     ###########################################################################
     # Actuators: Each group explicitly lists certain joint names.

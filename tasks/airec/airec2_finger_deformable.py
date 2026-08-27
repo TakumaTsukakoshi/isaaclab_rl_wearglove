@@ -123,6 +123,9 @@ class AIRECEnvCfg(DirectRLEnvCfg):
     residual_body_actions: bool = True
     #: Max residual [rad] per body DOF when ``residual_body_actions`` is True (broadcast to all actuated DOFs).
     residual_action_scale: float | None = None
+    #: Multiplier on the inferred or explicit residual scale. Keeps per-joint relative
+    #: ranges. ``1.0`` is training-time half soft range; ``0.25`` is the oscillation fix.
+    residual_action_scale_mult: float = 0.25
 
     #: Print policy actions vs ``joint_pos_cmd`` vs measured ``joint_pos`` (see ``_debug_print_joint_cmd_vs_actual``).
     debug_joint_cmd_vs_actual: bool = False
@@ -737,6 +740,18 @@ class AIRECEnv(DirectRLEnv):
                 device=self.device,
                 dtype=torch.float32,
             )
+        scale_mult = float(getattr(self.cfg, "residual_action_scale_mult", 1.0))
+        if scale_mult <= 0.0:
+            raise ValueError(f"residual_action_scale_mult must be > 0, got {scale_mult}")
+        if scale_mult != 1.0:
+            self._body_residual_scale = self._body_residual_scale * scale_mult
+        actuated_names = [self.robot.joint_names[int(i)] for i in sl]
+        live = [float(x) for x in self._body_residual_scale.detach().cpu().tolist()]
+        print(
+            f"[AIRECEnv] residual scale: source="
+            f"{'cfg.residual_action_scale' if self.cfg.residual_action_scale is not None else 'inferred_half_soft_joint_range'} "
+            f"mult={scale_mult:g} live={dict(zip(actuated_names, live))}"
+        )
         
         self.joint_pos = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)
         self.joint_vel = torch.zeros((self.num_envs, n_actuated_policy), device=self.device)

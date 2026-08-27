@@ -112,6 +112,10 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     deformable_bracelet_geom_north_max_z: bool = True
     deformable_bracelet_geom_east_max_y: bool = True
 
+    #: 0.25× inferred half-range: same checkpoint, physically trackable q_cmd.
+    #: Play with ``--residual-scale-mult 1.0`` to restore the trained mapping.
+    residual_action_scale_mult: float = 0.25
+
     bracelet_desired_insert_depth: float = 0.0
     bracelet_inside_opening_std: float = 0.15
     #: ``soft`` = mean(sigmoid(m_i / k)); ``hard`` = mean(1[m_i > 0]). Reward uses ``fingers_inside_soft_gate``.

@@ -101,6 +101,16 @@ def add_play_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
         help="Print joint debug every N control steps (default: env cfg).",
     )
     parser.add_argument(
+        "--residual-scale-mult",
+        type=float,
+        default=None,
+        help=(
+            "Multiply residual action scale: q = q_ref + a * s * mult. "
+            "Default: env cfg (0.25 on AIREC_Reach_Deformable_Bracelet). "
+            "Use 1.0 to restore the training-time inferred half-range."
+        ),
+    )
+    parser.add_argument(
         "--record-joint-tracking",
         nargs="?",
         const="joint_tracking_plots",
@@ -433,6 +443,13 @@ def print_runtime_diagnostics(env, env_cfg, checkpoint_path: str) -> None:
     print(f"Damping: {_selected(damping)}")
     print(f"Torque limits: {_selected(effort_limits)}")
     print(f"Velocity limits: {_selected(velocity_limits)}")
+    scale_mult = float(getattr(env_cfg, "residual_action_scale_mult", 1.0))
+    live_scale = getattr(raw, "_body_residual_scale", None)
+    print(f"Residual action scale mult: {scale_mult:g}")
+    print(
+        "Residual action scale live: "
+        f"{live_scale.detach().cpu().tolist() if live_scale is not None else 'unavailable'}"
+    )
     print(f"Scene articulations: {articulation_keys}")
     print(f"Scene rigid objects: {rigid_keys}")
     print(f"Scene deformable objects: {deformable_keys}")
