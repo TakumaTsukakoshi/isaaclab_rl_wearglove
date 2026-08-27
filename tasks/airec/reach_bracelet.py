@@ -109,7 +109,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
     #: Soft in-opening gate ``exp(-max(0, radial^2-1)/std)``; larger = more lenient outside the ellipse.
     bracelet_inside_opening_std: float = 0.15
     #: ``soft`` = mean(sigmoid(m_i / k)); ``hard`` = mean(1[m_i > 0]). Reward uses ``fingers_inside_soft_gate``.
-    insertion_gate_mode: str = "hard"
+    insertion_gate_mode: str = "soft"
     #: Temperature ``k`` in ``g_i = sigmoid(m_i / k)`` for soft per-finger insertion gates (m = margin to opening rims).
     insertion_gate_temperature: float = 0.01
     #: Normalized opening ellipse in Y-Z: inside when ``ellipse_value <= eval_opening_ellipse_threshold``.
@@ -1317,15 +1317,15 @@ class ReachBraceletEnv(AIRECEnv):
             device=self.device,
             dtype=default_state.dtype,
         )
-
+        pos_scale = 0.05
         pos_noise[:, 0] = sample_uniform(
-            -0.05, 0.05, (num_envs,), device=self.device
+            -pos_scale, pos_scale, (num_envs,), device=self.device
         )   
         pos_noise[:, 1] = sample_uniform(
-            -0.05, 0.05, (num_envs,), device=self.device
+            -pos_scale, pos_scale, (num_envs,), device=self.device
         )
         pos_noise[:, 2] = sample_uniform(
-            -0.05, 0.05, (num_envs,), device=self.device
+            -pos_scale, pos_scale, (num_envs,), device=self.device
         )
 
         # 各環境のdefault位置を使用
@@ -1344,18 +1344,19 @@ class ReachBraceletEnv(AIRECEnv):
         # 各環境のdefault orientation
         init_rot = default_state[:, 3:7].clone()
 
-        # yaw: ±10 degrees
+        # yaw: ±angle_range degrees
+        angle_range = 10.0
         yaw_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -10.0,
+                    -angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    10.0,
+                    angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1364,18 +1365,18 @@ class ReachBraceletEnv(AIRECEnv):
             device=self.device,
         )
 
-        # pitch: ±5 degrees
+        # pitch: ±angle_range degrees
         pitch_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -10.0,
+                    -angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    10.0,
+                    angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1387,14 +1388,14 @@ class ReachBraceletEnv(AIRECEnv):
         roll_rad = sample_uniform(
             torch.deg2rad(
                 torch.tensor(
-                    -10.0,
+                    -angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
             ),
             torch.deg2rad(
                 torch.tensor(
-                    10.0,
+                    angle_range,
                     device=self.device,
                     dtype=default_state.dtype,
                 )
@@ -1403,7 +1404,7 @@ class ReachBraceletEnv(AIRECEnv):
             device=self.device,
         )
 
-        # roll_rad = torch.zeros_like(yaw_rad)
+        roll_rad = torch.zeros_like(yaw_rad)
         # pitch_rad = torch.zeros_like(yaw_rad)
         # yaw_rad = torch.zeros_like(yaw_rad)
 
