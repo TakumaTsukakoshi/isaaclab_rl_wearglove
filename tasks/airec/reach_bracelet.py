@@ -179,7 +179,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
             usd_path=object_usd,
             copy_from_source=True,
             visible=True,
-            scale=(1.0, 1.0, 1.0),
+            scale=(1.25, 1.25, 1.25),
             # scale=(1.0, 1.5, 1.4),
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
