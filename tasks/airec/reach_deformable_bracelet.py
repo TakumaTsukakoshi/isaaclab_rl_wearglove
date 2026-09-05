@@ -1474,7 +1474,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             device=self.device,
         )
 
-        roll_rad = torch.zeros_like(yaw_rad)
+        # roll_rad = torch.zeros_like(yaw_rad)
         # pitch_rad = torch.zeros_like(yaw_rad)
         # yaw_rad = torch.zeros_like(yaw_rad)
 
