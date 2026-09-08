@@ -144,6 +144,29 @@ def add_play_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
         help="Optional: plot only the first N actuated joints (less clutter).",
     )
     parser.add_argument(
+        "--record-policy-observations",
+        nargs="?",
+        const="policy_observations",
+        default=None,
+        help=(
+            "Save per-step policy-input gt/prop for deploy comparison. "
+            "Optional DIR (default: <eval_dir>/policy_observations). "
+            "Writes episode_XXXXXX/{data.npz,schema.json,metadata.json}."
+        ),
+    )
+    parser.add_argument(
+        "--policy-obs-env-id",
+        type=int,
+        default=0,
+        help="Env index for --record-policy-observations (default: 0; use with --num_envs 1).",
+    )
+    parser.add_argument(
+        "--policy-obs-max-episodes",
+        type=int,
+        default=None,
+        help="Stop observation logging after this many episodes (default: no extra cap).",
+    )
+    parser.add_argument(
         "--record-finger-insertion-gate",
         nargs="?",
         const="finger_insertion_gate_records",
@@ -357,6 +380,7 @@ class PlaybackResult:
     joint_tracking_plot_paths: dict[str, str] = field(default_factory=dict)
     finger_gate_dir: str | None = None
     joint_track_dir: str | None = None
+    policy_obs_dir: str | None = None
 
 
 def _resolve_default_record_dir(record_arg: str | None, default_name: str, evaluation_dir: Path) -> str | None:
@@ -620,6 +644,7 @@ def run_playback_loop(
         save_all_joint_tracking_csv,
     )
     from play_output_utils import control_dt_from_env_cfg
+    from policy_obs_logger import PolicyObsRecorder
 
     args_cli = session.args_cli
     env = session.env
@@ -674,6 +699,39 @@ def run_playback_loop(
         print(
             f"[{log_prefix}] recording joint tracking (q_policy / q_cmd / q_act + torque): "
             f"env_id={joint_track_env_id} -> {joint_track_dir}"
+        )
+
+    policy_obs_dir = _resolve_default_record_dir(
+        getattr(args_cli, "record_policy_observations", None),
+        "policy_observations",
+        session.output_paths.evaluation_dir,
+    )
+    policy_obs_recorder: PolicyObsRecorder | None = None
+    if policy_obs_dir:
+        policy_obs_dir = os.path.abspath(policy_obs_dir)
+        physics_dt = float(getattr(env_cfg, "physics_dt", getattr(getattr(env_cfg, "sim", None), "dt", 0.002)))
+        policy_obs_recorder = PolicyObsRecorder(
+            env,
+            Path(policy_obs_dir),
+            env_id=int(getattr(args_cli, "policy_obs_env_id", 0)),
+            control_dt=joint_track_control_dt,
+            physics_dt=physics_dt,
+            metadata_base={
+                "task": getattr(args_cli, "task", None),
+                "checkpoint": session.resume_path,
+                "scene_mode": str(getattr(env_cfg, "scene_mode", "full")),
+                "policy": {
+                    "play_mode": "deterministic mean (GaussianPolicy.act(z, deterministic=True))",
+                    "encoder_method": (session.agent_cfg.get("encoder") or {}).get("method"),
+                    "encoder_state_preprocessor": (session.agent_cfg.get("encoder") or {}).get("state_preprocessor"),
+                    "obs_list": list(getattr(env_cfg, "obs_list", [])),
+                },
+            },
+            max_episodes=getattr(args_cli, "policy_obs_max_episodes", None),
+        )
+        print(
+            f"[{log_prefix}] recording policy observations (gt/prop before encoder): "
+            f"env_id={policy_obs_recorder.env_id} -> {policy_obs_dir}"
         )
 
     def _finalize_finger_gate_episode(*, terminated: bool, truncated: bool) -> None:
@@ -739,6 +797,8 @@ def run_playback_loop(
 
     while simulation_app.is_running():
         with torch.inference_mode():
+            if policy_obs_recorder is not None:
+                policy_obs_recorder.record(states, global_step=timestep)
             z = encoder(states)
             actions, _, _ = agent.policy.act(z, deterministic=True)
             states, rewards, terminated, truncated, infos = env.step(actions)
@@ -767,6 +827,17 @@ def run_playback_loop(
                         terminated=bool(terminated[eid].item()),
                         truncated=bool(truncated[eid].item()),
                     )
+
+            if policy_obs_recorder is not None:
+                oid = policy_obs_recorder.env_id
+                done_o = bool(terminated[oid].item()) or bool(truncated[oid].item())
+                if done_o:
+                    dest = policy_obs_recorder.finalize(
+                        terminated=bool(terminated[oid].item()),
+                        truncated=bool(truncated[oid].item()),
+                    )
+                    if dest is not None:
+                        print(f"[{log_prefix}] policy observations -> {dest}")
 
             if joint_track_current is not None and len(joint_track_traces) < joint_track_episode_cap:
                 eid = joint_track_env_id
@@ -836,6 +907,10 @@ def run_playback_loop(
                     _finalize_finger_gate_episode(terminated=False, truncated=True)
                 if joint_track_current is not None and len(joint_track_traces) < joint_track_episode_cap:
                     _finalize_joint_track_episode(terminated=False, truncated=True)
+                if policy_obs_recorder is not None:
+                    dest = policy_obs_recorder.finalize(terminated=False, truncated=True)
+                    if dest is not None:
+                        print(f"[{log_prefix}] policy observations -> {dest}")
                 if on_periodic_hard_reset is not None:
                     on_periodic_hard_reset()
                 states, infos = env.reset(hard=True)
@@ -863,6 +938,10 @@ def run_playback_loop(
 
     if joint_track_current is not None and joint_track_current.steps and len(joint_track_traces) < joint_track_episode_cap:
         _finalize_joint_track_episode(terminated=False, truncated=False)
+    if policy_obs_recorder is not None and policy_obs_recorder.current.gt:
+        dest = policy_obs_recorder.finalize(terminated=False, truncated=False)
+        if dest is not None:
+            print(f"[{log_prefix}] policy observations -> {dest}")
     if joint_track_dir and joint_track_traces:
         combined = os.path.join(joint_track_dir, "all_episodes_joint_tracking.csv")
         save_all_joint_tracking_csv(joint_track_traces, combined)
@@ -879,6 +958,7 @@ def run_playback_loop(
         joint_tracking_plot_paths=joint_tracking_plot_paths,
         finger_gate_dir=finger_gate_dir,
         joint_track_dir=joint_track_dir,
+        policy_obs_dir=policy_obs_dir,
     )
 
 
@@ -909,6 +989,8 @@ def finalize_play_session(session: PlaySession, playback: PlaybackResult | None 
         metadata["output"]["episode_metrics_csv"] = str(eval_csv)
     if eval_json.is_file():
         metadata["output"]["evaluation_summary_json"] = str(eval_json)
+    if playback is not None and playback.policy_obs_dir:
+        metadata["output"]["policy_observations_dir"] = playback.policy_obs_dir
     write_metadata_json(metadata, session.output_paths.metadata_file)
     print(f"[{session.log_prefix}] saved metadata -> {session.output_paths.metadata_file}")
     session.env.close()
