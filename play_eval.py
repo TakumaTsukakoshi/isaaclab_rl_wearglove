@@ -7,7 +7,7 @@
 
 Finger *passage* is a per-finger crossing state machine. Other fingers use
 the knuckle COM; eval thumb latches ``thdistal``, ``thmiddle``, and
-``thproximal`` independently (any order; reverse POST→PRE clears; ``thbase``
+``thproximal`` in order (reverse clears that station and later ones; ``thbase``
 is diagnostic only). See ``bracelet_eval.py``.
 Task success remains motion-lock: wrist-within-goal AND latched all-five.
 

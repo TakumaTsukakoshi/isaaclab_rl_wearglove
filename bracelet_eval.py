@@ -1,6 +1,7 @@
 """Bracelet-task evaluation: motion-lock success, finger insertion, joint deviation.
 
-Insertion is a per-finger crossing state machine, not a final-frame or last-window
+Insertion is a per-finger crossing state machine. Episode passage is that
+latch at the last recorded step, not an ever-OR and not a live
 point-in-opening test.
 
 Geometry (env-local, same live buffers as ``reach_*_bracelet``):
@@ -26,10 +27,11 @@ Evaluation has three layers that must not share the word "success":
      ``wrist_within_goal`` at the same motion-lock step. Same rule as
      training. Printed as ``Task success``.
   2. **Finger passage** (geometric diagnostic): canonical ``finger_passed``
-     vector. Thumb = independent PRE→POST through the opening at
-     ``thdistal``, ``thmiddle``, and ``thproximal`` (any order; a confirmed
-     reverse POST→PRE clears that landmark). ``thbase`` is diagnostic only.
-     Other fingers knuckle-only. ``all_five_passage`` is not task success.
+     vector at the **last recorded step** (not ever-OR). Thumb = ordered
+     PRE→POST ``thdistal → thmiddle → thproximal``. A reverse POST→PRE
+     clears that landmark and every later one; earlier stations stay True
+     if they did not reverse. ``thbase`` is diagnostic only. Other fingers
+     knuckle-only. ``all_five_passage`` is not task success.
   3. **Physical / snag diagnostics**: joint deviation, wrist shortfall,
      thumb timing. Outcome C is "possible incomplete advancement", not
      an automatic snag label.
@@ -94,10 +96,10 @@ DISTAL_BODY_CANDIDATES: dict[str, tuple[str, ...]] = {
     "little": ("robot0_lfdistal", "robot0_lfmiddle", "robot0_lfproximal"),
 }
 
-# Eval-only thumb landmarks, tip → base. Passage requires the first 3 each to
-# complete an independent PRE→POST through the opening (any order). A confirmed
-# reverse POST→PRE clears that landmark so a later re-entry can count again.
-# thbase is diagnostic only.
+# Eval-only thumb landmarks, tip → base. Passage requires the first 3 to
+# complete PRE→POST through the opening in order. A confirmed reverse
+# POST→PRE clears that landmark and later ones; earlier stay True if they
+# did not reverse. thbase is diagnostic only.
 THUMB_SWEEP_BODY_CANDIDATES: tuple[tuple[str, ...], ...] = (
     ("robot0_thdistal",),
     ("robot0_thmiddle",),
@@ -340,6 +342,14 @@ def inserted_finger_histogram(values: list[int] | list[float], n_fingers: int = 
     }
 
 
+def last_passage_flags(rows: list[list[bool]], n_fingers: int = 5) -> list[bool]:
+    """Latch vector at the last recorded step. Empty history is all False."""
+    if not rows:
+        return [False] * n_fingers
+    last = rows[-1]
+    return [bool(last[i]) if i < len(last) else False for i in range(n_fingers)]
+
+
 def combine_eval_passage_flags(
     base_flags: list[bool],
     distal_flags: list[bool] | None,
@@ -347,7 +357,7 @@ def combine_eval_passage_flags(
     thumb_passed: bool | None = None,
     dual_fingers: tuple[str, ...] = EVAL_DUAL_LANDMARK_FINGERS,
 ) -> list[bool]:
-    """Eval passage. Thumb uses ``thumb_passed`` (independent landmark crossings) when given.
+    """Eval passage. Thumb uses ``thumb_passed`` (ordered tip→proximal crossings) when given.
 
     Fallback without a sweep result: listed dual-landmark fingers need base
     AND distal latch. Other fingers stay base-only.
@@ -368,8 +378,9 @@ def combine_eval_passage_flags(
 class EpisodePassageResult:
     """Canonical episode-level finger passage. All passage tables derive from this.
 
-    ``task_success`` is official motion-lock success and is allowed to differ
-    from ``all_five_passage`` and ``all5_passage_wrist_complete``.
+    ``passed`` is the last-step latch, not an ever-OR. ``task_success`` is
+    official motion-lock success and is allowed to differ from
+    ``all_five_passage`` and ``all5_passage_wrist_complete``.
     """
 
     passed: dict[str, bool]
@@ -467,6 +478,15 @@ def thumb_sweep_timing(passage_events: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _episode_env_ref(ep: Any) -> dict[str, int]:
+    episode = _ep_get(ep, "episode", None)
+    env_id = _ep_get(ep, "env_id", None)
+    return {
+        "episode": int(episode) if episode is not None else -1,
+        "env_id": int(env_id) if env_id is not None else -1,
+    }
+
+
 def compute_task_success_vs_passage(episodes: list[Any]) -> dict[str, Any]:
     """2x2 of official task success vs strict all-five passage."""
     no_no = no_yes = yes_no = yes_yes = 0
@@ -474,6 +494,10 @@ def compute_task_success_vs_passage(episodes: list[Any]) -> dict[str, Any]:
     fail_thumb = fail_all5 = 0
     n_success = 0
     n_fail = 0
+    yes_no_envs: list[dict[str, int]] = []
+    yes_yes_envs: list[dict[str, int]] = []
+    no_yes_envs: list[dict[str, int]] = []
+    task_success_envs: list[dict[str, int]] = []
     for ep in episodes:
         task = bool(_ep_get(ep, "task_success", _ep_get(ep, "legacy_success", False)))
         all5 = bool(
@@ -483,24 +507,29 @@ def compute_task_success_vs_passage(episodes: list[Any]) -> dict[str, Any]:
         )
         thumb = _ep_get(ep, "thumb_passed", None)
         if thumb is None:
-            passed = _ep_get(ep, "ever_passed", None) or _ep_get(ep, "inserted", None) or {}
+            passed = _ep_get(ep, "inserted", None) or _ep_get(ep, "ever_passed", None) or {}
             if isinstance(passed, dict):
                 thumb = bool(passed.get("thumb"))
             else:
                 thumb = False
         thumb = bool(thumb)
+        ref = _episode_env_ref(ep)
         if task and all5:
             yes_yes += 1
+            yes_yes_envs.append(ref)
         elif task and not all5:
             yes_no += 1
+            yes_no_envs.append(ref)
         elif (not task) and all5:
             no_yes += 1
+            no_yes_envs.append(ref)
         else:
             no_no += 1
         if task:
             n_success += 1
             ts_thumb += int(thumb)
             ts_all5 += int(all5)
+            task_success_envs.append(ref)
         else:
             n_fail += 1
             fail_thumb += int(thumb)
@@ -510,10 +539,15 @@ def compute_task_success_vs_passage(episodes: list[Any]) -> dict[str, Any]:
         "task_no_all5_yes": no_yes,
         "task_yes_all5_no": yes_no,
         "task_yes_all5_yes": yes_yes,
+        "task_yes_all5_no_envs": yes_no_envs,
+        "task_yes_all5_yes_envs": yes_yes_envs,
+        "task_no_all5_yes_envs": no_yes_envs,
+        "task_success_envs": task_success_envs,
         "among_task_success": {
             "n": n_success,
             "thumb_passed": ts_thumb,
             "all_five_passage": ts_all5,
+            "envs": task_success_envs,
         },
         "among_task_failure": {
             "n": n_fail,
@@ -859,6 +893,36 @@ def thumb_station_occupied(
     return occupied[0] if squeeze else occupied
 
 
+def thumb_required_stations_inside(
+    nodes: torch.Tensor,
+    center: torch.Tensor,
+    radius_y: torch.Tensor,
+    radius_z: torch.Tensor,
+    *,
+    n_required: int = THUMB_SWEEP_REQUIRED_STATIONS,
+    hole_half_width: float = THUMB_SWEEP_HOLE_HALF_WIDTH_M,
+    ellipse_threshold: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-station opening occupancy and strict thumb-inside flag.
+
+    A station is inside only while its COM (or the adjacent segment) sits in
+    the opening slab: ``|d| <= hole`` and ``e <= threshold``. Thumb LIVE is
+    true only when every required tip→proximal station is inside at once
+    (cannot skip). This is a current-state test, not the crossing latch.
+    """
+    occ = thumb_station_occupied(
+        nodes,
+        center,
+        radius_y,
+        radius_z,
+        hole_half_width=hole_half_width,
+        ellipse_threshold=ellipse_threshold,
+    )
+    n_req = max(1, min(int(n_required), int(occ.shape[-1])))
+    inside = occ[..., :n_req].all(dim=-1)
+    return occ, inside
+
+
 def apply_opening_crossing_latch(
     points: torch.Tensor,
     center: torch.Tensor,
@@ -985,14 +1049,28 @@ def apply_opening_crossing_latch(
     }
 
 
-class ThumbOpeningSweepTracker:
-    """Eval-only: required thumb landmarks latch independently through the opening.
+def merge_ordered_thumb_inserted(was: torch.Tensor, now: torch.Tensor) -> torch.Tensor:
+    """Order-preserving thumb latches: keep earlier, drop the reversed point and after.
 
-    Default required stations are ``thdistal``, ``thmiddle``, ``thproximal``.
-    Extra stations (usually ``thbase``) stay diagnostic. Each station uses the
-    same PRE→POST / POST→PRE ellipse-crossing latch as the fingers. Order is
-    not required; reverse unlatches that station so a later re-entry can count.
-    ``passed`` is true only while all required stations are currently latched.
+    ``was`` / ``now`` are ``(N, K)``. ``was`` is unused; ``now`` already has
+    per-station reverse applied. A False station clears every later station
+    (cannot skip, and an exit invalidates points after it). Stations before
+    that False stay as in ``now`` (True unless they also reversed).
+    """
+    del was
+    return torch.cumprod(now.to(dtype=torch.int32), dim=1).to(dtype=torch.bool)
+
+
+class ThumbOpeningSweepTracker:
+    """Eval-only: required thumb landmarks must first cross tip→base in order.
+
+    Default required stations are ``thdistal → thmiddle → thproximal``. Extra
+    stations (usually ``thbase``) stay diagnostic. Each station uses the same
+    PRE→POST / POST→PRE ellipse-crossing latch as the fingers. A new latch is
+    accepted only when every earlier station is already True. Reverse unlatches
+    that station and every later one; earlier stations stay True if they did
+    not reverse. Passage resumes from the exited station. ``passed`` is true
+    only while all required stations are currently latched.
     """
 
     def __init__(
@@ -1070,7 +1148,7 @@ class ThumbOpeningSweepTracker:
         radius_z: torch.Tensor,
         active: torch.Tensor,
     ) -> torch.Tensor:
-        """Advance independent landmark crossings. ``nodes`` is ``(N, K, 3)`` tip→base."""
+        """Advance ordered tip→base crossings. ``nodes`` is ``(N, K, 3)`` tip→base."""
         active = active.to(device=self.device, dtype=torch.bool)
         occupied = thumb_station_occupied(
             nodes,
@@ -1103,22 +1181,34 @@ class ThumbOpeningSweepTracker:
             first_insert_step=self.visit_step,
             step_count=self.step_count,
         )
-        self.inserted = latch["inserted"]
+        raw_inserted = latch["inserted"]
+        ordered = merge_ordered_thumb_inserted(self.inserted, raw_inserted)
+        rejected = raw_inserted & (~ordered)
+        visit = latch["first_insert_step"]
+        visit = torch.where(ordered, visit, torch.full_like(visit, -1))
+        self.inserted = torch.where(active.unsqueeze(1), ordered, self.inserted)
         self.last_clear_side = latch["last_clear_side"]
         self.last_clear_pos = latch["last_clear_pos"]
         self.last_clear_center = latch["last_clear_center"]
         self.last_clear_radius_y = latch["last_clear_radius_y"]
         self.last_clear_radius_z = latch["last_clear_radius_z"]
         self.has_clear = latch["has_clear"]
-        self.fwd_pending = latch["fwd_pending"]
-        self.rev_pending = latch["rev_pending"]
-        self.fwd_count = latch["fwd_count"]
-        self.rev_count = latch["rev_count"]
-        self.visit_step = latch["first_insert_step"]
+        self.fwd_pending = latch["fwd_pending"] & (~rejected)
+        self.rev_pending = latch["rev_pending"] & ordered
+        self.fwd_count = torch.where(rejected, torch.zeros_like(latch["fwd_count"]), latch["fwd_count"])
+        self.rev_count = torch.where(ordered, latch["rev_count"], torch.zeros_like(latch["rev_count"]))
+        self.visit_step = torch.where(active.unsqueeze(1), visit, self.visit_step)
         self.step_count = latch["step_count"]
-        n_latched = self.inserted.to(dtype=self.next_idx.dtype).sum(dim=1)
+        missing = ~self.inserted
+        first_gap = missing.to(dtype=torch.int64).argmax(dim=1).to(dtype=self.next_idx.dtype)
+        all_on = ~missing.any(dim=1)
+        nxt = torch.where(
+            all_on,
+            torch.full_like(first_gap, self.n_stations),
+            first_gap,
+        )
         required = self.inserted[:, : self.n_required].all(dim=1)
-        self.next_idx = torch.where(active, n_latched, self.next_idx)
+        self.next_idx = torch.where(active, nxt, self.next_idx)
         self.passed = torch.where(active, required, self.passed)
         self.last_occupied = torch.where(active.unsqueeze(1), occupied, self.last_occupied)
         return self.passed
@@ -1597,7 +1687,7 @@ class EpisodeMetrics:
             "max_inserted_fingers": self.max_inserted_fingers,
             "max_passed_fingers": self.max_passed_fingers,
             "num_ever_passed": self.num_ever_passed,
-            "all_five_passed": self.all_five_passage or self.all_five_passed or self.ever_all_inserted,
+            "all_five_passed": self.all_five_passage,
             "all_five_passage": self.all_five_passage,
             "all5_passage_wrist_incomplete": self.all5_passage_wrist_incomplete,
             "all5_passage_wrist_complete": self.all5_passage_wrist_complete,
@@ -1646,8 +1736,8 @@ class EpisodeMetrics:
             "ever_all_inserted_knuckle": self.ever_all_inserted_knuckle,
             "max_passed_knuckle": self.max_passed_knuckle,
             "thumb_eval_requires": (
-                "thdistal, thmiddle, thproximal independent PRE→POST "
-                "(any order; reverse clears; thbase diagnostic)"
+                "thdistal → thmiddle → thproximal ordered PRE→POST "
+                "(reverse clears that station and later ones; earlier stay if they did not reverse); thbase diagnostic)"
             ),
             "hand_rms": self.hand_rms,
             "finger_rms": dict(self.finger_rms),
@@ -1833,7 +1923,7 @@ class BraceletEvalCollector:
             f"confirm={collector.insertion_confirm_frames} frames "
             f"ellipse<={collector.insertion_ellipse_threshold:.3g} "
             f"task_success=legacy_knuckle_all5_and_wrist "
-            f"eval_thumb=thdistal,thmiddle,thproximal independent PRE-POST "
+            f"eval_thumb=thdistal->thmiddle->thproximal ordered PRE-POST "
             f"envs={eval_env_ids}"
             + (
                 f" debug_insertion every {collector.debug_insertion_interval} steps"
@@ -1951,10 +2041,10 @@ class BraceletEvalCollector:
                 "falling back to thbase AND thdistal"
             )
         print(
-            f"[{self.log_prefix}] eval thumb passage is independent PRE→POST "
+            f"[{self.log_prefix}] eval thumb passage is ordered PRE→POST "
             f"{self.thumb_sweep_names[:THUMB_SWEEP_REQUIRED_STATIONS]} "
-            f"(any order, reverse clears; thbase diagnostic only; "
-            f"training latch stays knuckle-only)"
+            f"(reverse clears that station and later ones; earlier stay if they did not reverse); "
+            f"thbase diagnostic only; training latch stays knuckle-only)"
         )
 
     def _ensure_tracker(self, like: torch.Tensor) -> FingerCrossingTracker:
@@ -2393,7 +2483,8 @@ class BraceletEvalCollector:
         self._harvest_episode_video(ep)
         print(
             f"[{self.log_prefix}] episode {ep.episode}: success={int(ep.success)} "
-            f"passed={ep.max_passed_fingers}/5 ever_all={int(ep.ever_all_inserted)} "
+            f"passed={ep.max_passed_fingers}/5 ever={int(ep.num_ever_passed)} "
+            f"ever_all={int(ep.ever_all_inserted)} "
             f"wrist_ok_after_5={int(ep.wrist_success)} success={int(ep.success)} "
             f"mode={ep.failure_mode} lock_step={ep.motion_lock_step} "
             f"done={ep.episode_done_reason} steps={ep.episode_length_steps} env={env_id}"
@@ -2485,8 +2576,10 @@ class BraceletEvalCollector:
 
         if run.passage_state:
             max_n, ever_all, first_t, insert_steps = self._passage_stats_from_rows(run.passage_state)
+            final_flags = last_passage_flags(run.passage_state)
         else:
             max_n, ever_all, first_t, insert_steps = knuckle_max, knuckle_ever, knuckle_first, knuckle_steps
+            final_flags = [bool(inserted_latched[name]) for name in FINGER_ORDER]
         insert_ratio = {
             name: insert_steps[name] / float(max(run.steps, 1)) for name in FINGER_ORDER
         }
@@ -2518,22 +2611,20 @@ class BraceletEvalCollector:
         knuckle_ever = bool(knuckle_ever or knuckle_max >= 5)
         overlap_n = sum(1 for v in live_ok.values() if v)
         passage = make_episode_passage_result(
-            passed=ever_passed,
+            passed=final_flags,
             wrist_ok_ever=run.wrist_ok_ever,
             legacy_all_five=knuckle_ever,
             legacy_success=bool(run.motion_locked),
         )
         max_passed = passage.passed_count
-        ever_all = passage.all_five_passage
-        num_ever_passed = passage.passed_count
+        num_ever_passed = sum(1 for name in FINGER_ORDER if ever_passed[name])
         inserted = dict(passage.passed)
-        ever_passed = dict(passage.passed)
         thumb_t = thumb_sweep_timing(run.passage_events)
         success = passage.task_success
         outcome = classify_insertion_outcome(
-            max_inserted=max_passed,
+            max_inserted=max_n,
             ever_all=ever_all,
-            final_all=final_n_latched == 5,
+            final_all=passage.all_five_passage,
             success=passage.legacy_success,
         )
         flags_at_success = run.inserted_flags_at_success
@@ -2593,9 +2684,9 @@ class BraceletEvalCollector:
             num_inserted_fingers=max_passed,
             final_inserted_fingers=max_passed,
             final_inserted_fingers_latched=final_n_latched,
-            max_inserted_fingers=max_passed,
+            max_inserted_fingers=max_n,
             ever_all_inserted=ever_all,
-            final_all_inserted=ever_all,
+            final_all_inserted=passage.all_five_passage,
             insertion_outcome=outcome,
             finger_rms=finger_rms,
             finger_peak=finger_peak,
@@ -2624,7 +2715,7 @@ class BraceletEvalCollector:
                 _missing_finger_names(first_flags) if first_flags is not None else ""
             ),
             all_five_ever=bool(ever_all),
-            all_five_retained=bool(ever_all),
+            all_five_retained=passage.all_five_passage,
             all_five_retained_latched=final_n_latched == 5,
             wrist_success=wrist_success,
             task_success=task_success,
@@ -2975,7 +3066,7 @@ class BraceletEvalCollector:
                 )
             run.passage_events["thumb_sweep"] = {
                 "finger": "thumb",
-                "landmark_kind": "independent_thumb_landmark_crossing",
+                "landmark_kind": "ordered_thumb_landmark_crossing",
                 "stations": list(self.thumb_sweep_names),
                 "n_required": int(sweep.n_required),
                 "next_idx": int(sweep.next_idx[env_id].item()),
@@ -2994,11 +3085,12 @@ class BraceletEvalCollector:
                     break
             run.passage_events["thumb"] = {
                 "finger": "thumb",
-                "landmark_kind": "independent_thumb_landmark_crossing",
+                "landmark_kind": "ordered_thumb_landmark_crossing",
                 "landmark_body": ", ".join(self.thumb_sweep_names[:THUMB_SWEEP_REQUIRED_STATIONS]),
                 "requires": (
                     "thdistal, thmiddle, thproximal each PRE→POST through the ellipse "
-                    "(any order); reverse POST→PRE clears that landmark; thbase diagnostic"
+                    "(tip→proximal order); reverse POST→PRE clears that landmark and later ones; "
+                    "re-enter in the same order; thbase diagnostic"
                 ),
                 "knuckle": run.knuckle_passage_events.get("thumb"),
                 "distal": run.distal_passage_events.get("thumb"),
@@ -3291,9 +3383,11 @@ class BraceletEvalCollector:
         ever_counts = {
             name: sum(1 for ep in eps if ep.first_insert_time_s[name] is not None) for name in FINGER_ORDER
         }
-        n_passed = [int(ep.max_passed_fingers or ep.max_inserted_fingers) for ep in eps]
+        n_passed = [int(ep.max_passed_fingers) for ep in eps]
+        n_max = [int(ep.max_inserted_fingers) for ep in eps]
         n_overlap = [int(ep.final_geometric_overlap) for ep in eps]
         hist_passed = inserted_finger_histogram(n_passed)
+        hist_max = inserted_finger_histogram(n_max)
         hist_overlap = inserted_finger_histogram(n_overlap)
         hand_rms = [ep.hand_rms for ep in eps]
         outcome_counts = {key: sum(1 for ep in eps if ep.insertion_outcome == key) for key in INSERTION_OUTCOMES}
@@ -3376,7 +3470,7 @@ class BraceletEvalCollector:
             for ep in eps
         ]
         return {
-            "schema_version": 14,
+            "schema_version": 15,
             "task": self.task,
             "checkpoint": self.checkpoint,
             "executed_at": self.executed_at,
@@ -3396,9 +3490,9 @@ class BraceletEvalCollector:
                 ),
                 "legacy_success_definition": "wrist_within_goal AND knuckle all_5 (motion lock / training)",
                 "finger_passage_definition": (
-                    "thumb = thdistal, thmiddle, thproximal independent PRE→POST "
-                    "(any order; reverse clears); other fingers knuckle-only; "
-                    "thbase diagnostic only"
+                    "last-step latch (not ever-OR): thumb = thdistal → thmiddle → thproximal "
+                    "ordered PRE→POST (reverse clears that station and later ones; earlier stay "
+                    "if they did not reverse); other fingers knuckle-only; thbase diagnostic only"
                 ),
                 "all5_passage_wrist_complete_definition": (
                     "all_five_passage AND wrist_ok_ever (geometric completion; not task success)"
@@ -3418,17 +3512,17 @@ class BraceletEvalCollector:
                     if bool(getattr(getattr(self.raw_env, "cfg", None), "eval_success_requires_all_fingers", True))
                     else "wrist_within_goal"
                 ),
-                "insertion_definition": "historical_confirmed_opening_crossing_passage",
+                "insertion_definition": "final_confirmed_opening_crossing_latch",
                 "insertion_latch_definition": "last_clear_pre_to_post_through_live_yz_ellipse",
-                "eval_final_inserted_source": "max_passed_fingers",
+                "eval_final_inserted_source": "last_passage_latch",
                 "insertion_normal": "+x",
                 "insertion_pre_side": "d > +delta (hand / +X of opening)",
                 "insertion_post_side": "d < -delta (through / -X of opening)",
                 "finger_representative_point": "finger_base_com",
                 "finger_base_bodies": dict(self.resolved_base_bodies),
                 "eval_thumb_passage": (
-                    "independent PRE→POST at thdistal/thmiddle/thproximal "
-                    "(any order; reverse clears); thbase diagnostic only"
+                    "ordered PRE→POST thdistal → thmiddle → thproximal "
+                    "(reverse clears that station and later ones; earlier stay if they did not reverse); thbase diagnostic only"
                 ),
                 "eval_thumb_sweep_bodies": list(self.thumb_sweep_names),
                 "eval_thumb_sweep_required_stations": THUMB_SWEEP_REQUIRED_STATIONS,
@@ -3463,6 +3557,7 @@ class BraceletEvalCollector:
                 "success_rate": (task_success_count / n) if n else 0.0,
                 "task_success": task_success_count,
                 "task_success_rate": (task_success_count / n) if n else 0.0,
+                "task_success_envs": list(cross.get("task_success_envs") or []),
                 "headline": "legacy",
                 "definition": "legacy_all_five knuckle AND wrist_within_goal (motion lock)",
                 "legacy_all_five": legacy_all_five_count,
@@ -3486,15 +3581,15 @@ class BraceletEvalCollector:
             },
             "finger_passage": {
                 "definition": (
-                    "thumb = thdistal, thmiddle, thproximal independent PRE→POST "
-                    "(any order; reverse clears); other fingers knuckle-only; "
-                    "thbase diagnostic only"
+                    "last-step latch (not ever-OR): thumb = thdistal → thmiddle → thproximal "
+                    "ordered PRE→POST (reverse clears that station and later ones; earlier stay "
+                    "if they did not reverse); other fingers knuckle-only; thbase diagnostic only"
                 ),
                 "thumb_passed": sum(1 for ep in eps if ep.thumb_passed),
-                "index_passed": sum(1 for ep in eps if bool((ep.ever_passed or ep.inserted).get("index"))),
-                "middle_passed": sum(1 for ep in eps if bool((ep.ever_passed or ep.inserted).get("middle"))),
-                "ring_passed": sum(1 for ep in eps if bool((ep.ever_passed or ep.inserted).get("ring"))),
-                "pinky_passed": sum(1 for ep in eps if bool((ep.ever_passed or ep.inserted).get("little"))),
+                "index_passed": sum(1 for ep in eps if bool(ep.inserted.get("index"))),
+                "middle_passed": sum(1 for ep in eps if bool(ep.inserted.get("middle"))),
+                "ring_passed": sum(1 for ep in eps if bool(ep.inserted.get("ring"))),
+                "pinky_passed": sum(1 for ep in eps if bool(ep.inserted.get("little"))),
                 "all_five_passage": all_five_passage_count,
                 "all5_passage_wrist_incomplete": all5_wrist_incomplete_count,
                 "all5_passage_wrist_complete": all5_wrist_complete_count,
@@ -3506,8 +3601,8 @@ class BraceletEvalCollector:
             "insertion": {
                 "mean_max_passed_fingers": (sum(n_passed) / n) if n else 0.0,
                 "std_max_passed_fingers": sample_std(n_passed),
-                "mean_max_inserted_fingers": (sum(n_passed) / n) if n else 0.0,
-                "std_max_inserted_fingers": sample_std(n_passed),
+                "mean_max_inserted_fingers": (sum(n_max) / n) if n else 0.0,
+                "std_max_inserted_fingers": sample_std(n_max),
                 "mean_final_inserted_fingers": (sum(n_passed) / n) if n else 0.0,
                 "std_final_inserted_fingers": sample_std(n_passed),
                 "mean_inserted_fingers": (sum(n_passed) / n) if n else 0.0,
@@ -3521,11 +3616,11 @@ class BraceletEvalCollector:
                 "mean_max_passed_knuckle": (
                     (sum(int(ep.max_passed_knuckle) for ep in eps) / n) if n else 0.0
                 ),
-                "final_all_inserted_count": sum(1 for ep in eps if ep.ever_all_inserted),
-                "final_all_inserted_rate": (sum(1 for ep in eps if ep.ever_all_inserted) / n) if n else 0.0,
+                "final_all_inserted_count": sum(1 for ep in eps if ep.final_all_inserted),
+                "final_all_inserted_rate": (sum(1 for ep in eps if ep.final_all_inserted) / n) if n else 0.0,
                 "histogram_passed": hist_passed,
                 "histogram_final": hist_passed,
-                "histogram_max": hist_passed,
+                "histogram_max": hist_max,
                 "histogram_geometric_overlap": hist_overlap,
                 "mean_final_geometric_overlap": (sum(n_overlap) / n) if n else 0.0,
                 "outcomes": {
@@ -3555,7 +3650,8 @@ class BraceletEvalCollector:
                 ),
                 "incomplete_advancement_count": all5_wrist_incomplete_count,
                 "thumb_passage": (
-                    "thdistal, thmiddle, thproximal each PRE→POST (any order; reverse clears); "
+                    "thdistal → thmiddle → thproximal ordered PRE→POST "
+                    "(reverse clears that station and later ones; earlier stay if they did not reverse); "
                     "thbase diagnostic only; duration = proximal_frame - distal_frame"
                 ),
                 "thumb_passage_duration_frames_among_all_five": [
@@ -3593,9 +3689,9 @@ class BraceletEvalCollector:
             "strict_success": "deprecated alias of all5_passage_wrist_complete; not official task success",
             "outcome_uses": "canonical finger passage + wrist_ok_ever; not official task success",
                 "eval_finger_passage": (
-                "thumb = thdistal, thmiddle, thproximal independent PRE→POST "
-                "(any order; reverse clears); other fingers knuckle-only; "
-                "thbase diagnostic only"
+                "last-step latch (not ever-OR): thumb = thdistal → thmiddle → thproximal "
+                "ordered PRE→POST (reverse clears that station and later ones; earlier stay "
+                "if they did not reverse); other fingers knuckle-only; thbase diagnostic only"
             ),
             "near_band": f"threshold <= best_after_all_five < {WRIST_NEAR_MULT} * threshold",
             "regression_threshold_m": WRIST_REGRESSION_M,
@@ -3701,8 +3797,9 @@ class BraceletEvalCollector:
             "note": (
                 "all_five_passage AND NOT wrist_ok_ever. Passage-outcome C / possible "
                 "incomplete-advancement candidate — not official task success and not an "
-                "automatic snag label. Thumb passage is independent PRE→POST at "
-                "thdistal, thmiddle, thproximal (any order; reverse clears); "
+                "automatic snag label. Thumb passage is ordered PRE→POST "
+                "thdistal → thmiddle → thproximal (reverse clears that station and later ones; "
+                "earlier stay if they did not reverse); "
                 "thbase is diagnostic only."
             ),
             "thumb_landmark": ", ".join(self.thumb_sweep_names) or self.resolved_base_bodies.get("thumb"),
@@ -3732,12 +3829,12 @@ class BraceletEvalCollector:
 
     def _write_legacy_success_thumb_diagnostics(self) -> Path | None:
         legacy = [ep for ep in self.episodes if ep.legacy_success]
-        failed = [ep for ep in legacy if not bool((ep.ever_passed or ep.inserted).get("thumb"))]
+        failed = [ep for ep in legacy if not bool(ep.thumb_passed)]
         path = self.output_dir / "legacy_success_thumb_diagnostics.json"
         payload = {
             "note": (
                 "Official task-success episodes (knuckle 5/5 + wrist) where geometric "
-                "thumb passage (thdistal, thmiddle, thproximal independent PRE→POST) "
+                "thumb passage (thdistal → thmiddle → thproximal ordered PRE→POST) "
                 "did not pass. Diagnostic only; not a second success definition."
             ),
             "legacy_success_count": len(legacy),
@@ -3751,7 +3848,7 @@ class BraceletEvalCollector:
                     "legacy_success": ep.legacy_success,
                     "legacy_all_five": ep.legacy_all_five,
                     "strict_success": ep.strict_success,
-                    "strict_thumb_passed": bool((ep.ever_passed or {}).get("thumb")),
+                    "strict_thumb_passed": bool(ep.thumb_passed),
                     "passed_count": ep.max_passed_fingers,
                     "wrist_ok_ever": ep.wrist_ok_ever,
                     "wrist_distance_final_m": ep.wrist_distance_final_m,
@@ -3776,7 +3873,7 @@ class BraceletEvalCollector:
             "num_episodes": (summary.get("success") or {}).get("num_episodes"),
             "histogram_passed": insertion.get("histogram_passed") or insertion.get("histogram_max"),
             "histogram_geometric_overlap": insertion.get("histogram_geometric_overlap"),
-            "eval_final_inserted_source": "max_passed_fingers",
+            "eval_final_inserted_source": "last_passage_latch",
         }
         self.histogram_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
@@ -3833,6 +3930,18 @@ def _fmt_frame(value: Any) -> str:
     return str(int(value))
 
 
+def _fmt_env_refs(items: list[Any] | None) -> str:
+    if not items:
+        return "(none)"
+    parts = []
+    for it in items:
+        if isinstance(it, dict):
+            parts.append(f"env={it.get('env_id')} (ep {it.get('episode')})")
+        else:
+            parts.append(str(it))
+    return ", ".join(parts)
+
+
 def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None = None) -> None:
     cfg = summary.get("config") or {}
     success = summary.get("success") or {}
@@ -3884,13 +3993,18 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
         f"{int(success.get('wrist_ok_ever') or legacy.get('wrist_ok_ever') or 0)} / {n}"
     )
     print(f"Task success              : {n_ok} / {n}   {rate:.1f} %")
+    print(
+        f"  envs                    : "
+        f"{_fmt_env_refs(success.get('task_success_envs') or cross.get('task_success_envs'))}"
+    )
     print("")
     print("-" * 60)
     print("Finger Passage")
     print("-" * 60)
     print(
-        "Thumb: thdistal, thmiddle, thproximal independent PRE→POST "
-        "(any order; reverse clears; thbase diagnostic only)"
+        "Last-step latch (not ever-OR). Thumb: thdistal → thmiddle → thproximal "
+        "ordered PRE→POST (reverse clears that station and later ones; earlier stay "
+        "if they did not reverse; thbase diagnostic only)"
     )
     print("Other fingers: knuckle crossing")
     for name in FINGER_ORDER:
@@ -3898,20 +4012,18 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
         count = passage.get(key)
         if count is None:
             block = fingers_ins.get(name) or {}
-            count = int(block.get("ever_count") or 0)
+            count = int(block.get("final_count") if block.get("final_count") is not None else block.get("ever_count") or 0)
         print(
             f"{FINGER_LABELS.get(name, name.capitalize())} passed              : "
             f"{int(count)} / {n}"
         )
-    mean_p = float(passage.get("mean_max_passed_fingers") or insertion.get("mean_max_passed_fingers") or 0.0)
-    std_p = float(passage.get("std_max_passed_fingers") or insertion.get("std_max_passed_fingers") or 0.0)
-    print(f"Mean max passed fingers   : {mean_p:.2f} ± {std_p:.2f} / 5")
-    all5 = int(
-        passage.get("all_five_passage")
-        or (success.get("strict") or {}).get("all_five_passage")
-        or insertion.get("ever_all_inserted_count")
-        or 0
-    )
+    mean_p = float(passage.get("mean_max_passed_fingers") or insertion.get("mean_final_inserted_fingers") or 0.0)
+    std_p = float(passage.get("std_max_passed_fingers") or insertion.get("std_final_inserted_fingers") or 0.0)
+    print(f"Mean passed fingers       : {mean_p:.2f} ± {std_p:.2f} / 5")
+    all5_raw = passage.get("all_five_passage")
+    if all5_raw is None:
+        all5_raw = (success.get("strict") or {}).get("all_five_passage")
+    all5 = int(all5_raw or 0)
     print(f"All-five passage          : {all5} / {n}")
     hist = passage.get("histogram") or insertion.get("histogram_passed") or {}
     counts = hist.get("counts")
@@ -3964,6 +4076,8 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
         f"task success = yes     {int(cross.get('task_yes_all5_no') or 0):6d}         "
         f"{int(cross.get('task_yes_all5_yes') or 0):6d}"
     )
+    print(f"  yes / not all-five envs : {_fmt_env_refs(cross.get('task_yes_all5_no_envs'))}")
+    print(f"  yes / all-five envs     : {_fmt_env_refs(cross.get('task_yes_all5_yes_envs'))}")
     n_ts = int(among_ok.get("n") or 0)
     n_tf = int(among_fail.get("n") or 0)
     print("")

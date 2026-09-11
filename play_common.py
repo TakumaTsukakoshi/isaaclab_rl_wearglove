@@ -55,6 +55,34 @@ def add_play_common_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
         ),
     )
     parser.add_argument(
+        "--show-knuckle-markers",
+        action="store_true",
+        help=(
+            "Show spheres on the eval knuckle COMs (thumb thbase, index/middle/ring/little *knuckle). "
+            "Color is insertion state: red=PRE, yellow=BAND, blue=POST, green=LIVE. "
+            "Other fingers LIVE = knuckle+distal POST inside the ellipse. Thumb LIVE "
+            "only when thdistal+thmiddle+thproximal all sit in the opening slab. "
+            "Also draws smaller Td/Tm/Tp station spheres. Prints T/I/M/R/P and "
+            "thumb-station PRE/POST/IN. Requires GUI (do not use --headless). "
+            "Limit to one clone with --knuckle-marker-env-id."
+        ),
+    )
+    parser.add_argument(
+        "--knuckle-marker-env-id",
+        type=int,
+        default=None,
+        help="With --show-knuckle-markers, draw only this env (e.g. 4). Default: all parallel envs.",
+    )
+    parser.add_argument(
+        "--knuckle-status-interval",
+        type=int,
+        default=None,
+        help=(
+            "With --show-knuckle-markers: print PRE/POST/LIVE/LATCH every N control steps "
+            "(and on any state change). Default: 5. 1 = every step. 0 = change-only."
+        ),
+    )
+    parser.add_argument(
         "--show-com-marker",
         action="store_true",
         help="Show a large sphere at the robot full-body CoM. Requires a GUI viewport (do not use --headless).",
@@ -877,14 +905,10 @@ def run_playback_loop(
         joint_track_dir = os.path.abspath(joint_track_dir)
         os.makedirs(joint_track_dir, exist_ok=True)
         joint_track_current = JointTrackingEpisodeTrace(episode_index=0, env_id=joint_track_env_id)
-        if not getattr(env_cfg, "debug_joint_cmd_vs_actual", False):
-            env_cfg.debug_joint_cmd_vs_actual = True
-            unwrapped = getattr(env, "unwrapped", env)
-            if hasattr(unwrapped, "cfg"):
-                unwrapped.cfg.debug_joint_cmd_vs_actual = True
         print(
             f"[{log_prefix}] recording joint tracking (q_policy / q_cmd / q_act + torque): "
-            f"env_id={joint_track_env_id} -> {joint_track_dir}"
+            f"env_id={joint_track_env_id} -> {joint_track_dir} "
+            "(no stdout joint dump; use --debug-joints to print actions)"
         )
 
     policy_obs_dir = _resolve_default_record_dir(
