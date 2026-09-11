@@ -5,11 +5,17 @@
 
 """Evaluate a trained RL agent: motion-lock success, finger insertion, joint deviation.
 
-Finger insertion is a per-finger crossing state machine using each finger's
-base / knuckle COM (not the fingertip). See ``bracelet_eval.py``.
-Task success remains motion-lock / wrist goal.
+Finger *passage* is a per-finger crossing state machine. Other fingers use
+the knuckle COM; eval thumb latches ``thdistal``, ``thmiddle``, and
+``thproximal`` independently (any order; reverse POST→PRE clears; ``thbase``
+is diagnostic only). See ``bracelet_eval.py``.
+Task success remains motion-lock: wrist-within-goal AND latched all-five.
 
-Single-env debug: ``--num_envs 1 --debug-insertion --show-task-markers``.
+Official Task success is always motion-lock (wrist AND knuckle all-five).
+Finger passage is a separate geometric diagnostic (thumb landmark crossings).
+Passage outcome D is geometric completion, not a second success definition.
+
+Single-env debug: ``--num_envs 1 --debug-insertion --debug-insertion-interval 1``.
 
 Shares playback / CLI / output layout with ``play.py``.
 """
@@ -20,14 +26,15 @@ import sys
 
 from isaaclab.app import AppLauncher
 
-from play_common import add_play_common_args, add_play_eval_args
+from play_common import add_play_common_args, add_play_eval_args, wants_failure_videos
 
 parser = argparse.ArgumentParser(description="Evaluate a checkpoint of an RL agent from skrl.")
 add_play_common_args(parser)
 add_play_eval_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
-if args_cli.video:
+if args_cli.video or wants_failure_videos(args_cli):
+    args_cli.video = True
     args_cli.enable_cameras = True
 sys.argv = [sys.argv[0]] + hydra_args
 app_launcher = AppLauncher(args_cli)

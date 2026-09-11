@@ -275,6 +275,17 @@ def add_play_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         help="If set, only this env_id contributes evaluation episodes. Default: all parallel envs.",
     )
     parser.add_argument(
+        "--success-definition",
+        choices=("legacy", "strict"),
+        default="legacy",
+        help=(
+            "Deprecated. Official Task success is always training motion-lock "
+            "(wrist-within-goal AND knuckle all-five). 'strict' is ignored for "
+            "Task success; geometric completion is reported separately as "
+            "all-five passage + wrist complete. Training is unchanged."
+        ),
+    )
+    parser.add_argument(
         "--complete-dressing-success",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -288,13 +299,26 @@ def add_play_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         "--debug-insertion",
         action="store_true",
         default=False,
-        help="Print per-finger insertion debug (signed distance, ellipse, latch). Best with --num_envs 1.",
+        help=(
+            "Print per-finger insertion debug (signed distance, ellipse, latch vs live knuckle+distal) "
+            "and write insertion_debug/ CSVs. Best with --num_envs 1."
+        ),
     )
     parser.add_argument(
         "--debug-insertion-interval",
         type=int,
         default=10,
         help="With --debug-insertion: print every N control steps (default: 10 = 0.2 s at 50 Hz). 1 = every step.",
+    )
+    parser.add_argument(
+        "--record-insertion-debug",
+        action="store_true",
+        default=False,
+        help=(
+            "Write per-step insertion debug CSV/JSON under <eval_dir>/insertion_debug/ "
+            "(center, radii, knuckle+distal xyz/d/e/side, latch vs live). "
+            "Implied by --debug-insertion."
+        ),
     )
     parser.add_argument(
         "--legacy-dressing-eval",
@@ -328,7 +352,159 @@ def add_play_eval_args(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         default=None,
         help="With --legacy-dressing-eval: insertion-gate sensitivity analysis directory.",
     )
+    parser.add_argument(
+        "--video-failures",
+        type=str,
+        default=None,
+        help=(
+            "Record only selected failure videos (implies --video). Use with --num_envs 1. "
+            "Comma-separated: no_insertion, partial, incomplete_wrist, all_fail. "
+            "snag_suspect is an alias for incomplete_wrist (5/5 passed, wrist not done). "
+            "Each kept episode is one mp4; successes are discarded."
+        ),
+    )
+    parser.add_argument(
+        "--video-env-ids",
+        type=str,
+        default=None,
+        help=(
+            "Keep videos only for these env_id or episode numbers (comma-separated, e.g. 5,20,44). "
+            "With --num_envs 1 the running env_id is 0; prefer --video-failures for that case."
+        ),
+    )
+    parser.add_argument(
+        "--video-shortfall",
+        type=str,
+        default=None,
+        help=(
+            "Further filter incomplete-wrist videos: insufficient, near, before_all_five, regression. "
+            "Comma-separated."
+        ),
+    )
+    parser.add_argument(
+        "--video-max",
+        type=int,
+        default=None,
+        help="Stop after this many kept failure videos (default: no extra cap; --max-episodes still applies).",
+    )
+    parser.add_argument(
+        "--video-from-eval",
+        type=str,
+        default=None,
+        help=(
+            "Path to a previous evaluation_summary.json / failure_modes.json / eval directory. "
+            "Prints those failure env_ids and, if --video-failures is omitted, records the same modes."
+        ),
+    )
     return parser
+
+
+VIDEO_FAILURE_ALIASES = {
+    "no_insertion": "no_insertion",
+    "none": "no_insertion",
+    "partial": "partial_finger_insertion",
+    "partial_finger_insertion": "partial_finger_insertion",
+    "incomplete_wrist": "full_finger_insertion_incomplete_wrist_advancement",
+    "wrist": "full_finger_insertion_incomplete_wrist_advancement",
+    "full_finger_insertion_incomplete_wrist_advancement": (
+        "full_finger_insertion_incomplete_wrist_advancement"
+    ),
+    "success": "full_insertion_and_wrist_success",
+    "full_insertion_and_wrist_success": "full_insertion_and_wrist_success",
+    "all_fail": "all_fail",
+    "failures": "all_fail",
+    "all": "all_fail",
+    "snag": "snag_suspect",
+    "snag_suspect": "snag_suspect",
+}
+
+VIDEO_SHORTFALL_ALIASES = {
+    "insufficient": "insufficient_advancement_toward_wrist",
+    "insufficient_advancement_toward_wrist": "insufficient_advancement_toward_wrist",
+    "near": "reached_near_wrist_threshold_but_did_not_cross",
+    "reached_near_wrist_threshold_but_did_not_cross": "reached_near_wrist_threshold_but_did_not_cross",
+    "before_all_five": "reached_wrist_criterion_before_all_five",
+    "reached_wrist_criterion_before_all_five": "reached_wrist_criterion_before_all_five",
+    "regression": "regression_after_full_finger_insertion",
+    "regression_after_full_finger_insertion": "regression_after_full_finger_insertion",
+}
+
+
+def _parse_csv_tokens(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [part.strip() for part in str(raw).replace(" ", ",").split(",") if part.strip()]
+
+
+def parse_video_env_ids(raw: str | None) -> set[int]:
+    ids: set[int] = set()
+    for tok in _parse_csv_tokens(raw):
+        ids.add(int(tok))
+    return ids
+
+
+def parse_video_failure_modes(raw: str | None) -> set[str]:
+    modes: set[str] = set()
+    for tok in _parse_csv_tokens(raw):
+        key = tok.lower().replace("-", "_")
+        if key not in VIDEO_FAILURE_ALIASES:
+            known = ", ".join(sorted(VIDEO_FAILURE_ALIASES))
+            raise ValueError(f"Unknown --video-failures value {tok!r}. Expected one of: {known}")
+        modes.add(VIDEO_FAILURE_ALIASES[key])
+    return modes
+
+
+def parse_video_shortfalls(raw: str | None) -> set[str]:
+    tags: set[str] = set()
+    for tok in _parse_csv_tokens(raw):
+        key = tok.lower().replace("-", "_")
+        if key not in VIDEO_SHORTFALL_ALIASES:
+            known = ", ".join(sorted(VIDEO_SHORTFALL_ALIASES))
+            raise ValueError(f"Unknown --video-shortfall value {tok!r}. Expected one of: {known}")
+        tags.add(VIDEO_SHORTFALL_ALIASES[key])
+    return tags
+
+
+def wants_failure_videos(args_cli: Any) -> bool:
+    return bool(
+        getattr(args_cli, "video_failures", None)
+        or getattr(args_cli, "video_env_ids", None)
+        or getattr(args_cli, "video_from_eval", None)
+        or getattr(args_cli, "video_shortfall", None)
+        or getattr(args_cli, "video_max", None)
+    )
+
+
+def load_video_from_eval(path_raw: str | None) -> dict[str, Any] | None:
+    """Read a previous eval JSON and return failure-mode env/episode ids."""
+    if not path_raw:
+        return None
+    path = Path(path_raw)
+    if path.is_dir():
+        for name in ("failure_modes.json", "evaluation_summary.json"):
+            cand = path / name
+            if cand.is_file():
+                path = cand
+                break
+    if not path.is_file():
+        raise FileNotFoundError(f"--video-from-eval not found: {path_raw}")
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    payload = data.get("failure_modes") if isinstance(data.get("failure_modes"), dict) else data
+    episodes = payload.get("episodes") if isinstance(payload, dict) else None
+    if not isinstance(episodes, list):
+        raise ValueError(f"--video-from-eval has no failure-mode episodes: {path}")
+    by_mode: dict[str, list[int]] = {}
+    for rec in episodes:
+        mode = str(rec.get("failure_mode") or "")
+        if mode == "full_insertion_and_wrist_success":
+            continue
+        env_id = rec.get("env_id", rec.get("episode"))
+        if env_id is None:
+            continue
+        by_mode.setdefault(mode, []).append(int(env_id))
+    return {"path": str(path), "by_mode": by_mode, "episodes": episodes}
 
 
 def unwrap_env(env: Any) -> Any:
@@ -519,6 +695,8 @@ def setup_play_session(
     except (ValueError, FileNotFoundError) as err:
         parser.error(str(err))
 
+    if wants_failure_videos(args_cli):
+        args_cli.video = True
     executed_at = execution_timestamp()
     checkpoint_info = parse_checkpoint_path(resume_path)
     output_paths = build_eval_output_paths(
@@ -550,6 +728,14 @@ def setup_play_session(
     agent_cfg["seed"] = args_cli.seed if args_cli.seed is not None else agent_cfg["seed"]
     set_seed(agent_cfg["seed"])
     agent_cfg["log_path"] = LOG_PATH
+    if wants_failure_videos(args_cli):
+        args_cli.video = True
+        n_envs = int(getattr(args_cli, "num_envs", 1) or 1)
+        if n_envs != 1:
+            print(
+                f"[{log_prefix}] WARNING: --video-failures is cheapest with --num_envs 1 "
+                f"(you passed {n_envs}; the camera records the tiled view of every env)."
+            )
     if args_cli.video:
         args_cli.video_dir = str(output_paths.evaluation_dir)
     elif args_cli.video_dir is None:

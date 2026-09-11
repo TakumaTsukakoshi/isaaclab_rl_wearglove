@@ -127,14 +127,30 @@ def make_env(agent_cfg, env_cfg, writer, args_cli, *, video_name_prefix: str | N
     # Wrap for video recording
     if args_cli.video:
         prefix = video_name_prefix if video_name_prefix is not None else "rl-video"
+        per_episode = bool(
+            getattr(args_cli, "video_failures", None)
+            or getattr(args_cli, "video_env_ids", None)
+            or getattr(args_cli, "video_from_eval", None)
+            or getattr(args_cli, "video_shortfall", None)
+        )
         video_kwargs = {
             "video_folder": writer.video_dir,
-            "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "name_prefix": prefix,
             "disable_logger": True,
         }
-        print("[INFO] Recording videos during playback to", writer.video_dir)
+        if per_episode:
+            video_kwargs["episode_trigger"] = lambda episode: True
+            video_kwargs["video_length"] = max(int(args_cli.video_length), 400)
+            print(
+                "[INFO] Recording one video per episode to",
+                writer.video_dir,
+                f"(length>={video_kwargs['video_length']} steps; "
+                "failure filter will keep/discard after each episode)",
+            )
+        else:
+            video_kwargs["step_trigger"] = lambda step: step == 0
+            print("[INFO] Recording videos during playback to", writer.video_dir)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
     # Apply frame stacking if needed
