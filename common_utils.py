@@ -319,6 +319,25 @@ def update_env_cfg(args_cli, env_cfg, agent_cfg):
                 "--show-task-markers requested, but env_cfg has no show_task_markers field"
             )
         env_cfg.show_task_markers = True
+    if bool(getattr(args_cli, "show_knuckle_markers", False)):
+        if not hasattr(env_cfg, "show_knuckle_markers"):
+            raise AttributeError(
+                "--show-knuckle-markers requested, but env_cfg has no show_knuckle_markers field"
+            )
+        env_cfg.show_knuckle_markers = True
+    if getattr(args_cli, "knuckle_marker_env_id", None) is not None:
+        if not hasattr(env_cfg, "knuckle_marker_env_id"):
+            raise AttributeError(
+                "--knuckle-marker-env-id requested, but env_cfg has no knuckle_marker_env_id field"
+            )
+        env_cfg.knuckle_marker_env_id = int(args_cli.knuckle_marker_env_id)
+        env_cfg.show_knuckle_markers = True
+    if getattr(args_cli, "knuckle_status_interval", None) is not None:
+        if not hasattr(env_cfg, "knuckle_status_print_interval"):
+            raise AttributeError(
+                "--knuckle-status-interval requested, but env_cfg has no knuckle_status_print_interval field"
+            )
+        env_cfg.knuckle_status_print_interval = int(args_cli.knuckle_status_interval)
     if bool(getattr(args_cli, "show_com_marker", False)):
         if not hasattr(env_cfg, "show_com_marker"):
             raise AttributeError(

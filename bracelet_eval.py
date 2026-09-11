@@ -325,6 +325,56 @@ def sample_std(values: list[float]) -> float:
     return math.sqrt(max(var, 0.0))
 
 
+def wrist_best_group_stats(episodes: list[Any]) -> dict[str, Any]:
+    """Best wrist distance (m/cm) for task-success vs failure / incomplete placement."""
+
+    def _collect(pred) -> dict[str, Any]:
+        vals: list[float] = []
+        rows: list[dict[str, Any]] = []
+        for ep in episodes:
+            if not pred(ep):
+                continue
+            d = _ep_get(ep, "wrist_distance_best_m")
+            if d is None:
+                continue
+            d = float(d)
+            vals.append(d)
+            rows.append(
+                {
+                    "episode": int(ep_i) if (ep_i := _ep_get(ep, "episode", None)) is not None else -1,
+                    "env_id": int(eid) if (eid := _ep_get(ep, "env_id", None)) is not None else -1,
+                    "wrist_distance_best_m": d,
+                    "wrist_distance_best_cm": d * 100.0,
+                }
+            )
+        rows.sort(key=lambda r: (r["env_id"], r["episode"]))
+        n = len(vals)
+        return {
+            "n": n,
+            "mean_m": (sum(vals) / n) if n else None,
+            "std_m": sample_std(vals) if n else None,
+            "mean_cm": (sum(vals) / n * 100.0) if n else None,
+            "std_cm": (sample_std(vals) * 100.0) if n else None,
+            "episodes": rows,
+        }
+
+    return {
+        "metric": "wrist_distance_best_m = min_t ||goal_wrist_pos - goal_cent_pos||",
+        "successful_dressing": _collect(
+            lambda ep: bool(_ep_get(ep, "task_success", _ep_get(ep, "legacy_success", False)))
+        ),
+        "task_failure": _collect(
+            lambda ep: not bool(_ep_get(ep, "task_success", _ep_get(ep, "legacy_success", False)))
+        ),
+        "incomplete_placement": _collect(
+            lambda ep: bool(
+                _ep_get(ep, "all5_passage_wrist_incomplete", False)
+                or _ep_get(ep, "failure_mode") == FAILURE_MODE_FULL_INCOMPLETE_WRIST
+            )
+        ),
+    }
+
+
 def inserted_finger_histogram(values: list[int] | list[float], n_fingers: int = 5) -> dict[str, Any]:
     """Episode counts for ``k/5`` inserted fingers. Index ``k`` is the bin."""
     counts = [0] * (n_fingers + 1)
@@ -498,6 +548,7 @@ def compute_task_success_vs_passage(episodes: list[Any]) -> dict[str, Any]:
     yes_yes_envs: list[dict[str, int]] = []
     no_yes_envs: list[dict[str, int]] = []
     task_success_envs: list[dict[str, int]] = []
+    yes_no_details: list[dict[str, Any]] = []
     for ep in episodes:
         task = bool(_ep_get(ep, "task_success", _ep_get(ep, "legacy_success", False)))
         all5 = bool(
@@ -520,6 +571,7 @@ def compute_task_success_vs_passage(episodes: list[Any]) -> dict[str, Any]:
         elif task and not all5:
             yes_no += 1
             yes_no_envs.append(ref)
+            yes_no_details.append(describe_task_yes_not_all_five(ep))
         elif (not task) and all5:
             no_yes += 1
             no_yes_envs.append(ref)
@@ -542,6 +594,7 @@ def compute_task_success_vs_passage(episodes: list[Any]) -> dict[str, Any]:
         "task_yes_all5_no_envs": yes_no_envs,
         "task_yes_all5_yes_envs": yes_yes_envs,
         "task_no_all5_yes_envs": no_yes_envs,
+        "task_yes_all5_no_details": yes_no_details,
         "task_success_envs": task_success_envs,
         "among_task_success": {
             "n": n_success,
@@ -589,6 +642,78 @@ def _ep_get(ep: Any, name: str, default: Any = None) -> Any:
     if isinstance(ep, dict):
         return ep.get(name, default)
     return getattr(ep, name, default)
+
+
+def _finger_flag_map(value: Any) -> dict[str, bool]:
+    if isinstance(value, dict):
+        return {name: bool(value.get(name, False)) for name in FINGER_ORDER}
+    if isinstance(value, (list, tuple)):
+        return {
+            name: bool(value[i]) if i < len(value) else False
+            for i, name in enumerate(FINGER_ORDER)
+        }
+    return {name: False for name in FINGER_ORDER}
+
+
+def describe_task_yes_not_all_five(ep: Any) -> dict[str, Any]:
+    """Why a task-success episode is not last-step all-five passage."""
+    last = _finger_flag_map(
+        _ep_get(ep, "inserted") or _ep_get(ep, "passed") or _ep_get(ep, "finger_passed")
+    )
+    ever = _finger_flag_map(_ep_get(ep, "ever_passed") or last)
+    exited = [name for name in FINGER_ORDER if ever[name] and not last[name]]
+    missing = [name for name in FINGER_ORDER if not last[name]]
+    events = _ep_get(ep, "passage_events") or {}
+    sweep = events.get("thumb_sweep") if isinstance(events, dict) else {}
+    sweep = sweep or {}
+    visits = list(sweep.get("visits") or [])
+    inserted_now = list(sweep.get("inserted") or [])
+    stations: list[dict[str, Any]] = []
+    labels = ("thdistal", "thmiddle", "thproximal")
+    for i, lab in enumerate(labels):
+        rec = visits[i] if i < len(visits) else {}
+        vis = rec.get("visit_step")
+        now = bool(inserted_now[i]) if i < len(inserted_now) else bool(rec.get("inserted_now"))
+        if vis is None and not now:
+            status = "never"
+        elif vis is not None and not now:
+            status = "exited"
+        else:
+            status = "latched" if now else "never"
+        stations.append(
+            {
+                "name": rec.get("body") or lab,
+                "visit_step": vis,
+                "inserted_now": now,
+                "status": status,
+            }
+        )
+    n_last = sum(1 for name in FINGER_ORDER if last[name])
+    n_ever = sum(1 for name in FINGER_ORDER if ever[name])
+    note = "entered then left" if exited else "never reached last-step 5/5"
+    return {
+        "episode": int(ep_i) if (ep_i := _ep_get(ep, "episode", None)) is not None else -1,
+        "env_id": int(eid) if (eid := _ep_get(ep, "env_id", None)) is not None else -1,
+        "last_passed": n_last,
+        "ever_passed": n_ever,
+        "last_fingers": last,
+        "ever_fingers": ever,
+        "exited_fingers": exited,
+        "missing_last": missing,
+        "note": note,
+        "thumb_stations": stations,
+        "thumb_next_idx": sweep.get("next_idx"),
+        "thdistal_frame": _ep_get(ep, "thdistal_frame"),
+        "thmiddle_frame": _ep_get(ep, "thmiddle_frame"),
+        "thproximal_frame": _ep_get(ep, "thproximal_frame"),
+        "wrist_distance_best_m": _ep_get(ep, "wrist_distance_best_m"),
+        "wrist_distance_final_m": _ep_get(ep, "wrist_distance_final_m"),
+        "wrist_distance_at_success": _ep_get(ep, "wrist_distance_at_success"),
+        "legacy_all_five": bool(_ep_get(ep, "legacy_all_five", False)),
+        "max_passed_fingers": int(_ep_get(ep, "max_passed_fingers", n_ever) or n_ever),
+        "motion_lock_step": _ep_get(ep, "motion_lock_step"),
+        "motion_lock_time_s": _ep_get(ep, "motion_lock_time_s"),
+    }
 
 
 def assert_eval_outcome_consistency(episodes: list[Any]) -> dict[str, Any]:
@@ -3558,6 +3683,7 @@ class BraceletEvalCollector:
                 "task_success": task_success_count,
                 "task_success_rate": (task_success_count / n) if n else 0.0,
                 "task_success_envs": list(cross.get("task_success_envs") or []),
+                "wrist_best_distance": wrist_best_group_stats(eps),
                 "headline": "legacy",
                 "definition": "legacy_all_five knuckle AND wrist_within_goal (motion lock)",
                 "legacy_all_five": legacy_all_five_count,
@@ -3930,6 +4056,38 @@ def _fmt_frame(value: Any) -> str:
     return str(int(value))
 
 
+def _fmt_cm_pm(block: dict[str, Any] | None) -> str:
+    if not block or block.get("mean_cm") is None:
+        return "-"
+    n = int(block.get("n") or 0)
+    return f"{float(block['mean_cm']):.1f} ± {float(block.get('std_cm') or 0.0):.1f} cm  (n={n})"
+
+
+def _print_wrist_best_distance(groups: dict[str, Any]) -> None:
+    if not groups:
+        return
+    print("")
+    print("Best wrist distance  (min ||wrist − opening center|| during episode)")
+    print(f"  Successful dressing     : {_fmt_cm_pm(groups.get('successful_dressing'))}")
+    print(f"  Task failure            : {_fmt_cm_pm(groups.get('task_failure'))}")
+    print(f"  Incomplete placement    : {_fmt_cm_pm(groups.get('incomplete_placement'))}")
+    print("    (all-five last-step passage, wrist never within threshold)")
+    for key, title in (
+        ("successful_dressing", "Successful dressing envs"),
+        ("task_failure", "Task-failure envs"),
+        ("incomplete_placement", "Incomplete-placement envs"),
+    ):
+        rows = (groups.get(key) or {}).get("episodes") or []
+        if not rows:
+            continue
+        print(f"  {title}:")
+        for rec in rows:
+            print(
+                f"    env={rec.get('env_id')} (ep {rec.get('episode')})  "
+                f"{float(rec.get('wrist_distance_best_cm') or 0.0):.1f} cm"
+            )
+
+
 def _fmt_env_refs(items: list[Any] | None) -> str:
     if not items:
         return "(none)"
@@ -3940,6 +4098,71 @@ def _fmt_env_refs(items: list[Any] | None) -> str:
         else:
             parts.append(str(it))
     return ", ".join(parts)
+
+
+def _fmt_finger_yn(flags: dict[str, bool] | None) -> str:
+    flags = flags or {}
+    abbrev = {"thumb": "T", "index": "I", "middle": "M", "ring": "R", "little": "P"}
+    return " ".join(
+        f"{abbrev[name]}={'YES' if flags.get(name) else 'NO'}" for name in FINGER_ORDER
+    )
+
+
+def _print_task_yes_not_all_five_details(details: list[Any]) -> None:
+    if not details:
+        return
+    print("")
+    print(f"Task-success / not last-step all-five ({len(details)}):")
+    print(
+        "  Task locked, but last-step passage was not 5/5 "
+        "(often a finger entered then reversed)."
+    )
+    for rec in details:
+        if not isinstance(rec, dict):
+            continue
+        exited = rec.get("exited_fingers") or []
+        exited_s = ",".join(exited) if exited else "(none)"
+        print("")
+        print(f"  env={rec.get('env_id')} (ep {rec.get('episode')})")
+        print(
+            f"    last passage : {int(rec.get('last_passed') or 0)}/5  "
+            f"{_fmt_finger_yn(rec.get('last_fingers'))}"
+        )
+        print(
+            f"    ever passage : {int(rec.get('ever_passed') or 0)}/5  "
+            f"{_fmt_finger_yn(rec.get('ever_fingers'))}"
+        )
+        print(
+            f"    max passed   : {int(rec.get('max_passed_fingers') or 0)}/5  "
+            f"entered-then-left: {exited_s}  missing-at-end: "
+            f"{','.join(rec.get('missing_last') or []) or '(none)'}"
+        )
+        st_parts = []
+        for st in rec.get("thumb_stations") or []:
+            vis = st.get("visit_step")
+            vis_s = "-" if vis is None else str(int(vis))
+            st_parts.append(
+                f"{st.get('name')}={st.get('status')}@f{vis_s}"
+            )
+        if st_parts:
+            print(f"    thumb order  : {'  '.join(st_parts)}")
+        print(
+            f"    thumb frames : distal@{_fmt_frame(rec.get('thdistal_frame'))}  "
+            f"middle@{_fmt_frame(rec.get('thmiddle_frame'))}  "
+            f"proximal@{_fmt_frame(rec.get('thproximal_frame'))}"
+        )
+        lock_t = rec.get("motion_lock_time_s")
+        lock_s = f"{float(lock_t):.2f}s" if lock_t is not None else "-"
+        print(
+            f"    wrist best={_fmt_m(rec.get('wrist_distance_best_m'))}  "
+            f"final={_fmt_m(rec.get('wrist_distance_final_m'))}  "
+            f"at_lock={_fmt_m(rec.get('wrist_distance_at_success'))}  "
+            f"lock@{lock_s}"
+        )
+        print(
+            f"    knuckle-ever-5={bool(rec.get('legacy_all_five'))}  "
+            f"note={rec.get('note')}"
+        )
 
 
 def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None = None) -> None:
@@ -3997,6 +4220,7 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
         f"  envs                    : "
         f"{_fmt_env_refs(success.get('task_success_envs') or cross.get('task_success_envs'))}"
     )
+    _print_wrist_best_distance(success.get("wrist_best_distance") or {})
     print("")
     print("-" * 60)
     print("Finger Passage")
@@ -4078,6 +4302,7 @@ def print_evaluation_summary(summary: dict[str, Any], *, output_dir: Path | None
     )
     print(f"  yes / not all-five envs : {_fmt_env_refs(cross.get('task_yes_all5_no_envs'))}")
     print(f"  yes / all-five envs     : {_fmt_env_refs(cross.get('task_yes_all5_yes_envs'))}")
+    _print_task_yes_not_all_five_details(cross.get("task_yes_all5_no_details") or [])
     n_ts = int(among_ok.get("n") or 0)
     n_tf = int(among_fail.get("n") or 0)
     print("")
