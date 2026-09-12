@@ -491,6 +491,7 @@ AIREC_CFG = ArticulationCfg(
     #     "right_hand_third_finger_joint_2": radians(89),
     #     },
     # ),
+
     ###########################################################################
     #NOTE: for reach deformable bracelet task
     init_state=ArticulationCfg.InitialStateCfg(
