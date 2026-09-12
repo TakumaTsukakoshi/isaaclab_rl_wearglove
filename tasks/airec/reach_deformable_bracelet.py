@@ -2865,8 +2865,8 @@ def compute_rewards(
     pinky_between_height_condition = (top_height > pinky_height) & (pinky_height > bottom_height)
   
     ######## rewards for reaching ########
-    reaching_right_ee_thumb_scale = 0.0
-    reaching_left_ee_pinky_scale = 0.0
+    reaching_right_ee_thumb_scale = 20.0
+    reaching_left_ee_pinky_scale = 10.0
     right_ee_thumb_condition = (ee_width_soft_gate) * thumb_between_height_condition
     left_ee_pinky_condition = (ee_width_soft_gate) * pinky_between_height_condition 
 
