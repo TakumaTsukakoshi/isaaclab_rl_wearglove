@@ -129,16 +129,20 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
     # When False (default), success does not end the episode; only failure terms / time-out do.
     # ``task_success_bonus`` is awarded once per episode on the first success step.
     terminate_on_task_success: bool = False
-    bracelet_success_threshold: float = 0.01  # 1 cm
+    # bracelet_success_threshold: float = 0.01  # 1 cm
+    bracelet_success_threshold: float = 0.01  # 2 cm
     task_success_bonus: float = 1000.0
     #: After the one-shot success bonus, ignore further policy actions and hold actuated joint
     #: targets at the measured success pose until reset. Episode still continues (no terminate).
     lock_motion_after_task_success: bool = True
     #: Train and play_eval: ``task_success`` / bonus / motion lock require
     #: ``wrist_within_goal AND all_5_confirmed_insertions``. Episode still runs to timeout.
+    #: Thumb insertion is ordered ``thdistal → thmiddle → thproximal`` (reverse
+    #: clears that station and later ones). Other fingers use knuckle crossing.
     #: ``play_eval.py --no-complete-dressing-success`` restores wrist-only lock for eval.
     eval_success_requires_all_fingers: bool = True
     eval_insertion_delta_m: float = 0.003
+    #: Confirm frames are RL control steps (``step_dt = physics_dt * decimation`` = 0.02 s).
     eval_insertion_confirm_frames: int = 4
 
     #: When cumulative episode success rate exceeds :attr:`adaptive_physics_success_threshold`, switch from
@@ -152,6 +156,16 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
 
     #: Rim / fingertip ``VisualizationMarkers`` spheres. Requires GUI (do not use ``--headless``).
     show_task_markers: bool = False
+    #: Eval knuckle COMs used for Task success / index–pinky passage (thbase, ff/mf/rf/lf knuckle).
+    #: Sphere color is insertion state: red PRE, yellow BAND, blue POST, green LIVE.
+    #: Thumb LIVE requires thdistal+thmiddle+thproximal in the opening slab; extra
+    #: smaller spheres mark those three stations.
+    show_knuckle_markers: bool = False
+    #: If set, draw knuckles on this env only (use 4 to inspect that clone). ``None`` = all envs.
+    knuckle_marker_env_id: int | None = None
+    #: Print one-line PRE/POST/LIVE/LATCH for the visualized env every N control steps
+    #: (and on any state change). 0 = change-only. Used when ``show_knuckle_markers``.
+    knuckle_status_print_interval: int = 5
     #: Disable markers when ``scene.num_envs`` exceeds this (Fabric GPU OOM with 1k+ envs).
     show_task_markers_max_num_envs: int = 256
     #: Geometric opening-rim PCA debug (``bracelet_opening_pca_viz``). Requires GUI for debug_draw.
@@ -499,6 +513,14 @@ class ReachDeformableBraceletEnvCfg(AIRECEnvCfg):
         }
     )
 
+    # Knuckle sphere prototypes (dict order = VisualizationMarkers index).
+    eval_knuckle_state_colors: dict[str, tuple[float, float, float]] = {
+        "pre": (1.0, 0.12, 0.1),
+        "band": (1.0, 0.88, 0.12),
+        "post": (0.2, 0.45, 1.0),
+        "live": (0.12, 0.95, 0.22),
+    }
+
     finger_joint_names = [
             "robot0_FFJ3",
             "robot0_FFJ2",
@@ -579,6 +601,11 @@ class ReachDeformableBraceletEnv(AIRECEnv):
                 "[ReachDeformableBraceletEnv] show_task_markers=True but no GUI "
                 "(e.g. --headless): markers are not created / not visible. "
                 "Run play without --headless and --num_envs 1."
+            )
+        if bool(getattr(cfg, "show_knuckle_markers", False)) and not self.sim.has_gui():
+            print(
+                "[ReachDeformableBraceletEnv] show_knuckle_markers=True but no GUI "
+                "(e.g. --headless): knuckle spheres will not be visible."
             )
 
         self._physics_timestep_upgraded = False
@@ -710,7 +737,18 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             (self.num_envs, 5), dtype=torch.bool, device=self.device
         )
         self._eval_finger_crossing_tracker = None
+        self._eval_thumb_sweep_tracker = None
+        self._eval_merged_max_inserted = torch.zeros(
+            (self.num_envs,), dtype=torch.int32, device=self.device
+        )
+        self._eval_merged_ever_all = torch.zeros(
+            (self.num_envs,), dtype=torch.bool, device=self.device
+        )
         self._eval_base_body_ids: dict[str, int | None] | None = None
+        self._eval_distal_body_ids: dict[str, int | None] | None = None
+        self._eval_thumb_sweep_ids: list[int] | None = None
+        self._eval_thumb_sweep_names: list[str] = []
+        self._knuckle_status_prev: tuple | None = None
 
         self.right_left_goal_distance = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         if self._is_free_space_mode():
@@ -810,6 +848,8 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             self.goal_cent_markers = None
             self.thumb_target_markers = None
             self.pinky_target_markers = None
+            self.eval_knuckle_markers = {}
+            self.eval_thumb_station_markers = []
             return
         # Rigid / deformable task object (bracelet) is added whenever ``object_type != "none"``.
         if self.cfg.object_type != "none":
@@ -833,7 +873,46 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         else:
             self.thumb_target_markers = None
             self.pinky_target_markers = None
-        
+        self.eval_knuckle_markers = {}
+        if bool(getattr(self.cfg, "show_knuckle_markers", False)):
+            colors = getattr(self.cfg, "eval_knuckle_state_colors", {}) or {}
+            from bracelet_eval import FINGER_ORDER
+
+            proto = {}
+            for state in ("pre", "band", "post", "live"):
+                rgb = colors.get(state, (1.0, 1.0, 1.0))
+                proto[state] = sim_utils.SphereCfg(
+                    radius=0.014,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=rgb),
+                )
+            for name in FINGER_ORDER:
+                self.eval_knuckle_markers[name] = VisualizationMarkers(
+                    VisualizationMarkersCfg(
+                        prim_path=f"/Visuals/eval_knuckle_{name}",
+                        markers=dict(proto),
+                    )
+                )
+        self.eval_thumb_station_markers = []
+        if bool(getattr(self.cfg, "show_knuckle_markers", False)):
+            from bracelet_eval import THUMB_SWEEP_REQUIRED_STATIONS
+
+            colors = getattr(self.cfg, "eval_knuckle_state_colors", {}) or {}
+            station_proto = {}
+            for state in ("pre", "band", "post", "live"):
+                rgb = colors.get(state, (1.0, 1.0, 1.0))
+                station_proto[state] = sim_utils.SphereCfg(
+                    radius=0.012,
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=rgb),
+                )
+            for i in range(THUMB_SWEEP_REQUIRED_STATIONS):
+                self.eval_thumb_station_markers.append(
+                    VisualizationMarkers(
+                        VisualizationMarkersCfg(
+                            prim_path=f"/Visuals/eval_thumb_station_{i}",
+                            markers=dict(station_proto),
+                        )
+                    )
+                )
 
         self.thumb_goal_frame = FrameTransformer(self.cfg.thumb_goal_config)
         self.thumb_goal_frame.set_debug_vis(False)
@@ -983,6 +1062,12 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         tracker = getattr(self, "_eval_finger_crossing_tracker", None)
         if tracker is not None:
             tracker.reset_envs(e)
+        sweep = getattr(self, "_eval_thumb_sweep_tracker", None)
+        if sweep is not None:
+            sweep.reset_envs(e)
+        self._eval_merged_max_inserted[e] = 0
+        self._eval_merged_ever_all[e] = False
+        self._knuckle_status_prev = None
         if self._is_free_space_mode():
             self._set_free_space_dummy_observations(e)
             return
@@ -1087,6 +1172,55 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         )
         return self._eval_finger_crossing_tracker
 
+    def _ensure_eval_thumb_sweep_tracker(self, nodes: torch.Tensor):
+        """Ordered tip→proximal latch used for thumb Task / ``[insert]`` success."""
+        from bracelet_eval import (
+            THUMB_SWEEP_HOLE_HALF_WIDTH_M,
+            THUMB_SWEEP_MIN_STATIONS,
+            THUMB_SWEEP_REQUIRED_STATIONS,
+            ThumbOpeningSweepTracker,
+        )
+
+        n_stat = int(nodes.shape[1])
+        if n_stat < THUMB_SWEEP_MIN_STATIONS:
+            return None
+        sweep = getattr(self, "_eval_thumb_sweep_tracker", None)
+        if sweep is None or sweep.n_stations != n_stat:
+            self._eval_thumb_sweep_tracker = ThumbOpeningSweepTracker(
+                int(self.num_envs),
+                n_stat,
+                nodes.device,
+                nodes.dtype,
+                delta=float(getattr(self.cfg, "eval_insertion_delta_m", 0.003)),
+                confirm_frames=int(getattr(self.cfg, "eval_insertion_confirm_frames", 4)),
+                ellipse_threshold=float(getattr(self.cfg, "eval_opening_ellipse_threshold", 1.0)),
+                hole_half_width=THUMB_SWEEP_HOLE_HALF_WIDTH_M,
+                n_required=min(THUMB_SWEEP_REQUIRED_STATIONS, n_stat),
+            )
+        return self._eval_thumb_sweep_tracker
+
+    def _update_eval_thumb_sweep(
+        self,
+        center: torch.Tensor,
+        radius_y: torch.Tensor,
+        radius_z: torch.Tensor,
+        active: torch.Tensor,
+    ) -> torch.Tensor | None:
+        nodes = self._stack_eval_thumb_sweep_env_local()
+        if nodes is None:
+            return None
+        sweep = self._ensure_eval_thumb_sweep_tracker(nodes)
+        if sweep is None:
+            return None
+        return sweep.update(nodes, center, radius_y, radius_z, active)
+
+    def _thumb_task_latch_flags(self) -> torch.Tensor | None:
+        """``(N,)`` True when required thumb stations are latched in tip→proximal order."""
+        sweep = getattr(self, "_eval_thumb_sweep_tracker", None)
+        if sweep is None:
+            return None
+        return sweep.passed
+
     def _stack_eval_finger_base_env_local(self) -> torch.Tensor | None:
         """``(num_envs, 5, 3)`` finger-base COMs in env-local frame (same bodies as eval)."""
         from bracelet_eval import BASE_BODY_CANDIDATES, FINGER_ORDER, _resolve_body_index
@@ -1117,6 +1251,324 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         cols = [body_pos_w[:, self._eval_base_body_ids[name]] - origins for name in FINGER_ORDER]
         return torch.stack(cols, dim=1)
 
+    def _stack_eval_finger_distal_env_local(self) -> torch.Tensor | None:
+        """``(num_envs, 5, 3)`` distal COMs in env-local frame (live-containment landmarks)."""
+        from bracelet_eval import DISTAL_BODY_CANDIDATES, FINGER_ORDER, _resolve_body_index
+
+        hand = getattr(self, "hand", None)
+        if hand is None:
+            return None
+        body_pos_w = getattr(hand.data, "body_pos_w", None)
+        if body_pos_w is None:
+            return None
+        if self._eval_distal_body_ids is None:
+            body_names = list(
+                getattr(hand, "body_names", None) or getattr(hand.data, "body_names", None) or []
+            )
+            self._eval_distal_body_ids = {
+                name: _resolve_body_index(body_names, candidates)
+                for name, candidates in DISTAL_BODY_CANDIDATES.items()
+            }
+        if any(self._eval_distal_body_ids[name] is None for name in FINGER_ORDER):
+            return None
+        origins = getattr(self, "env_origins", None)
+        if origins is None:
+            scene = getattr(self, "scene", None)
+            origins = getattr(scene, "env_origins", None) if scene is not None else None
+        if origins is None:
+            origins = body_pos_w.new_zeros((body_pos_w.shape[0], 3))
+        origins = origins.to(device=body_pos_w.device, dtype=body_pos_w.dtype)
+        cols = [body_pos_w[:, self._eval_distal_body_ids[name]] - origins for name in FINGER_ORDER]
+        return torch.stack(cols, dim=1)
+
+    def _stack_eval_thumb_sweep_env_local(self) -> torch.Tensor | None:
+        """``(num_envs, K, 3)`` thumb stations tip→base in env-local frame."""
+        from bracelet_eval import THUMB_SWEEP_BODY_CANDIDATES, THUMB_SWEEP_MIN_STATIONS, _resolve_body_index
+
+        hand = getattr(self, "hand", None)
+        if hand is None:
+            return None
+        body_pos_w = getattr(hand.data, "body_pos_w", None)
+        if body_pos_w is None:
+            return None
+        if self._eval_thumb_sweep_ids is None:
+            body_names = list(
+                getattr(hand, "body_names", None) or getattr(hand.data, "body_names", None) or []
+            )
+            ids: list[int] = []
+            names: list[str] = []
+            for candidates in THUMB_SWEEP_BODY_CANDIDATES:
+                idx = _resolve_body_index(body_names, candidates)
+                if idx is None:
+                    continue
+                ids.append(idx)
+                names.append(body_names[idx])
+            self._eval_thumb_sweep_ids = ids
+            self._eval_thumb_sweep_names = names
+        if len(self._eval_thumb_sweep_ids) < THUMB_SWEEP_MIN_STATIONS:
+            return None
+        origins = getattr(self, "env_origins", None)
+        if origins is None:
+            scene = getattr(self, "scene", None)
+            origins = getattr(scene, "env_origins", None) if scene is not None else None
+        if origins is None:
+            origins = body_pos_w.new_zeros((body_pos_w.shape[0], 3))
+        origins = origins.to(device=body_pos_w.device, dtype=body_pos_w.dtype)
+        cols = [body_pos_w[:, idx] - origins for idx in self._eval_thumb_sweep_ids]
+        return torch.stack(cols, dim=1)
+
+    def _eval_knuckle_insertion_state(
+        self, knuckle: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+        """Per-finger plane side, live containment, and thumb-station occupancy.
+
+        Returns
+        -------
+        side_idx
+            ``(N, 5)`` long: 0=PRE, 1=BAND, 2=POST (knuckle vs opening plane).
+        live
+            ``(N, 5)`` bool. Other fingers: knuckle+distal POST inside the live
+            YZ ellipse. Thumb: all required stations currently in the opening slab.
+        latch
+            ``(N, 5)`` bool knuckle-crossing latch, or ``None`` if tracker not started.
+        thumb_side
+            ``(N, K)`` long PRE/BAND/POST for thumb stations, or ``None``.
+        thumb_occ
+            ``(N, K)`` bool opening-slab occupancy per thumb station, or ``None``.
+        """
+        from bracelet_eval import (
+            THUMB_SWEEP_HOLE_HALF_WIDTH_M,
+            THUMB_SWEEP_REQUIRED_STATIONS,
+            live_containment_flags,
+            opening_radii,
+            thumb_required_stations_inside,
+        )
+
+        n = int(knuckle.shape[0])
+        side_idx = torch.ones((n, 5), dtype=torch.long, device=knuckle.device)
+        live = torch.zeros((n, 5), dtype=torch.bool, device=knuckle.device)
+        thumb_side = None
+        thumb_occ = None
+        delta = float(getattr(self.cfg, "eval_insertion_delta_m", 0.003))
+        thr = float(getattr(self.cfg, "eval_opening_ellipse_threshold", 1.0))
+        cent = getattr(self, "goal_cent_pos", None)
+        east = getattr(self, "goal_east_pos", None)
+        west = getattr(self, "goal_west_pos", None)
+        north = getattr(self, "goal_north_pos", None)
+        south = getattr(self, "goal_south_pos", None)
+        if cent is not None:
+            d = knuckle[..., 0] - cent[:, 0].unsqueeze(1)
+            side_idx = torch.where(
+                d > delta,
+                torch.zeros_like(side_idx),
+                torch.where(d < -delta, torch.full_like(side_idx, 2), torch.ones_like(side_idx)),
+            )
+            if east is not None and west is not None and north is not None and south is not None:
+                radius_y, radius_z = opening_radii(east, west, north, south)
+                distal = self._stack_eval_finger_distal_env_local()
+                live = live_containment_flags(
+                    knuckle,
+                    distal,
+                    cent,
+                    radius_y,
+                    radius_z,
+                    delta=delta,
+                    ellipse_threshold=thr,
+                )
+                nodes = self._stack_eval_thumb_sweep_env_local()
+                if nodes is not None:
+                    d_t = nodes[..., 0] - cent[:, 0].unsqueeze(1)
+                    thumb_side = torch.where(
+                        d_t > delta,
+                        torch.zeros_like(d_t, dtype=torch.long),
+                        torch.where(
+                            d_t < -delta,
+                            torch.full_like(d_t, 2, dtype=torch.long),
+                            torch.ones_like(d_t, dtype=torch.long),
+                        ),
+                    )
+                    thumb_occ, thumb_inside = thumb_required_stations_inside(
+                        nodes,
+                        cent,
+                        radius_y,
+                        radius_z,
+                        n_required=THUMB_SWEEP_REQUIRED_STATIONS,
+                        hole_half_width=THUMB_SWEEP_HOLE_HALF_WIDTH_M,
+                        ellipse_threshold=thr,
+                    )
+                    live = live.clone()
+                    live[:, 0] = thumb_inside
+        tracker = getattr(self, "_eval_finger_crossing_tracker", None)
+        latch = tracker.inserted.clone() if tracker is not None else None
+        thumb_ok = self._thumb_task_latch_flags()
+        if latch is not None:
+            if thumb_ok is not None:
+                latch[:, 0] = thumb_ok
+            else:
+                latch[:, 0] = False
+        return side_idx, live, latch, thumb_side, thumb_occ
+
+    def _print_eval_knuckle_status(
+        self,
+        env_id: int,
+        side_idx: torch.Tensor,
+        live: torch.Tensor,
+        latch: torch.Tensor | None,
+        thumb_side: torch.Tensor | None = None,
+        thumb_occ: torch.Tensor | None = None,
+    ) -> None:
+        """Print whether each finger is inserted (hole vs latch), no joint/action dump."""
+        from bracelet_eval import FINGER_ORDER, THUMB_SWEEP_REQUIRED_STATIONS
+
+        abbrev = {"thumb": "T", "index": "I", "middle": "M", "ring": "R", "little": "P"}
+        parts = []
+        key = []
+        n_latch = 0
+        for i, name in enumerate(FINGER_ORDER):
+            hole_on = bool(live[env_id, i].item())
+            latch_on = bool(latch[env_id, i].item()) if latch is not None else False
+            n_latch += int(latch_on)
+            hole_s = "YES" if hole_on else "NO"
+            latch_s = "YES" if latch_on else "NO"
+            parts.append(f"{abbrev[name]}:hole={hole_s} latch={latch_s}")
+            key.append((hole_on, latch_on))
+        n_req = THUMB_SWEEP_REQUIRED_STATIONS
+        n_in = 0
+        st_bits = []
+        if thumb_occ is not None:
+            n_req = min(THUMB_SWEEP_REQUIRED_STATIONS, int(thumb_occ.shape[1]))
+            n_in = int(thumb_occ[env_id, :n_req].sum().item())
+            labels = ("Td", "Tm", "Tp")
+            for i, lab in enumerate(labels[:n_req]):
+                on = bool(thumb_occ[env_id, i].item())
+                st_bits.append(f"{lab}={'IN' if on else 'out'}")
+                key.append(on)
+        thumb_hole = n_in >= n_req
+        sweep = getattr(self, "_eval_thumb_sweep_tracker", None)
+        st_latch = []
+        if sweep is not None:
+            n_sl = min(3, int(sweep.inserted.shape[1]))
+            labels = ("Td", "Tm", "Tp")
+            for i in range(n_sl):
+                on = bool(sweep.inserted[env_id, i].item())
+                st_latch.append(f"{labels[i]}={'YES' if on else 'NO'}")
+                key.append(on)
+        wrist_ok = bool(self.wrist_within_goal[env_id].item()) if hasattr(self, "wrist_within_goal") else False
+        wrist_d = None
+        if hasattr(self, "wrist_center_euclidean_distance"):
+            wrist_d = float(self.wrist_center_euclidean_distance[env_id].item())
+        task = bool(self.task_success[env_id].item()) if hasattr(self, "task_success") else False
+        key.extend([thumb_hole, wrist_ok, task, n_latch])
+        key_t = tuple(key)
+        interval = int(getattr(self.cfg, "knuckle_status_print_interval", 5))
+        step = int(self.episode_length_buf[env_id].item())
+        changed = key_t != self._knuckle_status_prev
+        if not changed and interval > 0 and (step % interval) != 0:
+            return
+        if not changed and interval <= 0:
+            return
+        dt = float(getattr(self, "step_dt", 0.02))
+        wrist_s = f"{wrist_d:.3f}m/{'YES' if wrist_ok else 'NO'}" if wrist_d is not None else ("YES" if wrist_ok else "NO")
+        print(
+            f"[insert env={env_id} t={step * dt:.2f}s]  "
+            + "  ".join(parts)
+            + f"  latch={n_latch}/5  thumb_order={' '.join(st_latch) if st_latch else 'n/a'}"
+            + f"  thumb_hole={'YES' if thumb_hole else 'NO'}({n_in}/{n_req}"
+            + (f" {' '.join(st_bits)}" if st_bits else "")
+            + f")  wrist={wrist_s}  task={'YES' if task else 'NO'}"
+        )
+        self._knuckle_status_prev = key_t
+
+    def _visualize_eval_knuckles(self, env_ids: torch.Tensor) -> None:
+        """Draw eval knuckle COMs colored by PRE / BAND / POST / LIVE."""
+        markers = getattr(self, "eval_knuckle_markers", None)
+        if not markers:
+            return
+        from bracelet_eval import FINGER_ORDER
+
+        knuckle = self._stack_eval_finger_base_env_local()
+        if knuckle is None:
+            return
+        vis = torch.as_tensor(env_ids, device=self.device, dtype=torch.long).reshape(-1)
+        eid = getattr(self.cfg, "knuckle_marker_env_id", None)
+        if eid is not None:
+            vis = vis[vis == int(eid)]
+        if int(vis.numel()) == 0:
+            return
+        origins = self.scene.env_origins[vis]
+        quat = self.identity_quat[vis]
+        side_idx, live, latch, thumb_side, thumb_occ = self._eval_knuckle_insertion_state(knuckle)
+        proto = torch.where(live[vis], torch.full_like(side_idx[vis], 3), side_idx[vis])
+        if not getattr(self, "_logged_eval_knuckle_bodies", False):
+            names = list(getattr(self.hand, "body_names", None) or [])
+            resolved = {
+                name: (names[idx] if idx is not None and idx < len(names) else None)
+                for name, idx in (self._eval_base_body_ids or {}).items()
+            }
+            print(
+                f"[ReachDeformableBraceletEnv] eval knuckle markers "
+                f"(env_id={eid if eid is not None else 'all'}): {resolved}"
+            )
+            print(
+                "[ReachDeformableBraceletEnv] knuckle color: "
+                "RED=PRE  YELLOW=BAND  BLUE=POST  GREEN=LIVE"
+            )
+            print(
+                "[ReachDeformableBraceletEnv] [insert] hole=now in opening. "
+                "T:latch=YES only after thdistal→thmiddle→thproximal ordered "
+                "PRE→POST (reverse clears that station and later ones). "
+                "Other fingers: knuckle crossing. Task uses latch 5/5 + wrist."
+            )
+            if self._eval_thumb_sweep_names:
+                print(
+                    f"[ReachDeformableBraceletEnv] thumb stations: {self._eval_thumb_sweep_names}"
+                )
+            self._logged_eval_knuckle_bodies = True
+        for i, name in enumerate(FINGER_ORDER):
+            marker = markers.get(name)
+            if marker is None:
+                continue
+            marker.visualize(
+                knuckle[vis, i] + origins,
+                quat,
+                marker_indices=proto[:, i],
+            )
+        self._visualize_eval_thumb_stations(vis, origins, quat, thumb_side, thumb_occ)
+        self._print_eval_knuckle_status(
+            int(vis[0].item()), side_idx, live, latch, thumb_side, thumb_occ
+        )
+
+    def _visualize_eval_thumb_stations(
+        self,
+        vis: torch.Tensor,
+        origins: torch.Tensor,
+        quat: torch.Tensor,
+        thumb_side: torch.Tensor | None,
+        thumb_occ: torch.Tensor | None,
+    ) -> None:
+        """Smaller PRE/POST/IN spheres on thdistal → thmiddle → thproximal."""
+        station_markers = getattr(self, "eval_thumb_station_markers", None) or []
+        if not station_markers or thumb_side is None:
+            return
+        nodes = self._stack_eval_thumb_sweep_env_local()
+        if nodes is None:
+            return
+        n_draw = min(len(station_markers), int(nodes.shape[1]), int(thumb_side.shape[1]))
+        if thumb_occ is None:
+            proto = thumb_side[vis, :n_draw]
+        else:
+            proto = torch.where(
+                thumb_occ[vis, :n_draw],
+                torch.full_like(thumb_side[vis, :n_draw], 3),
+                thumb_side[vis, :n_draw],
+            )
+        for i in range(n_draw):
+            station_markers[i].visualize(
+                nodes[vis, i] + origins,
+                quat,
+                marker_indices=proto[:, i],
+            )
+
     def _update_eval_insertion_tracker(self) -> torch.Tensor | None:
         """Advance the shared crossing tracker after live opening / finger poses are current."""
         from bracelet_eval import opening_radii
@@ -1133,10 +1585,18 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         radius_y, radius_z = opening_radii(east, west, north, south)
         tracker = self._ensure_eval_insertion_tracker()
         active = torch.ones((int(self.num_envs),), dtype=torch.bool, device=distal.device)
-        inserted = tracker.update(distal, cent, radius_y, radius_z, active)
+        inserted = tracker.update(distal, cent, radius_y, radius_z, active).clone()
+        thumb_ok = self._update_eval_thumb_sweep(cent, radius_y, radius_z, active)
+        if thumb_ok is not None:
+            inserted[:, 0] = thumb_ok
+        else:
+            inserted[:, 0] = False
+        n_now = inserted.sum(dim=1).to(dtype=self._eval_merged_max_inserted.dtype)
+        self._eval_merged_max_inserted = torch.maximum(self._eval_merged_max_inserted, n_now)
+        self._eval_merged_ever_all = self._eval_merged_ever_all | (n_now >= 5)
         self._episode_end_eval_inserted.copy_(inserted)
-        self._episode_end_eval_max_inserted = tracker.max_inserted.clone()
-        self._episode_end_eval_ever_all = tracker.ever_all.clone()
+        self._episode_end_eval_max_inserted = self._eval_merged_max_inserted.clone()
+        self._episode_end_eval_ever_all = self._eval_merged_ever_all.clone()
         self._episode_end_eval_first_insert_step = tracker.first_insert_step.clone()
         self._episode_end_eval_insert_steps = tracker.inserted_steps.clone()
         return inserted
@@ -1313,6 +1773,15 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         # ``_get_dones`` runs before ``_get_rewards`` each control step, so ``self.task_success`` is current.
         # Without one-shot gating, continuing past success until time-out would re-award every step.
         newly_successful = self.task_success & ~self._task_success_bonus_awarded
+        if bool(newly_successful.any()):
+            dt = float(getattr(self, "step_dt", 0.02))
+            for eid in newly_successful.nonzero(as_tuple=False).flatten().tolist():
+                env_i = int(eid)
+                t_s = float(self.episode_length_buf[env_i].item()) * dt
+                wrist_d = float(self.wrist_center_euclidean_distance[env_i].item())
+                print(
+                    f"[task-success] env={env_i} t={t_s:.2f}s wrist={wrist_d:.3f}m"
+                )
         success_bonus = newly_successful.float() * float(self.cfg.task_success_bonus)
         if bool(getattr(self.cfg, "lock_motion_after_task_success", False)) and newly_successful.any():
             ids = newly_successful.nonzero(as_tuple=False).flatten()
@@ -2120,6 +2589,7 @@ class ReachDeformableBraceletEnv(AIRECEnv):
             self.goal_cent_markers.visualize(
                 self.goal_cent_pos[env_ids] + self.scene.env_origins[env_ids], self.identity_quat[env_ids]
             )
+        self._visualize_eval_knuckles(env_ids)
         #     # print(f"goal_north_pos: {self.goal_north_pos[0]}, goal_south_pos: {self.goal_south_pos[0]}, goal_east_pos: {self.goal_east_pos[0]}, goal_west_pos: {self.goal_west_pos[0]}, goal_cent_pos: {self.goal_cent_pos[0]}")
 
         if self._use_glove or self.cfg.object_type == "rigid":
@@ -2395,8 +2865,8 @@ def compute_rewards(
     pinky_between_height_condition = (top_height > pinky_height) & (pinky_height > bottom_height)
   
     ######## rewards for reaching ########
-    reaching_right_ee_thumb_scale = 20.0
-    reaching_left_ee_pinky_scale = 10.0
+    reaching_right_ee_thumb_scale = 0.0
+    reaching_left_ee_pinky_scale = 0.0
     right_ee_thumb_condition = (ee_width_soft_gate) * thumb_between_height_condition
     left_ee_pinky_condition = (ee_width_soft_gate) * pinky_between_height_condition 
 

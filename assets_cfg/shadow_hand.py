@@ -66,12 +66,7 @@ SHADOW_HAND_CFG = ArticulationCfg(
         fixed_tendons_props=sim_utils.FixedTendonPropertiesCfg(limit_stiffness=30.0, damping=0.1),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-       
-        # pos=(0.95, 0.0, 0.90),
-        #    pos=(0.95, 0.0, 0.95),
             # pos=(0.85, 0.0, 0.75), # default
-            # pos=(0.83, 0.0, 0.75), # rigid bracelet
-            # pos=(0.90, 0.0, 0.75), # deformable bracelet
             # pos=(0.75, 0.0, 0.80), # rigid bracelet - after chnging scale to 0.75 (fixed!!)
             pos=(0.70, 0.0, 0.80), # deformable bracelet (after improving the torso angle) other than rigid bracelet
         # rot=(0.0, 0.7071, 0.7071, 0.0),# imitation

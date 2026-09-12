@@ -180,7 +180,7 @@ class ReachBraceletEnvCfg(AIRECEnvCfg):
             copy_from_source=True,
             visible=True,
             scale=(1.25, 1.25, 1.25),
-            # scale=(1.0, 1.5, 1.4),
+            # scale=(1.1, 1.1, 1.1),
             collision_props=sim_utils.CollisionPropertiesCfg(
                 collision_enabled=True,
                 # contact_offset=0.006, # default 0.005
@@ -1404,7 +1404,7 @@ class ReachBraceletEnv(AIRECEnv):
             device=self.device,
         )
 
-        roll_rad = torch.zeros_like(yaw_rad)
+        # roll_rad = torch.zeros_like(yaw_rad)
         # pitch_rad = torch.zeros_like(yaw_rad)
         # yaw_rad = torch.zeros_like(yaw_rad)
 
