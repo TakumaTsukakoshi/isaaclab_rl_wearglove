@@ -1773,15 +1773,6 @@ class ReachDeformableBraceletEnv(AIRECEnv):
         # ``_get_dones`` runs before ``_get_rewards`` each control step, so ``self.task_success`` is current.
         # Without one-shot gating, continuing past success until time-out would re-award every step.
         newly_successful = self.task_success & ~self._task_success_bonus_awarded
-        if bool(newly_successful.any()):
-            dt = float(getattr(self, "step_dt", 0.02))
-            for eid in newly_successful.nonzero(as_tuple=False).flatten().tolist():
-                env_i = int(eid)
-                t_s = float(self.episode_length_buf[env_i].item()) * dt
-                wrist_d = float(self.wrist_center_euclidean_distance[env_i].item())
-                print(
-                    f"[task-success] env={env_i} t={t_s:.2f}s wrist={wrist_d:.3f}m"
-                )
         success_bonus = newly_successful.float() * float(self.cfg.task_success_bonus)
         if bool(getattr(self.cfg, "lock_motion_after_task_success", False)) and newly_successful.any():
             ids = newly_successful.nonzero(as_tuple=False).flatten()
@@ -2894,7 +2885,7 @@ def compute_rewards(
         distance_reward(wrist_center_euclidean_distance, std=0.16)
         * reaching_wrist_center_scale 
         * wrist_center_condition
-        * fingers_inside_soft_gate
+        # * fingers_inside_soft_gate
     )
     ######### rewards for angular #########
     rotation_right_ee_thumb_scale = 0.0
